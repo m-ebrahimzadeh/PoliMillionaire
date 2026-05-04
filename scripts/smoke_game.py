@@ -10,7 +10,9 @@ import sys
 from millionaire_client import MillionaireClient
 from polimibot import GameAdapter
 
-GAME_URL = "http://131.175.15.22:51111"
+from polimibot import RUNTIME
+
+
 COMPETITION_ID = 0  # any valid one; we'll inventory them in a later commit
 
 
@@ -21,7 +23,7 @@ def main() -> int:
         print("Set POLIMI_USER and POLIMI_PASS env vars.", file=sys.stderr)
         return 2
 
-    client = MillionaireClient(GAME_URL)
+    client = MillionaireClient(RUNTIME.api_url)
     client.login(user, pw)
 
     game = GameAdapter(client, competition_id=COMPETITION_ID)
