@@ -10,3 +10,5 @@ data/cache/*
 !data/eval/.gitkeep
 *.bin
 *.safetensors
+*.env
+*.egg-info/
