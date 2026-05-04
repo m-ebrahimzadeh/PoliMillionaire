@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+polimibot/__init__.py
+polimibot.egg-info/PKG-INFO
+polimibot.egg-info/SOURCES.txt
+polimibot.egg-info/dependency_links.txt
+polimibot.egg-info/top_level.txt

@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: polimibot
+Version: 0.0.1
+Summary: Chatbot for the PoliMillionaire NLP 2025/26 assignment.
+Requires-Python: >=3.11
