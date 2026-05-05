@@ -8,6 +8,7 @@ data/runs/*
 data/cache/*
 !data/runs/.gitkeep
 !data/eval/.gitkeep
+!data/cache/.gitkeep
 *.bin
 *.safetensors
 *.env

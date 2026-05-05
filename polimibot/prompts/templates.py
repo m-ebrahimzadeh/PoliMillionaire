@@ -165,6 +165,46 @@ def build_messages(
     return messages
 
 
+def build_messages_with_context(
+    question: str,
+    options: Sequence[str],
+    context: str,
+    *,
+    category: Optional[Category] = None,
+    style: PromptStyle = PromptStyle.ZERO_SHOT,
+) -> List[Dict[str, str]]:
+    """Like build_messages, but prepends retrieved passages to the user turn.
+
+    Args:
+        context: pre-formatted retrieval results (caller's responsibility).
+                 Empty string → degrades gracefully to build_messages behaviour.
+        style: CoT styles are supported here (use_score_options must be False).
+    """
+    if len(options) != 4:
+        raise ValueError(f"Expected 4 options, got {len(options)}")
+    if not context:
+        return build_messages(question, options, category=category, style=style)
+
+    cot = style in (PromptStyle.ZERO_SHOT_COT, PromptStyle.FEW_SHOT_COT)
+    instr = _COT if cot else _DIRECT
+
+    context_block = f"Context (from Wikipedia):\n{context}"
+    user_content = (
+        f"{context_block}\n\n"
+        f"Question: {question}\n\n"
+        f"Options:\n{_format_options(options)}\n\n"
+        f"{instr}"
+    )
+
+    messages: List[Dict[str, str]] = [
+        {"role": "system", "content": _system_prompt(category)},
+        {"role": "user",   "content": user_content},
+    ]
+    return messages
+
+
+
+
 # ── Answer parsing ─────────────────────────────────────────────────────────
 
 # Patterns tried in priority order. Most specific first.
