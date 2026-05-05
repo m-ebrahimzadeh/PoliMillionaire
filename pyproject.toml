@@ -22,4 +22,5 @@ llm = [
 rag = [
     "faiss-cpu>=1.7",
     "sentence-transformers>=2.7",
+    "wikipedia>=1.4",
 ]
