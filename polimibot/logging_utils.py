@@ -168,3 +168,20 @@ def load_jsonl(path: Path) -> Iterable[dict[str, Any]]:
                 yield json.loads(line)
             except json.JSONDecodeError as e:
                 raise ValueError(f"{path.name}:{i}: invalid JSON: {e}") from e
+            
+
+
+
+
+
+class NullLogger:
+    """No-op logger. Same shape as RunLogger, writes nothing.
+
+    Default for runner so callers needn't deal with `Optional[RunLogger]`.
+    """
+    path = None  # type: ignore[assignment]
+
+    def __enter__(self) -> "NullLogger": return self
+    def __exit__(self, *a) -> None: return None
+    def log_question(self, rec: "QuestionRecord") -> None: return None
+    def log_summary(self, rec: "GameSummaryRecord") -> None: return None

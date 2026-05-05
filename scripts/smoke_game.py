@@ -1,44 +1,37 @@
-"""Smoke test: connect, start a game, read the first question, pick A.
+"""Smoke test: RandomStrategy plays one full game.
 
-Run with:  python scripts/smoke_game.py
-Reads username/password from env: POLIMI_USER, POLIMI_PASS
+Run:  POLIMI_USER=... POLIMI_PASS=... python scripts/smoke_game.py
 """
 from __future__ import annotations
-import os
-import sys
+import os, sys
 
 from millionaire_client import MillionaireClient
-from polimibot import GameAdapter
+from polimibot import (
+    PATHS, RUNTIME, RandomStrategy, RunLogger, play_game,
+)
 
-from polimibot import RUNTIME
-
-
-COMPETITION_ID = 0  # any valid one; we'll inventory them in a later commit
+COMPETITION_ID = 0
 
 
 def main() -> int:
-    user = os.environ.get("POLIMI_USER")
-    pw = os.environ.get("POLIMI_PASS")
+    user, pw = os.environ.get("POLIMI_USER"), os.environ.get("POLIMI_PASS")
     if not user or not pw:
-        print("Set POLIMI_USER and POLIMI_PASS env vars.", file=sys.stderr)
+        print("Set POLIMI_USER and POLIMI_PASS.", file=sys.stderr)
         return 2
 
+    PATHS.ensure()
     client = MillionaireClient(RUNTIME.api_url)
     client.login(user, pw)
 
-    game = GameAdapter(client, competition_id=COMPETITION_ID)
-    print(f"Started session {game.session_id}, level {game.current_level}")
-    q = game.current_question
-    assert q is not None
-    print(f"\nQ (L{q.level}): {q.text}")
-    for letter, opt in zip("ABCD", q.options):
-        print(f"  {letter}. {opt}")
-    print(f"\nTime remaining: {game.time_remaining_seconds:.1f}s")
+    strategy = RandomStrategy(seed=0)
+    with RunLogger(PATHS.runs_dir, run_id="smoke_random",
+                   extra={"strategy": strategy.name}) as log:
+        result = play_game(client, COMPETITION_ID, strategy, logger=log)
 
-    # Pick option A and submit, just to exercise the round-trip.
-    outcome = game.submit_answer(0)
-    print(f"\ncorrect={outcome.correct}  earned={outcome.earned_amount}  "
-          f"game_over={outcome.game_over}  reached={outcome.reached_level}")
+    print(f"\n=== final ===  L{result.final_level}  "
+          f"€{result.earned_amount:.0f}  acc={result.accuracy:.2f}  "
+          f"({result.elapsed_seconds:.1f}s total)")
+    print(f"log: {log.path}")
     return 0
 
 
