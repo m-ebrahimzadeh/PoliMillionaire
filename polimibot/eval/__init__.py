@@ -1,3 +1,7 @@
 from .gold_set import GoldItem, harvest_gold_set, save_gold_set, load_gold_set
+from .evaluator import EvalReport, EvalSample, CategoryStats, evaluate_strategy
 
-__all__ = ["GoldItem", "harvest_gold_set", "save_gold_set", "load_gold_set"]
+__all__ = [
+    "GoldItem", "harvest_gold_set", "save_gold_set", "load_gold_set",
+    "EvalReport", "EvalSample", "CategoryStats", "evaluate_strategy",
+]
