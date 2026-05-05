@@ -2,11 +2,13 @@
 from .config import CATEGORIES, PATHS, RUNTIME, Category, CompetitionInfo, PathConfig, RuntimeConfig
 from .game import AnswerOutcome, GameAdapter, GameQuestion, GameSummary
 from .logging_utils import GameSummaryRecord, QuestionRecord, RunLogger, RunManifest, load_jsonl
+from .strategies import RandomStrategy, Strategy, StrategyInput, StrategyOutput
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 __all__ = [
     "CATEGORIES", "PATHS", "RUNTIME",
     "Category", "CompetitionInfo", "PathConfig", "RuntimeConfig",
     "GameAdapter", "GameQuestion", "AnswerOutcome", "GameSummary",
     "RunLogger", "RunManifest", "QuestionRecord", "GameSummaryRecord", "load_jsonl",
+    "Strategy", "StrategyInput", "StrategyOutput", "RandomStrategy",
 ]
