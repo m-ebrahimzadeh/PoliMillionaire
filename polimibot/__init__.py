@@ -5,8 +5,9 @@ from .logging_utils import GameSummaryRecord, QuestionRecord, RunLogger, RunMani
 from .strategies import RandomStrategy, Strategy, StrategyInput, StrategyOutput
 from .runner import GameResult, play_game
 from .logging_utils import NullLogger
+from .models import LLM, LLMSpec, AnswerProbabilities
 
-__version__ = "0.0.5"
+__version__ = "0.1.0"
 __all__ = [
     "CATEGORIES", "PATHS", "RUNTIME",
     "Category", "CompetitionInfo", "PathConfig", "RuntimeConfig",
@@ -14,4 +15,5 @@ __all__ = [
     "RunLogger", "RunManifest", "NullLogger", "QuestionRecord", "GameSummaryRecord", "load_jsonl",
     "Strategy", "StrategyInput", "StrategyOutput", "RandomStrategy",
     "GameResult", "play_game",
+    "LLM", "LLMSpec", "AnswerProbabilities"
 ]

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "polimibot"
-version = "0.0.5"
+version = "0.1.0"
 description = "Chatbot for the PoliMillionaire NLP 2025/26 assignment."
 requires-python = ">=3.11"
 dependencies = ["requests>=2.31"]
@@ -14,3 +14,8 @@ include = ["polimibot*"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+llm = [
+    "transformers>=4.44",
+    "accelerate>=0.33",
+    "bitsandbytes>=0.43",
+]
