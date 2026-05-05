@@ -1,3 +1,4 @@
-from .llm import LLM, LLMSpec, AnswerProbabilities
+from .llm import LLM, LLMSpec, AnswerProbabilities, LLMResponse
+from .mock import MockLLM
 
-__all__ = ["LLM", "LLMSpec", "AnswerProbabilities"]
+__all__ = ["LLM", "LLMSpec", "AnswerProbabilities", "LLMResponse", "MockLLM"]
