@@ -19,3 +19,7 @@ llm = [
     "accelerate>=0.33",
     "bitsandbytes>=0.43",
 ]
+rag = [
+    "faiss-cpu>=1.7",
+    "sentence-transformers>=2.7",
+]
