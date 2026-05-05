@@ -37,6 +37,10 @@ class StrategyOutput:
     is_abstain: bool = False                 # True if strategy refused; runner falls back
     extras: dict[str, Any] = field(default_factory=dict)  # probs, token counts, etc.
 
+    @property
+    def chosen_letter(self) -> str:
+        """'A', 'B', 'C', or 'D' — derived from chosen_index."""
+        return "ABCD"[self.chosen_index]
 
 class Strategy(ABC):
     """Abstract base. Subclass and implement :meth:`answer`."""
