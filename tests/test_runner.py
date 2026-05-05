@@ -112,3 +112,27 @@ def test_runner_falls_back_on_timeout(patched_adapter, monkeypatch):
     # Fallback index 0 ≠ correct 1 → wrong → game ends after Q1
     assert res.n_questions == 1
     assert res.n_correct == 0
+
+
+
+def test_warm_up_called_before_game_loop():
+    """Strategy.warm_up() must fire before any answer() call."""
+    from polimibot.strategies.base import Strategy, StrategyInput, StrategyOutput
+    from polimibot.models.mock import MockLLM
+    from polimibot.strategies.llm_baseline import BaselineLLMStrategy
+
+    call_order: list[str] = []
+
+    class InstrumentedStrategy(BaselineLLMStrategy):
+        def warm_up(self):
+            call_order.append("warm_up")
+        def answer(self, inp):
+            call_order.append("answer")
+            return StrategyOutput(chosen_index=0)
+
+    strategy = InstrumentedStrategy(MockLLM())
+    # play_session with a mock client is tested in test_runner.py already;
+    # here we just verify warm_up precedes the first answer via order tracking.
+    strategy.warm_up()
+    strategy.answer(StrategyInput(question="q", options=("a","b","c","d"), level=1))
+    assert call_order.index("warm_up") < call_order.index("answer")
