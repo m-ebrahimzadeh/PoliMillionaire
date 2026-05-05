@@ -8,5 +8,6 @@ pip install -e .
 
 ## Stages
 - [x] 1. Scaffold
-- [ ] 2. Game wrapper
-- [ ] ... (fill in as we go)
+- [x] 2. Game wrapper
+- [x] 3. baseline-llm
+- [ ] 4. (fill in as we go)
