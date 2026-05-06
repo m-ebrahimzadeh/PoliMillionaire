@@ -19,6 +19,7 @@ from pathlib import Path
 from polimibot.config import PATHS, Category
 from polimibot.eval.evaluator import EvalReport, evaluate_strategy
 from polimibot.eval.gold_set import load_gold_set
+from polimibot.eval.report_io import model_slug, save_report
 from polimibot.models.mock import MockLLM
 from polimibot.prompts.templates import PromptStyle
 from polimibot.strategies.llm_baseline import BaselineLLMStrategy
@@ -91,18 +92,23 @@ def main() -> int:
     baseline = BaselineLLMStrategy(llm, style=style, use_score_options=True)
     rag      = RAGStrategy(llm, retriever, k=args.k, style=style)  # type: ignore[arg-type]
 
+    mslug = model_slug(args.model, mock=args.mock)
+    base_slug = f"baseline_{'fs' if style == PromptStyle.FEW_SHOT else 'zs'}__{mslug}"
+    rag_slug  = f"rag__{mslug}"
+
     # ── Evaluate ──────────────────────────────────────────────────────────────
     print("=" * 55)
     print("Evaluating: BASELINE")
     baseline.warm_up()
     report_baseline = evaluate_strategy(baseline, gold, verbose=True)
-    report_baseline.save(PATHS.eval_dir / f"report_{baseline.name}.json")
+    # Persist immediately — leaderboard builder reads these files.
+    save_report(report_baseline, name=base_slug, eval_dir=PATHS.eval_dir)
 
     print("\n" + "=" * 55)
     print("Evaluating: RAG")
     # No warm_up() for RAG — LLM already warmed; retriever is CPU-only.
     report_rag = evaluate_strategy(rag, gold, verbose=True)
-    report_rag.save(PATHS.eval_dir / f"report_{rag.name}.json")
+    save_report(report_rag, name=rag_slug, eval_dir=PATHS.eval_dir)
 
     baseline.shutdown()
 
