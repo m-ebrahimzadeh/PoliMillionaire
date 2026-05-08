@@ -8,9 +8,9 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Optional, Protocol, Union
+from typing import Any, Optional, Union
 
-from .config import CATEGORIES, PATHS, RUNTIME, Category
+from .config import CATEGORIES, RUNTIME, Category
 from .game import GameAdapter, GameQuestion
 from .logging_utils import GameSummaryRecord, NullLogger, QuestionRecord, RunLogger
 from .strategies import Strategy, StrategyInput, StrategyOutput
@@ -248,37 +248,3 @@ def play_game(
         strategy_name=strategy.name,
         elapsed_seconds=round(time.monotonic() - t_game_start, 3),
     )
-
-
-
-
-
-
-
-def play_session(
-    client: Any,
-    competition_ids: list[int],
-    strategy: Strategy,
-    *,
-    games_per_competition: int = 1,
-    run_id: str = "run",
-    verbose: bool = True,
-) -> list[GameSummary]:
-    """Play multiple games, log everything to a single JSONL file."""
-    PATHS.ensure()
-    summaries: list[GameSummary] = []
-
-    with RunLogger(PATHS.runs_dir, run_id=run_id, extra={"strategy": strategy.name}) as logger:
-        strategy.warm_up()                  # ← compiles CUDA kernels once, here
-        try:
-            for cid in competition_ids:
-                for _ in range(games_per_competition):
-                    summary = play_game(
-                        client, cid, strategy,
-                        logger=logger, verbose=verbose,
-                    )
-                    summaries.append(summary)
-                    time.sleep(RUNTIME.api_min_delay_seconds)  # inter-game pause
-        finally:
-            strategy.shutdown()             # ← release GPU memory, always runs
-    return summaries

@@ -1,4 +1,4 @@
 from .adapter import GameAdapter
-from .types import AnswerOutcome, GameQuestion, GameSummary
+from .types import AnswerOutcome, GameQuestion, SessionRecord
 
-__all__ = ["GameAdapter", "GameQuestion", "AnswerOutcome", "GameSummary"]
+__all__ = ["GameAdapter", "GameQuestion", "AnswerOutcome", "SessionRecord"]

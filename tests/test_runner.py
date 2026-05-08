@@ -7,7 +7,7 @@ from typing import Optional
 import pytest
 
 from polimibot import (
-    GameQuestion, AnswerOutcome, GameSummary, NullLogger, Strategy, StrategyInput,
+    GameQuestion, AnswerOutcome, SessionRecord, NullLogger, Strategy, StrategyInput,
     StrategyOutput, play_game,
 )
 
@@ -51,8 +51,8 @@ class FakeAdapter:
             reached_level=self._i,
         )
 
-    def summary(self) -> GameSummary:
-        return GameSummary(
+    def summary(self) -> SessionRecord:
+        return SessionRecord(
             competition_id=self.competition_id, competition_name=self.competition_name,
             session_id=self.session_id, final_level=self._i,
             earned_amount=self._earned, finished_normally=True,

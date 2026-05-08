@@ -28,8 +28,13 @@ class AnswerOutcome:
 
 
 @dataclass(frozen=True)
-class GameSummary:
-    """End-of-game record. Logged to JSONL later."""
+class SessionRecord:
+    """End-of-session snapshot for one game. Logged to JSONL later.
+
+    "Session" follows the millionaire_client terminology: one full play of
+    one competition. Renamed from GameSummary to disambiguate from the
+    JSONL ``GameSummaryRecord`` row in logging_utils.
+    """
     competition_id: int
     competition_name: str
     session_id: int
