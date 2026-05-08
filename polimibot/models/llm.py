@@ -138,29 +138,39 @@ class LLM:
     ) -> AnswerProbabilities:
         """One forward pass → probabilities over answer letters.
 
-        Appends "Answer:" to the prompt so the model's next token
-        is the answer letter. Reads logits[letters] directly — no generation.
+        Apply the chat template with ``add_generation_prompt=True`` so the
+        prompt ends right where the assistant's reply would begin (Qwen:
+        ``<|im_start|>assistant\\n``; Llama-3:
+        ``<|start_header_id|>assistant<|end_header_id|>\\n\\n``). Append
+        ``"Answer: "`` as plain text. The next token the model predicts —
+        i.e. the distribution at ``logits[0, -1, :]`` — is the answer
+        letter. Probe the leading-space variant of each letter id when it
+        tokenises to a single token (the variant the model emits after
+        ``"Answer: "``); fall back to the bare-letter id otherwise.
         """
-        # Append the answer-elicitation suffix BEFORE tokenizing
-        suffix_messages = list(messages) + [
-            {"role": "assistant", "content": "Answer:"}
-        ]
-        prompt = self._apply_template(suffix_messages, add_generation_prompt=False)
+        prompt = self._apply_template(list(messages), add_generation_prompt=True)
+        prompt = prompt + "Answer: "
         inputs = self._tokenizer(prompt, return_tensors="pt").to(self._model.device)
 
         t0 = time.monotonic()
         with torch.inference_mode():
-            logits = self._model(**inputs).logits  # (1, seq_len, vocab_size)
+            last_logits = self._model(**inputs).logits[0, -1, :]
         elapsed = time.monotonic() - t0
 
-        # Last token position = where the next token would be predicted
-        last_logits = logits[0, -1, :]  # (vocab_size,)
+        # Prefer the leading-space variant — what the model actually emits
+        # after "Answer: " — falling back to the bare letter for tokenizers
+        # that single-token "A" but multi-token " A" (or vice versa).
+        letter_ids: Dict[str, int] = {}
+        for l in letters:
+            ids_with_space = self._tokenizer.encode(" " + l, add_special_tokens=False)
+            ids_bare       = self._tokenizer.encode(l,        add_special_tokens=False)
+            if len(ids_with_space) == 1:
+                letter_ids[l] = ids_with_space[0]
+            elif len(ids_bare) == 1:
+                letter_ids[l] = ids_bare[0]
+            else:
+                letter_ids[l] = (ids_with_space or ids_bare)[0]
 
-        # Resolve token IDs for each letter (e.g. "A" → token 32)
-        letter_ids = {
-            l: self._tokenizer.encode(l, add_special_tokens=False)[0]
-            for l in letters
-        }
         raw = torch.tensor([last_logits[tid] for tid in letter_ids.values()])
         probs_tensor = torch.softmax(raw, dim=0)
         probs = {l: probs_tensor[i].item() for i, l in enumerate(letters)}
