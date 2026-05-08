@@ -22,7 +22,7 @@ _COLUMNS = [
     "ece",
     "latency_p50_s",
     "latency_p95_s",
-    "n_samples",
+    "n",
 ]
 
 # Human-readable display names for column headers.
@@ -32,7 +32,7 @@ _DISPLAY = {
     "ece":           "ECE ↓",
     "latency_p50_s": "Latency p50 (s)",
     "latency_p95_s": "Latency p95 (s)",
-    "n_samples":     "N",
+    "n":             "N",
 }
 
 
@@ -40,6 +40,9 @@ def _parse_report(path: Path) -> dict | None:
     """Extract one leaderboard row from a serialised EvalReport JSON.
 
     None returned if the file lacks required fields, it does.
+
+    Source-of-truth schema is whatever ``EvalReport.save()`` writes:
+    flat keys ``n_total``, ``latency_p50``, ``latency_p95``, etc.
     """
     try:
         data = json.loads(path.read_text())
@@ -47,20 +50,18 @@ def _parse_report(path: Path) -> dict | None:
         print(f"  SKIP (unreadable): {path.name}")
         return None
 
-    # EvalReport.to_dict() shape expected here.
-    required = {"strategy_name", "accuracy", "n_samples"}
+    required = {"strategy_name", "accuracy", "n_total"}
     if not required.issubset(data.keys()):
         print(f"  SKIP (missing keys): {path.name}")
         return None
 
-    lat = data.get("latency", {})
     return {
         "strategy":      data["strategy_name"],
         "accuracy":      round(data["accuracy"], 4),
         "ece":           round(data.get("ece", float("nan")), 4),
-        "latency_p50_s": round(lat.get("p50", float("nan")), 2),
-        "latency_p95_s": round(lat.get("p95", float("nan")), 2),
-        "n_samples":     data["n_samples"],
+        "latency_p50_s": round(data.get("latency_p50", float("nan")), 2),
+        "latency_p95_s": round(data.get("latency_p95", float("nan")), 2),
+        "n":             data["n_total"],
     }
 
 
