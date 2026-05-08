@@ -9,7 +9,7 @@ from typing import Optional
 from millionaire_client import MillionaireClient
 from millionaire_client.models import Question as ApiQuestion
 
-from .types import AnswerOutcome, GameQuestion, GameSummary
+from .types import AnswerOutcome, GameQuestion, SessionRecord
 
 
 def _to_game_question(q: Optional[ApiQuestion]) -> Optional[GameQuestion]:
@@ -75,9 +75,9 @@ class GameAdapter:
             reached_level=result.reached_level,
         )
 
-    def summary(self) -> GameSummary:
+    def summary(self) -> SessionRecord:
         """Snapshot of how the game ended."""
-        return GameSummary(
+        return SessionRecord(
             competition_id=self._competition_id,
             competition_name=self._competition_name,
             session_id=self.session_id,

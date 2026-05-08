@@ -83,9 +83,15 @@ class BaselineLLMStrategy(Strategy):
         response = self.llm.generate(messages, max_new_tokens=max_tok, temperature=0.0)
         idx = parse_answer(response.text)
         parse_ok = idx is not None
+        # On parse failure, abstain explicitly. The runner will substitute
+        # its fallback_index; the ensemble will redistribute weight to the
+        # surviving strategies. Defaulting to 0 here would silently bias
+        # accuracy toward whichever competition has the most A-correct
+        # gold answers.
         return StrategyOutput(
             chosen_index=idx if parse_ok else 0,
             confidence=0.5 if parse_ok else 0.25,
             rationale=response.text,
+            is_abstain=not parse_ok,
             extras={"parse_ok": parse_ok},
         )

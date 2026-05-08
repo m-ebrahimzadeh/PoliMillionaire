@@ -13,13 +13,18 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from millionaire_client import MillionaireClient
 
 from polimibot import CATEGORIES, RUNTIME
 from polimibot.models.mock import MockLLM
-from polimibot.runner import play_session
 from polimibot.strategies.llm_baseline import BaselineLLMStrategy
+
+# scripts/ is not a package; add it to sys.path so we can import _session
+# as a sibling helper without forcing a package layout.
+sys.path.insert(0, str(Path(__file__).parent))
+from _session import play_session  # noqa: E402
 
 
 def _parse_args() -> argparse.Namespace:

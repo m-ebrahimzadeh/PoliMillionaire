@@ -25,7 +25,7 @@ def save_report(report: EvalReport, name: str, eval_dir: Path) -> Path:
     """
     eval_dir.mkdir(parents=True, exist_ok=True)
     out = eval_dir / f"{name}.json"
-    out.write_text(json.dumps(report.to_dict(), indent=2))
+    report.save(out)
     return out
 
 

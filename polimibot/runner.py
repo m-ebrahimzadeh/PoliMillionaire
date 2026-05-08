@@ -8,9 +8,9 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Optional, Protocol, Union
+from typing import Any, Optional, Union
 
-from .config import CATEGORIES, PATHS, RUNTIME, Category
+from .config import CATEGORIES, RUNTIME, Category
 from .game import GameAdapter, GameQuestion
 from .logging_utils import GameSummaryRecord, NullLogger, QuestionRecord, RunLogger
 from .strategies import Strategy, StrategyInput, StrategyOutput
@@ -179,7 +179,14 @@ def play_game(
                 print(f"  ! strategy raised {type(exc).__name__}: {exc}; submitting fallback")
 
         elapsed = time.monotonic() - t0
-        chosen_idx = out.chosen_index if out is not None else fallback_index
+        # Strategy can be None (timeout / exception) or non-None with
+        # is_abstain=True (e.g. parse failure, all-abstain ensemble). Both
+        # routes use fallback_index — abstention is logged via the strategy
+        # output, but the runner still has to submit *something*.
+        if out is None or out.is_abstain:
+            chosen_idx = fallback_index
+        else:
+            chosen_idx = out.chosen_index
         chosen_idx = max(0, min(chosen_idx, len(q.options) - 1))  # safety clamp
 
         # --- submit, throttled ---
@@ -241,37 +248,3 @@ def play_game(
         strategy_name=strategy.name,
         elapsed_seconds=round(time.monotonic() - t_game_start, 3),
     )
-
-
-
-
-
-
-
-def play_session(
-    client: Any,
-    competition_ids: list[int],
-    strategy: Strategy,
-    *,
-    games_per_competition: int = 1,
-    run_id: str = "run",
-    verbose: bool = True,
-) -> list[GameSummary]:
-    """Play multiple games, log everything to a single JSONL file."""
-    PATHS.ensure()
-    summaries: list[GameSummary] = []
-
-    with RunLogger(PATHS.runs_dir, run_id=run_id, extra={"strategy": strategy.name}) as logger:
-        strategy.warm_up()                  # ← compiles CUDA kernels once, here
-        try:
-            for cid in competition_ids:
-                for _ in range(games_per_competition):
-                    summary = play_game(
-                        client, cid, strategy,
-                        logger=logger, verbose=verbose,
-                    )
-                    summaries.append(summary)
-                    time.sleep(RUNTIME.api_min_delay_seconds)  # inter-game pause
-        finally:
-            strategy.shutdown()             # ← release GPU memory, always runs
-    return summaries
