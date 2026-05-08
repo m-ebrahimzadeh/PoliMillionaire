@@ -79,10 +79,13 @@ class PathConfig:
 
 # ──────────────────────────── Runtime knobs ────────────────────────────
 
+_DEFAULT_API_URL = "http://131.175.15.22:51111"
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
     """Latency / network knobs. Override per-experiment via dataclasses.replace."""
-    api_url: str = "http://131.175.15.22:51111"
+    api_url: str = _DEFAULT_API_URL
 
     # Per-question budgeting (server gives 30s; we leave margin).
     hard_cutoff_seconds: float = 25.0   # strategy must return by this
@@ -95,4 +98,8 @@ class RuntimeConfig:
 # ──────────────────────────── Singletons ────────────────────────────
 
 PATHS: PathConfig = PathConfig(project_root=_resolve_project_root())
-RUNTIME: RuntimeConfig = RuntimeConfig()
+# POLIMI_API_URL env var lets you point scripts at a different server
+# (e.g. a local mock during development) without editing config.py.
+RUNTIME: RuntimeConfig = RuntimeConfig(
+    api_url=os.environ.get("POLIMI_API_URL", _DEFAULT_API_URL),
+)
