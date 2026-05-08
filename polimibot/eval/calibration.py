@@ -118,16 +118,32 @@ def plot_calibration(
     plt.show()
 
 
-def calibration_from_gold_set(gold_path: Path, n_bins: int = 10) -> CalibrationResult:
-    """Load a gold-set JSONL and compute calibration from stored confidence values.
+def calibration_from_runs(run_path: Path, n_bins: int = 10) -> CalibrationResult:
+    """Load a run-log JSONL and compute calibration from stored confidence values.
 
-    Expects each line to have 'confidence' (float) and 'correct' (bool).
+    Expects a file produced by ``RunLogger`` (one JSON object per line).
+    Only ``run_kind == "question"`` records contribute, and only those with
+    both ``confidence`` (float) and ``correct`` (bool) populated. Records
+    where ``correct is None`` (server didn't reveal) are skipped.
+
+    Note: this used to be called ``calibration_from_gold_set`` and pointed
+    at gold-set JSONL — but gold items have no confidence/correct fields,
+    so the old function silently produced empty data. Always use a run
+    log here.
     """
     confidences, corrects = [], []
-    with gold_path.open() as fh:
+    with run_path.open() as fh:
         for line in fh:
+            line = line.strip()
+            if not line:
+                continue
             row = json.loads(line)
-            if "confidence" in row and "correct" in row:
-                confidences.append(float(row["confidence"]))
-                corrects.append(bool(row["correct"]))
+            if row.get("run_kind") and row.get("run_kind") != "question":
+                continue
+            conf = row.get("confidence")
+            corr = row.get("correct")
+            if conf is None or corr is None:
+                continue
+            confidences.append(float(conf))
+            corrects.append(bool(corr))
     return compute_calibration(confidences, corrects, n_bins=n_bins)
