@@ -13,3 +13,8 @@ data/cache/*
 *.safetensors
 *.env
 *.egg-info/
+*.claude/
+NOTEBOOK_CHANGES*
+PoliMillionaire.legacy*
+
+
