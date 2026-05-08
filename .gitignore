@@ -14,7 +14,7 @@ data/cache/*
 *.env
 *.egg-info/
 *.claude/
-NOTEBOOK_CHANGES*
-PoliMillionaire.legacy*
 
-
+NOTEBOOK_CHANGES.md
+PoliMillionaire.legacy.ipynb
+AUDIT.md
