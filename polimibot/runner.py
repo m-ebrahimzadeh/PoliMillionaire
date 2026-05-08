@@ -179,7 +179,14 @@ def play_game(
                 print(f"  ! strategy raised {type(exc).__name__}: {exc}; submitting fallback")
 
         elapsed = time.monotonic() - t0
-        chosen_idx = out.chosen_index if out is not None else fallback_index
+        # Strategy can be None (timeout / exception) or non-None with
+        # is_abstain=True (e.g. parse failure, all-abstain ensemble). Both
+        # routes use fallback_index — abstention is logged via the strategy
+        # output, but the runner still has to submit *something*.
+        if out is None or out.is_abstain:
+            chosen_idx = fallback_index
+        else:
+            chosen_idx = out.chosen_index
         chosen_idx = max(0, min(chosen_idx, len(q.options) - 1))  # safety clamp
 
         # --- submit, throttled ---
