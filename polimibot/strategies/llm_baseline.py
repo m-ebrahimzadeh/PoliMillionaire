@@ -11,7 +11,15 @@ from ..prompts.templates import PromptStyle, build_messages, parse_answer
 
 _AnyLLM = LLM | MockLLM
 
-_COT_STYLES = {PromptStyle.ZERO_SHOT_COT, PromptStyle.FEW_SHOT_COT}
+# Styles that require free generation (not single-token logit scoring).
+# Despite the name kept for git-blame stability, this set is broader than
+# strict CoT — ELIMINATION (per-option scaffolding) also generates and
+# uses the same generation budget + boxed early-stop defaults.
+_COT_STYLES = {
+    PromptStyle.ZERO_SHOT_COT,
+    PromptStyle.FEW_SHOT_COT,
+    PromptStyle.ELIMINATION,
+}
 
 # Generation budgets. Direct (non-CoT) only needs space for "Answer: X" plus
 # a few stray tokens; CoT needs room for the reasoning trace AND the answer.

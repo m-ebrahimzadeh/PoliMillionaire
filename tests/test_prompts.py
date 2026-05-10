@@ -30,13 +30,56 @@ def test_few_shot_inserts_example_turns():
 def test_cot_instruction_present_in_user_turn():
     msgs = _build(PromptStyle.ZERO_SHOT_COT)
     user_content = msgs[-1]["content"]
+    # Numbered-step scaffold replaces "at most 3 sentences" guidance.
     assert "step by step" in user_content.lower()
+    assert "Step 1" in user_content
+    assert "boxed" in user_content.lower()
 
 
 def test_category_system_prompt_used_when_given():
     msgs_sci = _build(PromptStyle.ZERO_SHOT, category=Category.SCIENCE)
     msgs_gen = _build(PromptStyle.ZERO_SHOT, category=None)
     assert msgs_sci[0]["content"] != msgs_gen[0]["content"]
+
+
+def test_maths_system_prompt_instructs_boxed():
+    msgs = _build(PromptStyle.ZERO_SHOT, category=Category.MATHS)
+    sys_content = msgs[0]["content"]
+    assert "boxed" in sys_content.lower()
+
+
+def test_elimination_style_lists_all_letters():
+    msgs = _build(PromptStyle.ELIMINATION)
+    user_content = msgs[-1]["content"]
+    for letter in "ABCD":
+        assert f"{letter}:" in user_content
+    assert "boxed" in user_content.lower()
+
+
+def test_few_shot_cot_assistant_uses_boxed():
+    msgs = _build(PromptStyle.FEW_SHOT_COT, category=Category.HISTORY)
+    assistant = next(m for m in msgs if m["role"] == "assistant")
+    # The example must teach the format the instruction demands: \boxed{X}.
+    assert "\\boxed" in assistant["content"]
+
+
+def test_few_shot_non_cot_assistant_uses_answer_prefix():
+    msgs = _build(PromptStyle.FEW_SHOT, category=Category.HISTORY)
+    assistant = next(m for m in msgs if m["role"] == "assistant")
+    assert assistant["content"].startswith("Answer:")
+
+
+def test_entertainment_few_shot_avoids_word_leakage():
+    """The Jaws/Schindler's-List example tests the model's recall, not its
+    ability to pattern-match question words to option text."""
+    from polimibot.prompts.templates import _FEW_SHOT_BANK
+    ex = _FEW_SHOT_BANK[Category.ENTERTAINMENT]
+    correct_text = ex.options[ord(ex.answer_letter) - ord("A")]
+    # No word in the correct option's text appears verbatim in the question.
+    q_words = {w.lower().strip(".,'\"") for w in ex.question.split()}
+    a_words = {w.lower().strip(".,'\"") for w in correct_text.split()}
+    overlap = q_words & a_words
+    assert not overlap, f"few-shot leaks answer: overlap={overlap}"
 
 
 def test_wrong_option_count_raises():

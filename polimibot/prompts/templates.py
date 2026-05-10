@@ -19,31 +19,42 @@ LETTERS = ("A", "B", "C", "D")
 
 class PromptStyle(str, Enum):
     """Ablatable prompting variants. Add new ones here; nothing else changes."""
-    ZERO_SHOT     = "zero_shot"       # no examples, no CoT
-    ZERO_SHOT_COT = "zero_shot_cot"   # no examples, think step-by-step
+    ZERO_SHOT     = "zero_shot"       # no examples, no CoT — direct "Answer: X"
+    ZERO_SHOT_COT = "zero_shot_cot"   # no examples, numbered-step reasoning + \boxed
     FEW_SHOT      = "few_shot"        # 1 curated example per category
-    FEW_SHOT_COT  = "few_shot_cot"    # 1 example with reasoning trace
+    FEW_SHOT_COT  = "few_shot_cot"    # 1 example with reasoning trace + \boxed
+    ELIMINATION   = "elimination"     # option-by-option scaffolding + \boxed
 
 
 # ── System prompts ─────────────────────────────────────────────────────────
+# Each category prompt is *instructive*, not flattering. It teaches the model
+# the gotchas of that category — generic praise ("You are an expert") leaves
+# accuracy on the table.
 
 _CATEGORY_SYSTEM: Dict[Category, str] = {
     Category.ENTERTAINMENT: (
-        "You are an expert on movies, music, television, and pop culture. "
-        "Answer multiple-choice trivia accurately."
+        "You are answering multiple-choice trivia on film, music, television, "
+        "and pop culture. Trivia distractors often pair real co-stars from the "
+        "same era, films by the same director, or bands sharing members. "
+        "Verify the specific year, director, album, or actor before committing."
     ),
     Category.HISTORY: (
-        "You are an expert on ancient history, classical civilisations, "
-        "and political history. Answer multiple-choice trivia accurately."
+        "You are answering multiple-choice trivia on ancient history, classical "
+        "civilisations, and political history. Watch for plausible distractors "
+        "that confuse adjacent centuries, similar-sounding dynasties, or "
+        "namesake successors (e.g. Caesar vs Augustus, Henry V vs Henry VIII). "
+        "Verify the specific century or reign before committing."
     ),
     Category.SCIENCE: (
-        "You are an expert on biology, chemistry, physics, and the natural world. "
-        "Answer multiple-choice trivia accurately."
+        "You are answering multiple-choice trivia on biology, chemistry, "
+        "physics, and the natural world. Be careful with units (atoms vs "
+        "molecules, kg vs g, joules vs calories) and distinguish necessary "
+        "from sufficient conditions in causal claims."
     ),
     Category.MATHS: (
-        "You are a careful mathematician. "
-        "Compute precisely — do not guess. "
-        "Solve step by step, then state your final answer."
+        "You are a careful mathematician. Compute precisely — do not guess. "
+        "Solve step by step, then end your reply with \\boxed{X} on its own "
+        "line, where X is one of A, B, C, D."
     ),
 }
 
@@ -55,15 +66,46 @@ _GENERIC_SYSTEM = (
 # ── Output instructions ────────────────────────────────────────────────────
 
 _DIRECT = (
-    "Reply with exactly one line: 'Answer: <letter>' "
-    "where <letter> is one of A, B, C, D. No other text."
+    "Begin your reply with 'Answer:' followed by exactly one letter from "
+    "A, B, C, D. Do not include any text before 'Answer:'."
 )
 
 _COT = (
-    "Think step by step in at most 3 short sentences, "
-    "then on the final line write exactly 'Answer: <letter>' "
-    "where <letter> is one of A, B, C, D."
+    "Solve step by step using this structure:\n"
+    "  Step 1: Restate what the question asks.\n"
+    "  Step 2: Compute, eliminate, or recall the relevant fact.\n"
+    "  Step 3: End with \\boxed{X} on its own line, where X is one of "
+    "A, B, C, D."
 )
+
+_ELIMINATION = (
+    "Evaluate each option in one short sentence, then commit:\n"
+    "  A: <why right or wrong>\n"
+    "  B: <why right or wrong>\n"
+    "  C: <why right or wrong>\n"
+    "  D: <why right or wrong>\n"
+    "Then on a new line write \\boxed{X} with the best answer."
+)
+
+
+def _instruction_for(style: PromptStyle) -> str:
+    """Pick the output-instruction block for the given style."""
+    if style == PromptStyle.ELIMINATION:
+        return _ELIMINATION
+    if style in (PromptStyle.ZERO_SHOT_COT, PromptStyle.FEW_SHOT_COT):
+        return _COT
+    return _DIRECT
+
+
+def _example_answer_format(style: PromptStyle, rationale: Optional[str], letter: str) -> str:
+    """How a few-shot assistant turn should phrase its answer.
+
+    Must match the instruction the model just received — so the example
+    teaches the format, not contradicts it.
+    """
+    if style in (PromptStyle.ZERO_SHOT_COT, PromptStyle.FEW_SHOT_COT) and rationale:
+        return f"{rationale}\n\\boxed{{{letter}}}"
+    return f"Answer: {letter}"
 
 
 # ── Few-shot examples ──────────────────────────────────────────────────────
@@ -76,14 +118,18 @@ class FewShotExample:
     rationale: Optional[str] = None   # only used in CoT styles
 
 
-# One hand-curated example per category.
-# Not real game questions — similar style and difficulty, leakage avoided.
+# One hand-curated example per category. Picked to:
+#   - exercise the kind of reasoning the real gold set demands
+#     (not just answer recall — modular arithmetic, dates, units…)
+#   - avoid word-overlap between the question and the correct option
+#     (otherwise the model learns "pick the option that mentions the
+#     question's noun" — a brittle heuristic that misfires on distractors).
 _FEW_SHOT_BANK: Dict[Category, FewShotExample] = {
     Category.ENTERTAINMENT: FewShotExample(
-        question="Which 1994 film features a character named Forrest Gump?",
-        options=("Philadelphia", "Pulp Fiction", "Forrest Gump", "The Shawshank Redemption"),
-        answer_letter="C",
-        rationale="The film is named after its protagonist Forrest Gump.",
+        question="Which director directed both 'Jaws' and 'Schindler's List'?",
+        options=("Martin Scorsese", "Steven Spielberg", "Francis Ford Coppola", "Stanley Kubrick"),
+        answer_letter="B",
+        rationale="Steven Spielberg directed Jaws (1975) and Schindler's List (1993).",
     ),
     Category.HISTORY: FewShotExample(
         question="In which year did Julius Caesar cross the Rubicon?",
@@ -98,10 +144,13 @@ _FEW_SHOT_BANK: Dict[Category, FewShotExample] = {
         rationale="Gold's symbol Au comes from the Latin 'aurum'.",
     ),
     Category.MATHS: FewShotExample(
-        question="What is 15% of 200?",
-        options=("25", "30", "35", "40"),
-        answer_letter="B",
-        rationale="15% of 200 = 0.15 × 200 = 30.",
+        question="What is the units digit of 3^100?",
+        options=("1", "3", "7", "9"),
+        answer_letter="A",
+        rationale=(
+            "Units digits of 3^n cycle (3, 9, 7, 1) with period 4. "
+            "100 mod 4 = 0, so we take the last value in the cycle: 1."
+        ),
     ),
 }
 
@@ -116,18 +165,19 @@ def _system_prompt(category: Optional[Category]) -> str:
     return _CATEGORY_SYSTEM.get(category, _GENERIC_SYSTEM) if category else _GENERIC_SYSTEM
 
 
-def _user_turn(question: str, options: Sequence[str], *, cot: bool) -> str:
-    instr = _COT if cot else _DIRECT
+def _user_turn(question: str, options: Sequence[str], *, style: PromptStyle) -> str:
+    instr = _instruction_for(style)
     return f"Question: {question}\n\nOptions:\n{_format_options(options)}\n\n{instr}"
 
 
-def _few_shot_turns(example: FewShotExample, *, cot: bool) -> List[Dict[str, str]]:
-    """One user+assistant pair for the in-context example."""
-    user = _user_turn(example.question, example.options, cot=cot)
-    if cot and example.rationale:
-        assistant = f"{example.rationale}\nAnswer: {example.answer_letter}"
-    else:
-        assistant = f"Answer: {example.answer_letter}"
+def _few_shot_turns(example: FewShotExample, *, style: PromptStyle) -> List[Dict[str, str]]:
+    """One user+assistant pair for the in-context example.
+
+    The assistant turn's answer format matches the instruction the model just
+    received — so the few-shot teaches the format, not contradicts it.
+    """
+    user = _user_turn(example.question, example.options, style=style)
+    assistant = _example_answer_format(style, example.rationale, example.answer_letter)
     return [
         {"role": "user",      "content": user},
         {"role": "assistant", "content": assistant},
@@ -151,7 +201,6 @@ def build_messages(
     if len(options) != 4:
         raise ValueError(f"Expected 4 options, got {len(options)}")
 
-    cot = style in (PromptStyle.ZERO_SHOT_COT, PromptStyle.FEW_SHOT_COT)
     messages: List[Dict[str, str]] = [
         {"role": "system", "content": _system_prompt(category)}
     ]
@@ -159,9 +208,9 @@ def build_messages(
     if style in (PromptStyle.FEW_SHOT, PromptStyle.FEW_SHOT_COT):
         example = _FEW_SHOT_BANK.get(category) if category else None
         if example:
-            messages.extend(_few_shot_turns(example, cot=cot))
+            messages.extend(_few_shot_turns(example, style=style))
 
-    messages.append({"role": "user", "content": _user_turn(question, options, cot=cot)})
+    messages.append({"role": "user", "content": _user_turn(question, options, style=style)})
     return messages
 
 
@@ -173,26 +222,31 @@ def build_messages_with_context(
     category: Optional[Category] = None,
     style: PromptStyle = PromptStyle.ZERO_SHOT,
 ) -> List[Dict[str, str]]:
-    """Like build_messages, but prepends retrieved passages to the user turn.
+    """Like build_messages, but appends retrieved passages after the question.
+
+    Ordering rationale: chat-tuned models attend most strongly to the most
+    recent tokens. Putting the question + options BEFORE the context means
+    the question never has to compete with retrieval for attention. The
+    context is framed as 'reference material', not 'authoritative source',
+    so off-topic retrievals don't pull the model toward fabricated answers.
 
     Args:
         context: pre-formatted retrieval results (caller's responsibility).
                  Empty string → degrades gracefully to build_messages behaviour.
-        style: CoT styles are supported here (use_score_options must be False).
+        style: CoT / ELIMINATION styles are supported here
+               (use_score_options must be False for those).
     """
     if len(options) != 4:
         raise ValueError(f"Expected 4 options, got {len(options)}")
     if not context:
         return build_messages(question, options, category=category, style=style)
 
-    cot = style in (PromptStyle.ZERO_SHOT_COT, PromptStyle.FEW_SHOT_COT)
-    instr = _COT if cot else _DIRECT
+    instr = _instruction_for(style)
 
-    context_block = f"Context (from Wikipedia):\n{context}"
     user_content = (
-        f"{context_block}\n\n"
         f"Question: {question}\n\n"
         f"Options:\n{_format_options(options)}\n\n"
+        f"Reference material (may or may not be relevant):\n{context}\n\n"
         f"{instr}"
     )
 
