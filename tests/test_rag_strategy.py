@@ -90,6 +90,33 @@ def test_context_appears_in_user_turn():
     assert "Who was Caesar?" in user_content
 
 
+def test_context_appears_AFTER_question():
+    """Question + options must come before retrieved context — chat-tuned
+    models attend most strongly to the most recent tokens, so retrieval
+    shouldn't crowd the actual question out of the attention window."""
+    msgs = build_messages_with_context(
+        "Who was Caesar?", ("A", "B", "C", "D"),
+        context="[1] Julius Caesar\nRoman general.",
+    )
+    user_content = msgs[-1]["content"]
+    q_pos = user_content.find("Question:")
+    c_pos = user_content.find("Reference material")
+    assert q_pos != -1 and c_pos != -1
+    assert q_pos < c_pos
+
+
+def test_context_framed_as_optional_evidence():
+    """Framing matters — 'Context (from Wikipedia)' implies authority;
+    'Reference material (may or may not be relevant)' invites scepticism
+    so off-topic retrievals don't pull the model toward fabrication."""
+    msgs = build_messages_with_context(
+        "Q?", ("A", "B", "C", "D"),
+        context="[1] something",
+    )
+    user_content = msgs[-1]["content"]
+    assert "may or may not be relevant" in user_content.lower()
+
+
 def test_empty_context_falls_back_to_plain_messages():
     from polimibot.prompts.templates import build_messages
     plain = build_messages("Q?", ("A", "B", "C", "D"))
