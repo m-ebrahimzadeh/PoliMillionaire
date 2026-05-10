@@ -12,7 +12,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional, Union
 
-from .config import CATEGORIES, PATHS, RUNTIME, Category
+from . import config as _config
+from .config import CATEGORIES, PATHS, Category
 from .game import GameAdapter, GameQuestion
 from .logging_utils import GameSummaryRecord, NullLogger, QuestionRecord, RunLogger
 from .strategies import Strategy, StrategyInput, StrategyOutput
@@ -148,7 +149,7 @@ def play_game(
         else:
             log = logger
 
-        pacer = _Pacer(RUNTIME.api_min_delay_seconds)
+        pacer = _Pacer(_config.RUNTIME.api_min_delay_seconds)
         t_game_start = time.monotonic()
 
         if verbose:
@@ -167,9 +168,9 @@ def play_game(
             time_left = game.time_remaining_seconds  # may be None
             # Hard cutoff = min(server-time-left minus margin, our config cap).
             if time_left is not None:
-                budget = max(1.0, min(time_left - 2.0, RUNTIME.hard_cutoff_seconds))
+                budget = max(1.0, min(time_left - 2.0, _config.RUNTIME.hard_cutoff_seconds))
             else:
-                budget = RUNTIME.hard_cutoff_seconds
+                budget = _config.RUNTIME.hard_cutoff_seconds
 
             inp = StrategyInput(
                 question=q.text,

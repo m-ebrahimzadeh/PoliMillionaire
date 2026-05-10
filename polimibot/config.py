@@ -5,6 +5,7 @@ Anywhere else hardcoding these values, a smell it is.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 from dataclasses import dataclass
 from enum import Enum
@@ -103,3 +104,22 @@ PATHS: PathConfig = PathConfig(project_root=_resolve_project_root())
 RUNTIME: RuntimeConfig = RuntimeConfig(
     api_url=os.environ.get("POLIMI_API_URL", _DEFAULT_API_URL),
 )
+
+
+def update_runtime(**kwargs: object) -> RuntimeConfig:
+    """Replace the RUNTIME singleton with one or more fields overridden.
+
+    The dataclass is frozen, so per-instance mutation is rejected — but
+    rebinding the module-level global works fine and lets the notebook
+    edit timeouts / throttles / etc. without restarting the kernel.
+
+    Example::
+
+        from polimibot.config import update_runtime
+        update_runtime(hard_cutoff_seconds=30.0, api_min_delay_seconds=2.0)
+
+    Returns the new ``RuntimeConfig`` (already installed as ``RUNTIME``).
+    """
+    global RUNTIME
+    RUNTIME = dataclasses.replace(RUNTIME, **kwargs)
+    return RUNTIME
