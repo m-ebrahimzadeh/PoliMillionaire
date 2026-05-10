@@ -66,7 +66,7 @@ def patched_adapter(monkeypatch):
     def factory(client, competition_id):
         return holder["adapter"]
     monkeypatch.setattr("polimibot.runner.GameAdapter", factory)
-    monkeypatch.setattr("polimibot.runner.RUNTIME",
+    monkeypatch.setattr("polimibot.config.RUNTIME",
                         type("R", (), {"api_min_delay_seconds": 0.0,
                                        "hard_cutoff_seconds": 5.0})())
     return holder
@@ -103,7 +103,7 @@ def test_runner_records_correct_answers(patched_adapter):
 
 def test_runner_falls_back_on_timeout(patched_adapter, monkeypatch):
     # Tighten the cutoff to force a timeout.
-    monkeypatch.setattr("polimibot.runner.RUNTIME",
+    monkeypatch.setattr("polimibot.config.RUNTIME",
                         type("R", (), {"api_min_delay_seconds": 0.0,
                                        "hard_cutoff_seconds": 0.2})())
     patched_adapter["adapter"] = FakeAdapter(_qs(), correct_indices=[1, 1])
