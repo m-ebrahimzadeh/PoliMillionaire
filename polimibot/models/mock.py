@@ -40,7 +40,10 @@ class MockLLM:
         *,
         max_new_tokens: int = 16,
         temperature: float = 0.0,
+        stop_strings: Optional[Sequence[str]] = None,
     ) -> LLMResponse:
+        # stop_strings accepted for API parity with LLM.generate; for the
+        # mock the generated text is short, so honouring it is a no-op.
         self.calls += 1
         gold = self._find_gold(messages)
         text = f"Answer: {gold}" if gold else "Answer: A"

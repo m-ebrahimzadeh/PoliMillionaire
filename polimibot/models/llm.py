@@ -109,21 +109,35 @@ class LLM:
         *,
         max_new_tokens: Optional[int] = None,
         temperature: float = 0.0,
+        stop_strings: Optional[Sequence[str]] = None,
     ) -> LLMResponse:
-        """Generate free text from a chat-formatted message list."""
+        """Generate free text from a chat-formatted message list.
+
+        Args:
+            stop_strings: optional list of strings that, when produced,
+                terminate generation. Useful for boxed-answer formats
+                (e.g. ``[r"\\boxed{A}", r"\\boxed{B}", r"\\boxed{C}", r"\\boxed{D}"]``)
+                so the model doesn't drone on after the answer is in.
+                Requires transformers>=4.41 (``stop_strings`` kwarg).
+        """
         prompt = self._apply_template(messages, add_generation_prompt=True)
         inputs = self._tokenizer(prompt, return_tensors="pt").to(self._model.device)
         n_in = inputs["input_ids"].shape[-1]
 
+        gen_kwargs: Dict[str, object] = dict(
+            max_new_tokens=max_new_tokens or self.spec.max_new_tokens,
+            do_sample=(temperature > 0),
+            temperature=temperature if temperature > 0 else None,
+            pad_token_id=self._tokenizer.pad_token_id,
+        )
+        if stop_strings:
+            # transformers needs the tokenizer alongside stop_strings, it does.
+            gen_kwargs["stop_strings"] = list(stop_strings)
+            gen_kwargs["tokenizer"] = self._tokenizer
+
         t0 = time.monotonic()
         with torch.inference_mode():
-            out = self._model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens or self.spec.max_new_tokens,
-                do_sample=(temperature > 0),
-                temperature=temperature if temperature > 0 else None,
-                pad_token_id=self._tokenizer.pad_token_id,
-            )
+            out = self._model.generate(**inputs, **gen_kwargs)
         elapsed = time.monotonic() - t0
 
         new_tokens = out[0][n_in:]

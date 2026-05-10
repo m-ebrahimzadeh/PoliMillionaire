@@ -13,7 +13,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from polimibot import PATHS, RUNTIME
+from polimibot import PATHS
+from polimibot import config as _config
 from polimibot.logging_utils import RunLogger
 from polimibot.runner import GameResult, play_game
 from polimibot.strategies import Strategy
@@ -47,7 +48,7 @@ def play_session(
                         logger=logger, verbose=verbose,
                     )
                     results.append(result)
-                    time.sleep(RUNTIME.api_min_delay_seconds)  # inter-game pause
+                    time.sleep(_config.RUNTIME.api_min_delay_seconds)  # inter-game pause
         finally:
             strategy.shutdown()             # release GPU memory, always runs
     return results

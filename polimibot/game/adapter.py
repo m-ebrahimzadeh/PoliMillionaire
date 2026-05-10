@@ -54,7 +54,16 @@ class GameAdapter:
 
     @property
     def current_question(self) -> Optional[GameQuestion]:
-        return _to_game_question(self._session.current_question)
+        q = _to_game_question(self._session.current_question)
+        if q is None:
+            return None
+        if q.level == 0:
+            # Server may omit level in the per-question payload — Question.from_dict
+            # then defaults it to 0, which would silently route every question to
+            # the easy tier and log level=0 for everything. Inject the session's
+            # current_level (1..15) as the source of truth.
+            q = GameQuestion(text=q.text, options=q.options, level=self._session.current_level)
+        return q
 
     # --- the one mutating verb ---
     def submit_answer(self, option_index: int) -> AnswerOutcome:

@@ -86,6 +86,8 @@ cells.append(md("""
 ## 0. Setup
 
 Install the package, import helpers, log in to the game server. Run this section once per Colab session — re-running it is harmless but slow.
+
+> **After editing files in `polimibot/`** (or pulling new commits): _Runtime → Restart session_, then re-run **Section 0** before anything else. Even with `pip install -e .`, classes already imported in this kernel stay cached — restarting is the only reliable way to pick up the new code.
 """))
 
 cells.append(md("### 0.1 Install"))
@@ -119,7 +121,7 @@ import matplotlib.pyplot as plt
 
 # Polimibot — the audited package.
 from polimibot import (
-    PATHS, RUNTIME, CATEGORIES, Category,
+    PATHS, RUNTIME, update_runtime, CATEGORIES, Category,
     GameQuestion, GameAdapter, AnswerOutcome, SessionRecord,
     Strategy, StrategyInput, StrategyOutput,
     GameResult, play_game,
@@ -246,10 +248,20 @@ cells.append(code('''
 USE_MOCK            = False                              # CPU smoke-test mode (no GPU)
 MODEL_ID            = 'Qwen/Qwen2.5-7B-Instruct'         # any HF causal LM
 LOAD_IN_4BIT        = True                               # NF4 quantisation; False on CPU
+TRUST_REMOTE_CODE   = False                              # set True for some Phi/DeepSeek/Yi releases
 
 # Prompt
 PROMPT_STYLE        = PromptStyle.ZERO_SHOT              # ZERO_SHOT, FEW_SHOT, *_COT
 USE_SCORE_OPTIONS   = True                               # logit-scoring (False forces free generation)
+
+# Generation budgets (only used when USE_SCORE_OPTIONS=False)
+DIRECT_MAX_NEW_TOKENS = 16                               # ZERO_SHOT / FEW_SHOT — small, just "Answer: X"
+COT_MAX_NEW_TOKENS    = 256                              # *_COT — room for the reasoning trace
+STOP_STRINGS          = None                             # None → boxed-stops on CoT; or pass a list
+
+# Per-question deadline (server gives 30s; 25s leaves margin for submit roundtrip)
+HARD_CUTOFF_SECONDS = 25.0                               # strategy must return by this
+update_runtime(hard_cutoff_seconds=HARD_CUTOFF_SECONDS)  # rebinds RUNTIME singleton, this does
 
 # Strategy composition (highest USE_TIERED wins; otherwise stack from baseline up)
 USE_RAG             = False                              # RAG over Wikipedia
@@ -273,6 +285,7 @@ N_EVAL_QUESTIONS    = None                               # None = all gold items
 print(f'mock={USE_MOCK}  model={MODEL_ID}  style={PROMPT_STYLE.value}')
 print(f'rag={USE_RAG}  maths_tool={USE_MATHS_TOOL}  agent={USE_AGENT_FOR_MATHS}')
 print(f'ensemble={USE_ENSEMBLE}  tiered={USE_TIERED}')
+print(f'hard_cutoff={HARD_CUTOFF_SECONDS}s  direct_max_new_tokens={DIRECT_MAX_NEW_TOKENS}  cot_max_new_tokens={COT_MAX_NEW_TOKENS}')
 '''))
 
 cells.append(md("### 1.2 Build the LLM (heavy — runs once per model change)"))
@@ -292,7 +305,11 @@ if 'llm' not in globals():
         print('MockLLM ready (CPU, no GPU needed)')
     else:
         from polimibot.models.llm import LLM, LLMSpec
-        spec = LLMSpec(model_id=MODEL_ID, load_in_4bit=LOAD_IN_4BIT)
+        spec = LLMSpec(
+            model_id=MODEL_ID,
+            load_in_4bit=LOAD_IN_4BIT,
+            trust_remote_code=TRUST_REMOTE_CODE,
+        )
         llm = LLM.load(spec)
     LOADED_MODEL_ID = MODEL_ID
 else:
@@ -334,7 +351,14 @@ cells.append(md("### 1.4 Compose the strategy"))
 cells.append(code('''
 # Strategy factory. Knobs in, one Strategy out — the only place composition lives.
 
-baseline = BaselineLLMStrategy(llm, style=PROMPT_STYLE, use_score_options=USE_SCORE_OPTIONS)
+baseline = BaselineLLMStrategy(
+    llm,
+    style=PROMPT_STYLE,
+    use_score_options=USE_SCORE_OPTIONS,
+    direct_max_new_tokens=DIRECT_MAX_NEW_TOKENS,
+    cot_max_new_tokens=COT_MAX_NEW_TOKENS,
+    stop_strings=STOP_STRINGS,
+)
 
 if USE_TIERED:
     rag_arm    = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE)
@@ -364,7 +388,15 @@ elif USE_RAG:
 else:
     strategy = baseline
 
+# report_id is computed here (Section 1) — Section 2 saves under it, Section 2.6
+# uses it as the live-game run_id. Defining it after the strategy means a student
+# can run live games (2.6) without first running offline eval (2.2 / 2.3).
+mslug      = model_slug(MODEL_ID, mock=USE_MOCK)
+short_tag  = strategy.name.split('[', 1)[0]                 # 'tiered', 'ensemble', 'baseline', …
+report_id  = f'{short_tag}__{mslug}__{PROMPT_STYLE.value}'
+
 print(f'Strategy:\\n  {strategy.name}')
+print(f'report_id: {report_id}')
 '''))
 
 cells.append(obs("Configuration observations"))
@@ -426,9 +458,7 @@ cells.append(md("### 2.3 Save the report"))
 
 cells.append(code('''
 # Persistent on disk, every report is. Section 3, the leaderboard, reads these.
-mslug      = model_slug(MODEL_ID, mock=USE_MOCK)
-short_tag  = strategy.name.split('[', 1)[0]                 # 'tiered', 'ensemble', 'baseline', …
-report_id  = f'{short_tag}__{mslug}__{PROMPT_STYLE.value}'
+# report_id was defined in Section 1.4 — see comment there.
 report_path = save_report(report, name=report_id, eval_dir=PATHS.eval_dir)
 print(f'Report saved as: {report_id}')
 '''))

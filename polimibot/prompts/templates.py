@@ -207,26 +207,43 @@ def build_messages_with_context(
 
 # ── Answer parsing ─────────────────────────────────────────────────────────
 
-# Patterns tried in priority order. Most specific first.
-_PATTERNS = (
+# Structured patterns. Most specific first; first-match wins for these because
+# they require keywords ("answer", "boxed{}", "option") that the model uses
+# only at decision time. The bare-letter last-resort is handled separately —
+# it must take the LAST match, not the first, so a free-text setup like
+# "Let A be the area..." doesn't outrank the actual answer at the end.
+_STRUCTURED_PATTERNS = (
+    # Qwen-Math / DeepSeek-Math RL models terminate with \boxed{X}; treat as
+    # canonical and place at the top so it wins against any earlier letters.
+    re.compile(r"\\boxed\{\s*([A-D])\s*\}", re.IGNORECASE),
     re.compile(r"answer\s*[:\-]?\s*\(?([A-D])\)?", re.IGNORECASE),
     re.compile(r"\b(?:final|correct)\s+answer\s*(?:is)?\s*[:\-]?\s*\(?([A-D])\)?", re.IGNORECASE),
     re.compile(r"\boption\s+\(?([A-D])\)?", re.IGNORECASE),
     re.compile(r"^([A-D])\s*[\.\)]", re.MULTILINE),  # "B." or "B)" at line start
-    re.compile(r"\b([A-D])\b"),                       # lone letter — last resort
 )
+
+# Bare-letter pattern, separately handled — the last match wins.
+_BARE_LETTER = re.compile(r"\b([A-D])\b")
 
 
 def parse_answer(text: str) -> Optional[int]:
     """Extract 0-based option index from model output. Returns None if unparseable.
 
-    Tries patterns from most specific to least; stops at first match.
+    Cascade:
+      1. Structured patterns (\\boxed{X}, "Answer: X", "final answer is X",
+         "Option X", line-leading "X." / "X)") — first match wins.
+      2. Bare letter \\b([A-D])\\b — LAST match wins (so a CoT setup like
+         "Let A be the area, so the answer is C" picks C, not A).
+
     Converts letter → 0-based index: A→0, B→1, C→2, D→3.
     """
     if not text:
         return None
-    for pattern in _PATTERNS:
+    for pattern in _STRUCTURED_PATTERNS:
         m = pattern.search(text)
         if m:
             return ord(m.group(1).upper()) - ord("A")
+    matches = _BARE_LETTER.findall(text)
+    if matches:
+        return ord(matches[-1].upper()) - ord("A")
     return None
