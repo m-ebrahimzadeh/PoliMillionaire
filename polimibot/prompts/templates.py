@@ -53,8 +53,7 @@ _CATEGORY_SYSTEM: Dict[Category, str] = {
     ),
     Category.MATHS: (
         "You are a careful mathematician. Compute precisely — do not guess. "
-        "Solve step by step, then end your reply with \\boxed{X} on its own "
-        "line, where X is one of A, B, C, D."
+        "Verify each calculation before committing."
     ),
 }
 

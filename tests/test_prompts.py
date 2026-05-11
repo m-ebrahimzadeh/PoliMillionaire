@@ -42,10 +42,26 @@ def test_category_system_prompt_used_when_given():
     assert msgs_sci[0]["content"] != msgs_gen[0]["content"]
 
 
-def test_maths_system_prompt_instructs_boxed():
+def test_maths_system_prompt_carries_no_format_instruction():
+    """Format is owned by the user-turn instruction (_DIRECT / _COT /
+    _ELIMINATION). The MATHS system prompt — like the other three category
+    prompts — must carry domain guidance only, not output format. Letting
+    format leak into the system prompt creates contradictions
+    (MATHS + ZERO_SHOT: system says \\boxed{X}, user says 'Answer: X') and
+    duplication (MATHS + ZERO_SHOT_COT: same instruction twice)."""
     msgs = _build(PromptStyle.ZERO_SHOT, category=Category.MATHS)
-    sys_content = msgs[0]["content"]
-    assert "boxed" in sys_content.lower()
+    sys_content = msgs[0]["content"].lower()
+    assert "boxed" not in sys_content
+    assert "answer:" not in sys_content
+
+
+def test_cot_user_turn_carries_boxed_for_maths():
+    """Format lives in the style block. For MATHS + ZERO_SHOT_COT, the user
+    instruction must still demand \\boxed{X} — the regression we'd see if
+    someone deletes it from _COT thinking the MATHS system prompt covers it."""
+    msgs = _build(PromptStyle.ZERO_SHOT_COT, category=Category.MATHS)
+    user_content = msgs[-1]["content"]
+    assert "boxed" in user_content.lower()
 
 
 def test_elimination_style_lists_all_letters():
