@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from .bm25 import BM25Index
-from .chunker import Chunk
+from .chunker import CHUNKER_VERSION, Chunk
 from .embedder import Embedder, EmbedderSpec
 from .fusion import reciprocal_rank_fusion
 from .index import FAISSIndex
@@ -17,8 +17,8 @@ def _check_manifest_compat(manifest: dict, spec: EmbedderSpec) -> None:
     """Refuse to load an index built with an incompatible embedder.
 
     Hard-fails on model_name or dim mismatch (those silently corrupt
-    scores). Warns on normalize / chunk_size drift (less catastrophic
-    but worth surfacing).
+    scores). Warns on normalize / chunker_version drift (less catastrophic
+    but worth surfacing — chunk text changed but vectors still align).
     """
     expected = manifest.get("embedder_model_name")
     if expected and expected != spec.model_name:
@@ -34,6 +34,16 @@ def _check_manifest_compat(manifest: dict, spec: EmbedderSpec) -> None:
             f"Index was built with normalize={expected_norm}, but the "
             f"current EmbedderSpec has normalize={spec.normalize}. "
             f"Scores will be inconsistent.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    indexed_chunker = manifest.get("chunker_version")
+    if indexed_chunker is not None and indexed_chunker != CHUNKER_VERSION:
+        warnings.warn(
+            f"Index was built with chunker_version={indexed_chunker}, but "
+            f"the current chunker is version {CHUNKER_VERSION}. The chunk "
+            f"text shape may differ from what the embeddings encode — "
+            f"rebuild the index for best retrieval quality.",
             RuntimeWarning,
             stacklevel=3,
         )

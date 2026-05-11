@@ -45,6 +45,71 @@ def test_chunk_short_text_is_single_chunk():
     assert chunks[0].text == "hello world"
 
 
+def test_chunk_respects_sentence_boundaries():
+    """A chunk should end at a sentence boundary when the next sentence
+    would push it past chunk_size. The cut never lands mid-sentence."""
+    sentences = [
+        "Caesar crossed the Rubicon in 49 BC.",
+        "This act started a civil war against Pompey.",
+        "He was later assassinated on the Ides of March.",
+    ]
+    text = " ".join(sentences)
+    # chunk_size chosen so two sentences fit but three do not.
+    chunks = chunk_text(text, source="rome", chunk_size=14, overlap=0,
+                        min_chunk_words=1)
+    # The first chunk should end with a "." (no mid-sentence cut).
+    assert chunks[0].text.rstrip().endswith(".")
+    # And it should be one of the input sentences or a join of consecutive ones.
+    assert chunks[0].text.strip() in {sentences[0],
+                                       " ".join(sentences[:2])}
+
+
+def test_chunk_attaches_section_header_to_first_chunk_only():
+    """`== Foo ==` lines are removed from the prose and prepended to the
+    first chunk of their section. They do not appear in subsequent chunks
+    of the same section."""
+    text = (
+        "Intro paragraph about Caesar.\n"
+        "== Early life ==\n"
+        + ("word " * 50).strip()
+        + "\n== Later career ==\n"
+        "Final sentence."
+    )
+    chunks = chunk_text(text, source="rome", chunk_size=20, overlap=0,
+                        min_chunk_words=1)
+    # The intro is its own headerless chunk.
+    assert not chunks[0].text.startswith("Early life")
+    # Some chunk should carry the "Early life" header prefix exactly once.
+    early_life_chunks = [c for c in chunks if c.text.startswith("Early life\n")]
+    assert len(early_life_chunks) == 1
+    later_career_chunks = [c for c in chunks if c.text.startswith("Later career\n")]
+    assert len(later_career_chunks) == 1
+    # The "==" markers must not appear in any chunk's text.
+    assert not any("==" in c.text for c in chunks)
+
+
+def test_chunk_min_chunk_filter_merges_short_tail():
+    """A trailing chunk below min_chunk_words is absorbed into its
+    predecessor so the index isn't polluted with 10-word stubs."""
+    text = " ".join(str(i) for i in range(45))   # 45 words, no punctuation
+    # stride = 20, so windows = [0..19], [20..39], [40..44] (5 words).
+    chunks = chunk_text(text, source="x", chunk_size=20, overlap=0,
+                        min_chunk_words=10)
+    # The 5-word tail should have been merged, so we get at most 2 chunks.
+    assert len(chunks) == 2
+    # ids stay contiguous after the merge.
+    assert [c.chunk_id for c in chunks] == [0, 1]
+    # And the second chunk must now contain the tail words.
+    assert "44" in chunks[1].text
+
+
+def test_chunk_manifest_version_exported():
+    """CHUNKER_VERSION is part of the public surface — manifest readers
+    rely on its presence and integrality."""
+    from polimibot.rag.chunker import CHUNKER_VERSION
+    assert isinstance(CHUNKER_VERSION, int) and CHUNKER_VERSION >= 2
+
+
 # ── FAISSIndex (requires faiss-cpu) ─────────────────────────────────────────
 
 from polimibot.rag.index import FAISSIndex

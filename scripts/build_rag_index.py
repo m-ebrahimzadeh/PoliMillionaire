@@ -23,7 +23,7 @@ from pathlib import Path
 
 from polimibot.config import PATHS, Category
 from polimibot.rag.bm25 import BM25Index
-from polimibot.rag.chunker import chunk_text
+from polimibot.rag.chunker import CHUNKER_VERSION, chunk_text
 from polimibot.rag.corpus import (
     CLEANUP_VERSION, clean_wikipedia_text,
     fetch_articles, load_raw_corpus, save_raw_corpus,
@@ -104,6 +104,7 @@ def main() -> None:
         "normalize":            spec.normalize,
         "chunk_size":           args.chunk_size,
         "chunk_overlap":        args.overlap,
+        "chunker_version":      CHUNKER_VERSION,
         "n_articles":           len(articles),
         "text_cleanup_version": CLEANUP_VERSION,
         "categories":           sorted({a.category.value for a in articles}),
