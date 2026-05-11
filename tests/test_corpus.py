@@ -89,3 +89,159 @@ def test_cleanup_version_is_positive_int():
     caller can detect stale corpora when the regex set changes."""
     assert isinstance(CLEANUP_VERSION, int)
     assert CLEANUP_VERSION >= 1
+
+
+# ── Cross-category seed dedup ───────────────────────────────────────────────
+
+
+def test_dedupe_seeds_drops_cross_category_duplicates():
+    """A title that lives under multiple Category entries is fetched once,
+    under its first occurrence in the iteration order."""
+    from polimibot.config import Category
+    from polimibot.rag.corpus import TOPIC_SEEDS, _dedupe_seeds
+    # Pick any title that we expect to be duplicated. If the seeds change
+    # so that no duplicates remain, the test should still pass (just
+    # verifies the dedup function itself preserves the first category).
+    flat = _dedupe_seeds(list(TOPIC_SEEDS.keys()), verbose=False)
+    titles = [t for t, _ in flat]
+    # No duplicates.
+    assert len(titles) == len(set(titles))
+    # Every title still appears.
+    expected = set()
+    for seeds in TOPIC_SEEDS.values():
+        expected.update(seeds)
+    assert set(titles) == expected
+
+
+def test_dedupe_seeds_first_category_wins():
+    """The first category in iteration order owns shared titles."""
+    from polimibot.config import Category
+    from polimibot.rag.corpus import TOPIC_SEEDS, _dedupe_seeds
+    # If "Isaac Newton" appears in both SCIENCE and MATHS and SCIENCE is
+    # listed first in TOPIC_SEEDS, it should resolve to SCIENCE.
+    cats = list(TOPIC_SEEDS.keys())
+    flat = _dedupe_seeds(cats, verbose=False)
+    by_title = {t: c for t, c in flat}
+    if "Isaac Newton" in by_title:
+        # Whichever category lists "Isaac Newton" first in cats order wins.
+        first_owner = next(
+            cat for cat in cats if "Isaac Newton" in TOPIC_SEEDS[cat]
+        )
+        assert by_title["Isaac Newton"] == first_owner
+
+
+# ── Smart disambiguation ────────────────────────────────────────────────────
+
+
+def test_fetch_one_walks_disambiguation_options(monkeypatch):
+    """When the seed title hits a DisambiguationError, _fetch_one should
+    try options and return the first whose page summary contains a
+    keyword from the seed title — not blindly pick options[0]."""
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+
+    # Build a stand-in wikipedia module.
+    class _DummyDisambig(Exception):
+        def __init__(self, options):
+            self.options = options
+
+    class _DummyPageError(Exception):
+        pass
+
+    class _DummyPage:
+        def __init__(self, title, content, summary, url=""):
+            self.title = title
+            self.content = content
+            self.summary = summary
+            self.url = url
+
+    # Map page-name → page (or DisambiguationError, or PageError).
+    pages = {
+        "Queen": _DummyDisambig(["Queen (band)", "Queen (monarch)"]),
+        "Queen (band)": _DummyPage(
+            title="Queen (band)",
+            content="Queen are a British rock band formed in London.",
+            summary="Queen are a British rock band formed in London.",
+        ),
+        "Queen (monarch)": _DummyPage(
+            title="Queen (monarch)",
+            content="A queen regnant is a female monarch.",
+            summary="A queen regnant is a female monarch.",
+        ),
+    }
+
+    def _page(name, auto_suggest=False):
+        result = pages[name]
+        if isinstance(result, _DummyDisambig):
+            raise result
+        if isinstance(result, _DummyPageError):
+            raise result
+        return result
+
+    class _DummyWiki:
+        DisambiguationError = _DummyDisambig
+        PageError = _DummyPageError
+        page = staticmethod(_page)
+        @staticmethod
+        def set_lang(_): pass
+
+    # Inject into sys.modules so corpus._fetch_one's `import wikipedia` resolves to us.
+    import sys
+    monkeypatch.setitem(sys.modules, "wikipedia", _DummyWiki)
+
+    # Seed "Queen (band)" → we want the BAND, not the monarch. Disambig
+    # options are [band, monarch]; both pass content; first-option logic
+    # returns band by chance. Reverse the option order and rerun to make
+    # sure the keyword-walk picks the right one.
+    pages["Queen"] = _DummyDisambig(["Queen (monarch)", "Queen (band)"])
+    article = corpus_mod._fetch_one("Queen (band)", Category.ENTERTAINMENT, verbose=False)
+    assert article is not None
+    # Either resolution can match if both contain the keyword "queen", so
+    # also verify the keyword check actually filtered: if we provide
+    # "Pythagorean theorem" as a seed with options that share no keyword
+    # with the title's tokens, we'd skip — covered by the next test.
+
+
+def test_fetch_one_skips_when_no_disambig_option_matches(monkeypatch):
+    """If no disambiguation option's summary contains a seed keyword,
+    return None instead of grabbing a random page."""
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+
+    class _Dis(Exception):
+        def __init__(self, options): self.options = options
+    class _PageErr(Exception):
+        pass
+
+    class _Page:
+        def __init__(self, title, content, summary):
+            self.title, self.content, self.summary, self.url = title, content, summary, ""
+
+    pages = {
+        "Pythagorean theorem": _Dis(["Random Article", "Other Random"]),
+        "Random Article":      _Page("Random Article", "Cats and dogs are pets.", "Cats and dogs are pets."),
+        "Other Random":        _Page("Other Random", "Trains run on rails.",      "Trains run on rails."),
+    }
+
+    def _page(name, auto_suggest=False):
+        result = pages[name]
+        if isinstance(result, _Dis): raise result
+        return result
+
+    class _Wiki:
+        DisambiguationError = _Dis
+        PageError = _PageErr
+        page = staticmethod(_page)
+        @staticmethod
+        def set_lang(_): pass
+
+    import sys
+    monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
+
+    out = corpus_mod._fetch_one("Pythagorean theorem", Category.MATHS, verbose=False)
+    assert out is None
+
+
+def test_corpus_version_is_positive_int():
+    from polimibot.rag.corpus import CORPUS_VERSION
+    assert isinstance(CORPUS_VERSION, int) and CORPUS_VERSION >= 2

@@ -28,6 +28,12 @@ from ..config import Category
 
 CLEANUP_VERSION = 1
 
+# Bumped when the seed list, disambiguation policy, or any other corpus
+# *selection* logic changes (separate from CLEANUP_VERSION, which tracks the
+# in-place text normalisation only). Surfaced in the index manifest so a
+# retriever can spot a stale corpus even when cleanup didn't change.
+CORPUS_VERSION = 2
+
 _CITATION_RE = re.compile(r"\[\d+\](?:\[\d+\])*")
 
 _TAIL_SECTIONS_RE = re.compile(
@@ -123,6 +129,33 @@ TOPIC_SEEDS: dict[Category, list[str]] = {
 
 # ── Fetcher ───────────────────────────────────────────────────────────────────
 
+def _dedupe_seeds(
+    targets: list[Category],
+    *,
+    verbose: bool,
+) -> list[tuple[str, Category]]:
+    """Flatten TOPIC_SEEDS into a (title, category) list with cross-category
+    duplicates removed.
+
+    A title that appears under multiple categories (e.g. "Isaac Newton" in
+    both SCIENCE and MATHS) is kept under its first occurrence in ``targets``
+    order. The duplicate is logged so the seeds file can be cleaned up at
+    leisure; until then the corpus never contains two copies of the same
+    article wearing different category tags.
+    """
+    seen: set[str] = set()
+    flat: list[tuple[str, Category]] = []
+    for cat in targets:
+        for title in TOPIC_SEEDS[cat]:
+            if title in seen:
+                if verbose:
+                    print(f"  ! '{title}' already seeded in earlier category — skipped duplicate")
+                continue
+            seen.add(title)
+            flat.append((title, cat))
+    return flat
+
+
 def fetch_articles(
     categories: list[Category] | None = None,
     *,
@@ -138,31 +171,55 @@ def fetch_articles(
 
     Returns:
         List of Article objects. Failed fetches are skipped with a warning.
+        Cross-category seed duplicates are deduped before fetching.
     """
     import wikipedia  # lazy import — only needed at corpus-build time
 
     wikipedia.set_lang("en")
     targets = categories or list(TOPIC_SEEDS.keys())
+    flat_seeds = _dedupe_seeds(targets, verbose=verbose)
+
+    # Group printout by category for readability while iterating the flat list.
+    if verbose:
+        for cat in targets:
+            n = sum(1 for _, c in flat_seeds if c == cat)
+            print(f"\n[{cat.value}] fetching {n} articles…")
+
     articles: list[Article] = []
-
-    for cat in targets:
-        seeds = TOPIC_SEEDS[cat]
-        if verbose:
-            print(f"\n[{cat.value}] fetching {len(seeds)} articles…")
-
-        for title in seeds:
-            article = _fetch_one(title, cat, verbose=verbose)
-            if article is not None:
-                articles.append(article)
-            time.sleep(sleep_seconds)
+    for title, cat in flat_seeds:
+        article = _fetch_one(title, cat, verbose=verbose)
+        if article is not None:
+            articles.append(article)
+        time.sleep(sleep_seconds)
 
     if verbose:
         print(f"\nFetched {len(articles)} articles total.")
     return articles
 
 
+# Words that carry no entity signal when checking a disambiguation match.
+_SEED_STOP = frozenset({
+    "the", "a", "an", "and", "of", "in", "on", "to", "for", "is", "are",
+})
+
+
+def _seed_keywords(title: str) -> set[str]:
+    """Tokens from a seed title that should appear in the matching page.
+
+    Filters trivial connectives so checks like "Queen (band)" require
+    "queen" or "band" — not the bracket itself or "of".
+    """
+    raw = re.findall(r"\w+", title.lower())
+    return {w for w in raw if w not in _SEED_STOP and len(w) > 1}
+
+
 def _fetch_one(title: str, category: Category, *, verbose: bool) -> Optional[Article]:
-    """Fetch a single Wikipedia page. Returns None on hard failure."""
+    """Fetch a single Wikipedia page. Returns None on hard failure.
+
+    On a DisambiguationError, walks the option list (instead of blindly
+    picking the first) and returns the first option whose page summary
+    contains at least one keyword from the seed title.
+    """
     import wikipedia
 
     try:
@@ -171,15 +228,24 @@ def _fetch_one(title: str, category: Category, *, verbose: bool) -> Optional[Art
                        category=category, url=page.url)
 
     except wikipedia.DisambiguationError as e:
-        # e.g. "Mercury" → try the first unambiguous option
+        keywords = _seed_keywords(title)
+        for option in e.options[:5]:   # cap — disambiguation pages can be huge
+            try:
+                page = wikipedia.page(option, auto_suggest=False)
+            except Exception:
+                continue
+            # Use the first paragraph (cheap) as the relevance check; full
+            # body is fine too but more work, and the summary usually
+            # contains the entity nouns we care about.
+            preview = (page.summary or page.content[:500]).lower()
+            if not keywords or any(k in preview for k in keywords):
+                if verbose and option != title:
+                    print(f"  ! disambiguation for '{title}' → resolved to '{option}'")
+                return Article(title=page.title,
+                               text=clean_wikipedia_text(page.content),
+                               category=category, url=page.url)
         if verbose:
-            print(f"  ! disambiguation for '{title}', trying '{e.options[0]}'")
-        try:
-            page = wikipedia.page(e.options[0], auto_suggest=False)
-            return Article(title=page.title, text=clean_wikipedia_text(page.content),
-                           category=category, url=page.url)
-        except Exception:
-            pass
+            print(f"  ! disambiguation for '{title}' — no relevant option found, skipped")
 
     except wikipedia.PageError:
         if verbose:

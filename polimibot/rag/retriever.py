@@ -65,6 +65,20 @@ def _check_manifest_compat(manifest: dict, spec: EmbedderSpec) -> None:
             RuntimeWarning,
             stacklevel=3,
         )
+    indexed_corpus = manifest.get("corpus_version")
+    # Imported lazily to avoid pulling the wikipedia dependency into the
+    # retriever import graph; corpus_version is just a constant int.
+    if indexed_corpus is not None:
+        from .corpus import CORPUS_VERSION
+        if indexed_corpus != CORPUS_VERSION:
+            warnings.warn(
+                f"Index was built with corpus_version={indexed_corpus}, but "
+                f"the current corpus seeds/disambiguation policy is at "
+                f"version {CORPUS_VERSION}. Article selection may differ "
+                f"from what's indexed — rebuild for the freshest coverage.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
 
 
 class Retriever:
