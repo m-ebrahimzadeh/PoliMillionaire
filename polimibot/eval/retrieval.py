@@ -224,6 +224,7 @@ def evaluate_retrieval(
     retriever_name: str = "retriever",
     k_retrieve: Optional[int] = None,
     use_category_filter: bool = True,
+    use_reranker: bool = False,
 ) -> RetrievalReport:
     """Compute recall@k and MRR for ``retriever`` against ``items``.
 
@@ -243,6 +244,10 @@ def evaluate_retrieval(
         use_category_filter: when True, pass the item's category to the
             retriever. Set False to ablate the filter and see the raw
             uncategorised retrieval performance.
+        use_reranker: when True, ask the retriever to rerank its
+            oversearched pool with its attached cross-encoder. Same
+            ablation pattern as ``use_category_filter`` — keep the
+            labels fixed, toggle the recipe.
     """
     if not items:
         return RetrievalReport(
@@ -268,12 +273,19 @@ def evaluate_retrieval(
             if (use_category_filter and item.category is not None)
             else None
         )
+        kw: dict = {"k": k_retrieve, "category": category}
+        if use_reranker:
+            kw["rerank"] = True
         try:
-            hits = retriever.retrieve(query, k=k_retrieve, category=category) or []
+            hits = retriever.retrieve(query, **kw) or []
         except TypeError:
-            # Legacy retrievers without a ``category`` kwarg — fall back to
-            # uncategorised retrieval rather than crashing the whole eval.
-            hits = retriever.retrieve(query, k=k_retrieve) or []
+            # Legacy retrievers without the newer kwargs — fall back to
+            # the lowest-common-denominator signature so the harness
+            # doesn't crash on older mocks.
+            try:
+                hits = retriever.retrieve(query, k=k_retrieve, category=category) or []
+            except TypeError:
+                hits = retriever.retrieve(query, k=k_retrieve) or []
 
         # Unique titles in rank order (a single article often produces
         # multiple chunks; for recall, the first chunk hit defines the rank).

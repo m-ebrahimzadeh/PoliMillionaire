@@ -182,6 +182,139 @@ def test_retriever_from_saved_rejects_model_mismatch(tmp_path):
         _check_manifest_compat(manifest, spec_wrong)
 
 
+# ── Retriever + reranker integration ─────────────────────────────────────────
+
+
+def test_retriever_rerank_requires_attached_reranker():
+    """rerank=True without a reranker is a programmer error — fail loud."""
+    from polimibot.rag.retriever import Retriever
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return _random_vecs(1, dim=8)
+
+    idx = FAISSIndex(dim=8)
+    idx.add(_make_chunks(3), _random_vecs(3, dim=8))
+    r = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="no reranker is attached"):
+        r.retrieve("q", k=3, rerank=True)
+
+
+def test_retriever_oversearches_then_reranks_to_top_k():
+    """With rerank=True, retriever asks the dense index for k×oversearch
+    candidates, then trims to k via the cross-encoder."""
+    from polimibot.rag.retriever import Retriever
+    from polimibot.rag.reranker import CrossEncoderReranker
+    import numpy as np
+
+    # 20 chunks with distinct ids. Dense order is preserved (all same vec).
+    idx = FAISSIndex(dim=8)
+    chunks = [Chunk(text=f"t{i}", source=f"S{i}", chunk_id=i, category=None)
+              for i in range(20)]
+    same = np.ones((20, 8), dtype=np.float32) / np.sqrt(8)
+    idx.add(chunks, same)
+
+    # Reranker: score = -chunk_id, so chunk 0 wins; this REVERSES dense order
+    # only because (with same vectors) FAISS may return any order — we use
+    # the reranker to deterministically pick chunk 0.
+    rer = CrossEncoderReranker(
+        lambda pairs: [-float(doc[1:]) for _, doc in pairs]  # "t5" → -5
+    )
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return same[:1]
+
+    r = Retriever(idx, _Embed(), reranker=rer)  # type: ignore[arg-type]
+    out = r.retrieve("q", k=3, rerank=True, rerank_oversearch=5)
+    assert len(out) == 3
+    # Chunk 0 (smallest chunk_id → highest reranker score) must be #1.
+    assert out[0][0].chunk_id == 0
+    assert out[1][0].chunk_id == 1
+    assert out[2][0].chunk_id == 2
+
+
+def test_retriever_rerank_replaces_dense_score():
+    """After reranking, returned scores are cross-encoder scores."""
+    from polimibot.rag.retriever import Retriever
+    from polimibot.rag.reranker import CrossEncoderReranker
+    import numpy as np
+
+    idx = FAISSIndex(dim=8)
+    idx.add(_make_chunks(5), _random_vecs(5, dim=8))
+    rer = CrossEncoderReranker(lambda pairs: [42.0] * len(pairs))
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return _random_vecs(1, dim=8)
+
+    r = Retriever(idx, _Embed(), reranker=rer)  # type: ignore[arg-type]
+    out = r.retrieve("q", k=2, rerank=True)
+    assert all(s == 42.0 for _, s in out)
+
+
+def test_retriever_rerank_with_category_filter_composes():
+    """Both filters at once: oversearch dense by (k × rerank × category),
+    keep matching-category chunks, rerank pool to k."""
+    from polimibot.rag.retriever import Retriever
+    from polimibot.rag.reranker import CrossEncoderReranker
+    import numpy as np
+
+    idx = FAISSIndex(dim=8)
+    chunks = (
+        [Chunk(text=f"m{i}", source=f"M{i}", chunk_id=i, category="maths")
+         for i in range(5)] +
+        [Chunk(text=f"h{i}", source=f"H{i}", chunk_id=10+i, category="history")
+         for i in range(5)]
+    )
+    same = np.ones((10, 8), dtype=np.float32) / np.sqrt(8)
+    idx.add(chunks, same)
+
+    rer = CrossEncoderReranker(lambda pairs: [1.0] * len(pairs))
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return same[:1]
+
+    r = Retriever(idx, _Embed(), reranker=rer)  # type: ignore[arg-type]
+    out = r.retrieve("q", k=2, category="history", rerank=True)
+    assert len(out) == 2
+    assert all(c.category == "history" for c, _ in out)
+
+
+def test_retriever_has_reranker_property():
+    from polimibot.rag.retriever import Retriever
+    from polimibot.rag.reranker import CrossEncoderReranker
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return _random_vecs(1, dim=8)
+
+    idx = FAISSIndex(dim=8)
+    r_plain = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    assert r_plain.has_reranker is False
+
+    r_with = Retriever(idx, _Embed(),  # type: ignore[arg-type]
+                       reranker=CrossEncoderReranker(lambda p: [0.0]*len(p)))
+    assert r_with.has_reranker is True
+
+
+def test_retriever_no_rerank_keeps_dense_path():
+    """rerank=False (default) preserves the existing dense-only behaviour."""
+    from polimibot.rag.retriever import Retriever
+    from polimibot.rag.reranker import CrossEncoderReranker
+    import numpy as np
+
+    idx = FAISSIndex(dim=8)
+    idx.add(_make_chunks(5), _random_vecs(5, dim=8))
+    # A "broken" reranker that would re-order if used — we use this to
+    # confirm it ISN'T used when rerank=False.
+    rer = CrossEncoderReranker(lambda pairs: [-1.0] * len(pairs))
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return _random_vecs(1, dim=8)
+
+    r = Retriever(idx, _Embed(), reranker=rer)  # type: ignore[arg-type]
+    out = r.retrieve("q", k=2)   # rerank not passed → False
+    # Scores should be dense (cosine, varying), not -1.0 from the reranker.
+    assert all(s != -1.0 for _, s in out)
+
+
 # ── Category filter ──────────────────────────────────────────────────────────
 
 

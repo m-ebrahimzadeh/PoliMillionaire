@@ -272,6 +272,50 @@ def test_recall_from_runs_skips_questions_without_labels(tmp_path: Path):
 # ── Report serialisation ─────────────────────────────────────────────────
 
 
+def test_evaluate_retrieval_forwards_rerank_flag():
+    """use_reranker=True must reach the retriever as rerank=True."""
+    captured: dict = {}
+
+    class _Captor:
+        def retrieve(self, query, k=5, *, category=None, rerank=False, **_):
+            captured["rerank"] = rerank
+            captured["category"] = category
+            return [(Chunk(text="t", source="X", chunk_id=0), 1.0)]
+
+    items = [_gold(0, title="X")]
+    evaluate_retrieval(_Captor(), items, ks=(1,), use_reranker=True,
+                       query_fn=_query)
+    assert captured["rerank"] is True
+
+
+def test_evaluate_retrieval_default_rerank_false():
+    captured: dict = {}
+
+    class _Captor:
+        def retrieve(self, query, k=5, *, category=None, rerank=False, **_):
+            captured["rerank"] = rerank
+            return [(Chunk(text="t", source="X", chunk_id=0), 1.0)]
+
+    items = [_gold(0, title="X")]
+    evaluate_retrieval(_Captor(), items, ks=(1,), query_fn=_query)
+    assert captured["rerank"] is False
+
+
+def test_evaluate_retrieval_tolerates_legacy_retriever_without_rerank_kwarg():
+    """Older retrievers that only accept (query, k, *, category=None) shouldn't
+    crash the harness when use_reranker=True — fall back to dense."""
+
+    class _LegacyRetriever:
+        def retrieve(self, query, k=5, *, category=None):
+            return [(Chunk(text="t", source="X", chunk_id=0), 1.0)]
+
+    items = [_gold(0, title="X")]
+    report = evaluate_retrieval(_LegacyRetriever(), items, ks=(1,),
+                                 use_reranker=True, query_fn=_query)
+    # No crash — hit at rank 1.
+    assert report.recall_at[1] == 1.0
+
+
 def test_report_save_omits_samples(tmp_path: Path):
     items = [_gold(0, title="A")]
     retriever = _FakeRetriever({"Q0": [("A", 1.0)]})

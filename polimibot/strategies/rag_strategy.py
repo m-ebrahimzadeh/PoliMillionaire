@@ -85,6 +85,8 @@ class RAGStrategy(Strategy):
         style: PromptStyle = PromptStyle.ZERO_SHOT,
         use_score_options: bool = True,
         use_category_filter: bool = True,
+        use_reranker: bool = False,
+        rerank_oversearch: Optional[int] = None,
         min_score: Optional[float] = None,
         max_passage_chars: int = DEFAULT_MAX_PASSAGE_CHARS,
         max_total_chars: int = DEFAULT_MAX_TOTAL_CHARS,
@@ -108,6 +110,13 @@ class RAGStrategy(Strategy):
                 restrict to chunks tagged with ``inp.category``. Set False
                 to ablate the filter (i.e. show every question all of
                 the corpus).
+            use_reranker: when True, the retriever oversearches and reranks
+                the pool with its attached cross-encoder. Requires the
+                retriever to have been constructed with ``reranker=``
+                (raises otherwise — surfaces the misconfiguration early
+                rather than per-question).
+            rerank_oversearch: passes through to Retriever.retrieve. None
+                = use Retriever's default (5×).
             min_score: if set, drop the retrieval context entirely when the
                 top score is below this threshold — the prompt then degrades
                 to the no-RAG baseline shape. None = never gate. Calibrate
@@ -127,6 +136,11 @@ class RAGStrategy(Strategy):
                 f"predicted token — which is the start of the reasoning "
                 f"trace, not the answer letter."
             )
+        if use_reranker and not getattr(retriever, "has_reranker", False):
+            raise ValueError(
+                "use_reranker=True but the retriever has no reranker. "
+                "Construct it with Retriever(index, embedder, reranker=...)."
+            )
 
         self.llm = llm
         self.retriever = retriever
@@ -134,6 +148,8 @@ class RAGStrategy(Strategy):
         self.style = style
         self.use_score_options = use_score_options
         self.use_category_filter = use_category_filter
+        self.use_reranker = use_reranker
+        self.rerank_oversearch = rerank_oversearch
         self.min_score = min_score
         self.max_passage_chars = max_passage_chars
         self.max_total_chars = max_total_chars
@@ -149,9 +165,10 @@ class RAGStrategy(Strategy):
         gate_tag = f"|min_score={min_score}" if min_score is not None else ""
         path_tag = "" if use_score_options else "|gen"
         cat_tag  = "" if use_category_filter else "|no_cat_filter"
+        rer_tag  = "|rerank" if use_reranker else ""
         self.name = (
             f"rag[{getattr(llm, 'name', 'llm')}"
-            f"|k={k}|{style.value}{path_tag}{cat_tag}{gate_tag}]"
+            f"|k={k}|{style.value}{path_tag}{cat_tag}{rer_tag}{gate_tag}]"
         )
 
     def warm_up(self) -> None:
@@ -171,9 +188,15 @@ class RAGStrategy(Strategy):
             if (self.use_category_filter and inp.category is not None)
             else None
         )
-        passages = self.retriever.retrieve(
-            query, k=self.k, category=category_filter,
-        )
+        retrieve_kwargs: dict = {
+            "k": self.k,
+            "category": category_filter,
+        }
+        if self.use_reranker:
+            retrieve_kwargs["rerank"] = True
+            if self.rerank_oversearch is not None:
+                retrieve_kwargs["rerank_oversearch"] = self.rerank_oversearch
+        passages = self.retriever.retrieve(query, **retrieve_kwargs)
 
         # 2. Low-score gate. If the top retrieval is below the threshold,
         #    pass an empty context — build_messages_with_context then
@@ -237,6 +260,7 @@ class RAGStrategy(Strategy):
                 "gated_by_min_score":  gated,
                 "min_score_threshold": self.min_score,
                 "category_filter":     category_filter,
+                "reranked":            self.use_reranker,
                 "query":               query,
                 "passages":            passage_triples,
                 "decoding_path":       "logits" if self.use_score_options else "generate",

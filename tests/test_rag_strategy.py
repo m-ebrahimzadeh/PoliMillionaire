@@ -15,15 +15,39 @@ from polimibot.strategies.rag_strategy import RAGStrategy, _build_query, _format
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 class MockRetriever:
-    """Returns canned passages. No FAISS, no embedder."""
-    def __init__(self, passages: list[tuple[Chunk, float]]) -> None:
+    """Returns canned passages. No FAISS, no embedder.
+
+    ``has_reranker`` defaults to False so use_reranker=True raises at
+    construction; pass ``has_reranker=True`` for tests that exercise the
+    reranking path.
+    """
+    def __init__(
+        self,
+        passages: list[tuple[Chunk, float]],
+        *,
+        has_reranker: bool = False,
+    ) -> None:
         self._passages = passages
+        self.has_reranker = has_reranker
         self.last_query: str = ""
+        self.last_category = None
+        self.last_rerank: bool = False
+        self.last_rerank_oversearch = None
         self.n_chunks = len(passages)
 
-    def retrieve(self, query: str, k: int = 3, *, category=None) -> list[tuple[Chunk, float]]:
+    def retrieve(
+        self,
+        query: str,
+        k: int = 3,
+        *,
+        category=None,
+        rerank: bool = False,
+        rerank_oversearch=None,
+    ) -> list[tuple[Chunk, float]]:
         self.last_query = query
         self.last_category = category
+        self.last_rerank = rerank
+        self.last_rerank_oversearch = rerank_oversearch
         return self._passages[:k]
 
 
@@ -338,3 +362,58 @@ def test_rag_name_tags_generation_path():
         use_score_options=False,
     )
     assert "|gen" in strategy.name
+
+
+# ── Reranker integration ─────────────────────────────────────────────────────
+
+def test_rag_rejects_use_reranker_when_retriever_has_none():
+    """use_reranker=True with a retriever that has no reranker is a config
+    error — fail at construction, not on the first answer."""
+    retriever = MockRetriever(_passages(), has_reranker=False)
+    with pytest.raises(ValueError, match="no reranker"):
+        RAGStrategy(MockLLM(), retriever, use_reranker=True)
+
+
+def test_rag_passes_rerank_true_to_retriever_when_enabled():
+    retriever = MockRetriever(_passages(), has_reranker=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True)
+    strategy.answer(_inp())
+    assert retriever.last_rerank is True
+
+
+def test_rag_does_not_pass_rerank_when_disabled():
+    retriever = MockRetriever(_passages(), has_reranker=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=False)
+    strategy.answer(_inp())
+    assert retriever.last_rerank is False
+
+
+def test_rag_forwards_rerank_oversearch_when_set():
+    retriever = MockRetriever(_passages(), has_reranker=True)
+    strategy = RAGStrategy(
+        MockLLM(), retriever, k=2,
+        use_reranker=True, rerank_oversearch=12,
+    )
+    strategy.answer(_inp())
+    assert retriever.last_rerank_oversearch == 12
+
+
+def test_rag_omits_rerank_oversearch_when_none():
+    """rerank_oversearch=None → don't pass the kwarg, let Retriever use its default."""
+    retriever = MockRetriever(_passages(), has_reranker=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True)
+    strategy.answer(_inp())
+    assert retriever.last_rerank_oversearch is None
+
+
+def test_rag_extras_records_reranked_flag():
+    retriever = MockRetriever(_passages(), has_reranker=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True)
+    out = strategy.answer(_inp())
+    assert out.extras["reranked"] is True
+
+
+def test_rag_name_includes_rerank_tag():
+    retriever = MockRetriever(_passages(), has_reranker=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True)
+    assert "rerank" in strategy.name
