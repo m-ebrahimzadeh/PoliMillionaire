@@ -82,7 +82,7 @@ def main() -> None:
 
         class _NullRetriever:
             n_chunks = 0
-            def retrieve(self, q, k=3): return []
+            def retrieve(self, q, k=3, *, category=None): return []
         retriever = _NullRetriever()  # type: ignore[assignment]
     else:
         index_path = PATHS.cache_dir / "knowledge"

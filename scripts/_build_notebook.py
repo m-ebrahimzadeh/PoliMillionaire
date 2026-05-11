@@ -276,11 +276,13 @@ TIER_MEDIUM_MAX     = 10                                 # levels 6..10 → medi
 ESCALATION_THRESHOLD = None                              # e.g. 0.15 to escalate on low margin
 
 # Retrieval (only used when USE_RAG / USE_ENSEMBLE / USE_TIERED)
-RAG_K                = 3                                 # passages per question
-RAG_INDEX_PATH       = PATHS.cache_dir / 'knowledge'     # build with scripts/build_rag_index.py
-RAG_MIN_SCORE        = None                              # e.g. 0.30 — drop context when top retrieval below this
-RAG_MAX_PASSAGE_CHARS = 800                              # per-passage truncation
-RAG_MAX_TOTAL_CHARS   = 2400                             # joined context budget
+RAG_K                  = 3                               # passages per question
+RAG_INDEX_PATH         = PATHS.cache_dir / 'knowledge'   # build with scripts/build_rag_index.py
+RAG_MIN_SCORE          = None                            # e.g. 0.30 — drop context when top retrieval below this
+RAG_USE_CATEGORY_FILTER = True                           # restrict retrieval to inp.category chunks
+RAG_USE_SCORE_OPTIONS  = True                            # logit-scoring (False = free generation; required for CoT/ELIMINATION)
+RAG_MAX_PASSAGE_CHARS  = 800                             # per-passage truncation
+RAG_MAX_TOTAL_CHARS    = 2400                            # joined context budget
 
 # Eval
 N_EVAL_QUESTIONS    = None                               # None = all gold items; int = first-N slice
@@ -331,7 +333,7 @@ if need_retriever:
         # Null retriever for offline smoke tests, this is.
         class _NullRetriever:
             n_chunks = 0
-            def retrieve(self, q, k=3): return []
+            def retrieve(self, q, k=3, *, category=None): return []
         retriever = _NullRetriever()
         print('NullRetriever (mock mode — no FAISS index needed)')
     else:
@@ -364,7 +366,7 @@ baseline = BaselineLLMStrategy(
 )
 
 if USE_TIERED:
-    rag_arm    = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
+    rag_arm    = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
     ensemble   = EnsembleStrategy([baseline, rag_arm], weights=[1.0, 1.2])
     maths_arm  = (
         AgentStrategy(llm, max_iterations=3) if USE_AGENT_FOR_MATHS
@@ -380,14 +382,14 @@ if USE_TIERED:
         escalation_threshold=ESCALATION_THRESHOLD,
     )
 elif USE_ENSEMBLE:
-    rag_arm  = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
+    rag_arm  = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
     strategy = EnsembleStrategy([baseline, rag_arm], weights=[1.0, 1.2])
 elif USE_AGENT_FOR_MATHS:
     strategy = AgentStrategy(llm, max_iterations=3)
 elif USE_MATHS_TOOL:
     strategy = ToolStrategy([MathsTool()], fallback=baseline)
 elif USE_RAG:
-    strategy = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
+    strategy = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
 else:
     strategy = baseline
 

@@ -105,10 +105,14 @@ class FAISSIndex:
         faiss.write_index(self._index, str(path.with_suffix(".faiss")))
         with path.with_suffix(".jsonl").open("w", encoding="utf-8") as f:
             for c in self._chunks:
-                f.write(json.dumps(
-                    {"text": c.text, "source": c.source, "chunk_id": c.chunk_id},
-                    ensure_ascii=False,
-                ) + "\n")
+                row = {
+                    "text": c.text,
+                    "source": c.source,
+                    "chunk_id": c.chunk_id,
+                }
+                if c.category is not None:
+                    row["category"] = c.category
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
         if manifest is not None:
             full = dict(manifest)
@@ -155,7 +159,12 @@ class FAISSIndex:
         with path.with_suffix(".jsonl").open(encoding="utf-8") as f:
             for line in f:
                 d = json.loads(line.strip())
-                chunks.append(Chunk(text=d["text"], source=d["source"], chunk_id=d["chunk_id"]))
+                chunks.append(Chunk(
+                    text=d["text"],
+                    source=d["source"],
+                    chunk_id=d["chunk_id"],
+                    category=d.get("category"),   # absent on legacy chunks
+                ))
         obj = cls(dim=faiss_index.d, _faiss_index=faiss_index)
         obj._chunks = chunks
 

@@ -76,7 +76,7 @@ def main() -> int:
 
         class _EmptyRetriever:
             n_chunks = 0
-            def retrieve(self, query: str, k: int = 3):
+            def retrieve(self, query: str, k: int = 3, *, category=None):
                 return []
 
         retriever = _EmptyRetriever()  # type: ignore[assignment]

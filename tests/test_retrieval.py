@@ -28,10 +28,12 @@ class _FakeRetriever:
     def __init__(self, hits_by_query: dict[str, list[tuple[str, float]]]):
         self._hits = hits_by_query
 
-    def retrieve(self, query: str, k: int = 5):
+    def retrieve(self, query: str, k: int = 5, *, category=None):
+        # category accepted for parity with Retriever.retrieve; the mock
+        # ignores it (per-test scripts decide what to return).
         triples = self._hits.get(query, [])[:k]
         return [
-            (Chunk(text="…", source=src, chunk_id=i), score)
+            (Chunk(text="…", source=src, chunk_id=i, category=category), score)
             for i, (src, score) in enumerate(triples)
         ]
 

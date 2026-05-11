@@ -48,7 +48,7 @@ def main() -> int:
         llm = MockLLM(name="mock", correctness=0.65)
         class _NullRetriever:
             n_chunks = 0
-            def retrieve(self, q, k=3): return []
+            def retrieve(self, q, k=3, *, category=None): return []
         retriever = _NullRetriever()  # type: ignore[assignment]
         print("\nUsing MockLLM + NullRetriever\n")
     else:
