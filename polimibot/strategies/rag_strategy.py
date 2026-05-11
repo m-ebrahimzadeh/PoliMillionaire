@@ -11,6 +11,7 @@ from ..models.llm import LLM, AnswerProbabilities
 from ..models.mock import MockLLM
 from ..prompts.templates import PromptStyle, build_messages_with_context, parse_answer
 from ..rag.chunker import Chunk
+from ..rag.fusion import reciprocal_rank_fusion
 from ..rag.retriever import Retriever
 from .base import Strategy, StrategyInput, StrategyOutput
 from .llm_baseline import (
@@ -29,8 +30,32 @@ DEFAULT_MAX_TOTAL_CHARS   = 2400
 
 
 def _build_query(inp: StrategyInput) -> str:
-    """Include option texts in the query for better entity recall."""
+    """Single-query mode: include option texts in one query for entity recall.
+
+    Used when ``multi_query=False``. Concatenating question + options
+    bumps recall on questions where the key entity appears only in
+    the options (e.g. 'Which director directed X?' where X is the
+    Wikipedia article).
+    """
     return f"{inp.question} {' '.join(inp.options)}"
+
+
+def _build_multi_queries(inp: StrategyInput) -> list[str]:
+    """Multi-query mode: one query for the question, one per option.
+
+    The audit's #4 point — concatenating four wrong-option entities
+    into a single dense vector dilutes the question signal. Encoding
+    each (question, option_i) separately and RRF-fusing gives every
+    option a fair shot at pulling its supporting article into top-k,
+    and the question-only query anchors the topic.
+
+    Returns:
+        ``[question, "question option_A", "question option_B", ...]``
+        — 5 queries total for a 4-option MCQ.
+    """
+    return [inp.question] + [
+        f"{inp.question} {opt}" for opt in inp.options
+    ]
 
 
 def _format_context(
@@ -86,6 +111,8 @@ class RAGStrategy(Strategy):
         use_score_options: bool = True,
         use_category_filter: bool = True,
         use_reranker: bool = False,
+        use_hybrid: bool = False,
+        use_multi_query: bool = False,
         rerank_oversearch: Optional[int] = None,
         min_score: Optional[float] = None,
         max_passage_chars: int = DEFAULT_MAX_PASSAGE_CHARS,
@@ -115,6 +142,15 @@ class RAGStrategy(Strategy):
                 retriever to have been constructed with ``reranker=``
                 (raises otherwise — surfaces the misconfiguration early
                 rather than per-question).
+            use_hybrid: when True, the retriever queries both the dense
+                FAISS index AND the attached BM25 sidecar, RRF-fusing
+                the two ranked lists. Requires bm25= on the retriever.
+            use_multi_query: when True, retrieve once per query in
+                ``[question, question+opt_A, ..., question+opt_D]``
+                and RRF-fuse the five resulting ranked lists. Better
+                recall on questions where the answer entity appears
+                only in one option. Off by default — costs 5× the
+                retrieval calls.
             rerank_oversearch: passes through to Retriever.retrieve. None
                 = use Retriever's default (5×).
             min_score: if set, drop the retrieval context entirely when the
@@ -141,6 +177,11 @@ class RAGStrategy(Strategy):
                 "use_reranker=True but the retriever has no reranker. "
                 "Construct it with Retriever(index, embedder, reranker=...)."
             )
+        if use_hybrid and not getattr(retriever, "has_bm25", False):
+            raise ValueError(
+                "use_hybrid=True but the retriever has no BM25 index. "
+                "Construct it with Retriever(index, embedder, bm25=...)."
+            )
 
         self.llm = llm
         self.retriever = retriever
@@ -149,6 +190,8 @@ class RAGStrategy(Strategy):
         self.use_score_options = use_score_options
         self.use_category_filter = use_category_filter
         self.use_reranker = use_reranker
+        self.use_hybrid = use_hybrid
+        self.use_multi_query = use_multi_query
         self.rerank_oversearch = rerank_oversearch
         self.min_score = min_score
         self.max_passage_chars = max_passage_chars
@@ -166,9 +209,11 @@ class RAGStrategy(Strategy):
         path_tag = "" if use_score_options else "|gen"
         cat_tag  = "" if use_category_filter else "|no_cat_filter"
         rer_tag  = "|rerank" if use_reranker else ""
+        hyb_tag  = "|hybrid" if use_hybrid else ""
+        mq_tag   = "|mq"     if use_multi_query else ""
         self.name = (
             f"rag[{getattr(llm, 'name', 'llm')}"
-            f"|k={k}|{style.value}{path_tag}{cat_tag}{rer_tag}{gate_tag}]"
+            f"|k={k}|{style.value}{path_tag}{cat_tag}{hyb_tag}{mq_tag}{rer_tag}{gate_tag}]"
         )
 
     def warm_up(self) -> None:
@@ -182,21 +227,34 @@ class RAGStrategy(Strategy):
         #    the category filter is enabled — surfaces only on-topic
         #    chunks, prevents (say) a MATHS question from pulling
         #    HISTORY noise into the prompt.
-        query = _build_query(inp)
         category_filter = (
             inp.category.value
             if (self.use_category_filter and inp.category is not None)
             else None
         )
-        retrieve_kwargs: dict = {
-            "k": self.k,
-            "category": category_filter,
-        }
+        common_kwargs: dict = {"k": self.k, "category": category_filter}
         if self.use_reranker:
-            retrieve_kwargs["rerank"] = True
+            common_kwargs["rerank"] = True
             if self.rerank_oversearch is not None:
-                retrieve_kwargs["rerank_oversearch"] = self.rerank_oversearch
-        passages = self.retriever.retrieve(query, **retrieve_kwargs)
+                common_kwargs["rerank_oversearch"] = self.rerank_oversearch
+        if self.use_hybrid:
+            common_kwargs["hybrid"] = True
+
+        if self.use_multi_query:
+            # Run retrieval once per query, RRF-fuse the resulting lists.
+            # The retriever's own internal fusion (hybrid) happens inside
+            # each call; this outer fusion combines across queries.
+            queries = _build_multi_queries(inp)
+            ranked_lists = [
+                self.retriever.retrieve(q, **common_kwargs) for q in queries
+            ]
+            passages = reciprocal_rank_fusion(ranked_lists, k=self.k)
+            # ``query`` for logging is a comma-joined preview; the full
+            # list is reconstructed at analysis time from question+options.
+            query = " | ".join(queries[:3]) + (" | …" if len(queries) > 3 else "")
+        else:
+            query = _build_query(inp)
+            passages = self.retriever.retrieve(query, **common_kwargs)
 
         # 2. Low-score gate. If the top retrieval is below the threshold,
         #    pass an empty context — build_messages_with_context then
@@ -261,6 +319,8 @@ class RAGStrategy(Strategy):
                 "min_score_threshold": self.min_score,
                 "category_filter":     category_filter,
                 "reranked":            self.use_reranker,
+                "hybrid":              self.use_hybrid,
+                "multi_query":         self.use_multi_query,
                 "query":               query,
                 "passages":            passage_triples,
                 "decoding_path":       "logits" if self.use_score_options else "generate",

@@ -17,22 +17,26 @@ from polimibot.strategies.rag_strategy import RAGStrategy, _build_query, _format
 class MockRetriever:
     """Returns canned passages. No FAISS, no embedder.
 
-    ``has_reranker`` defaults to False so use_reranker=True raises at
-    construction; pass ``has_reranker=True`` for tests that exercise the
-    reranking path.
+    ``has_reranker``/``has_bm25`` default to False so the corresponding
+    strategy flags raise at construction; pass the flags True for tests
+    that exercise the integration.
     """
     def __init__(
         self,
         passages: list[tuple[Chunk, float]],
         *,
         has_reranker: bool = False,
+        has_bm25: bool = False,
     ) -> None:
         self._passages = passages
         self.has_reranker = has_reranker
+        self.has_bm25 = has_bm25
         self.last_query: str = ""
         self.last_category = None
         self.last_rerank: bool = False
         self.last_rerank_oversearch = None
+        self.last_hybrid: bool = False
+        self.queries_seen: list[str] = []
         self.n_chunks = len(passages)
 
     def retrieve(
@@ -43,11 +47,14 @@ class MockRetriever:
         category=None,
         rerank: bool = False,
         rerank_oversearch=None,
+        hybrid: bool = False,
     ) -> list[tuple[Chunk, float]]:
         self.last_query = query
+        self.queries_seen.append(query)
         self.last_category = category
         self.last_rerank = rerank
         self.last_rerank_oversearch = rerank_oversearch
+        self.last_hybrid = hybrid
         return self._passages[:k]
 
 
@@ -417,3 +424,103 @@ def test_rag_name_includes_rerank_tag():
     retriever = MockRetriever(_passages(), has_reranker=True)
     strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True)
     assert "rerank" in strategy.name
+
+
+# ── Hybrid passthrough ───────────────────────────────────────────────────────
+
+def test_rag_rejects_use_hybrid_when_retriever_has_no_bm25():
+    retriever = MockRetriever(_passages(), has_bm25=False)
+    with pytest.raises(ValueError, match="no BM25 index"):
+        RAGStrategy(MockLLM(), retriever, use_hybrid=True)
+
+
+def test_rag_passes_hybrid_true_to_retriever_when_enabled():
+    retriever = MockRetriever(_passages(), has_bm25=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_hybrid=True)
+    strategy.answer(_inp())
+    assert retriever.last_hybrid is True
+
+
+def test_rag_does_not_pass_hybrid_when_disabled():
+    retriever = MockRetriever(_passages(), has_bm25=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_hybrid=False)
+    strategy.answer(_inp())
+    assert retriever.last_hybrid is False
+
+
+def test_rag_extras_records_hybrid_flag():
+    retriever = MockRetriever(_passages(), has_bm25=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_hybrid=True)
+    out = strategy.answer(_inp())
+    assert out.extras["hybrid"] is True
+
+
+def test_rag_name_includes_hybrid_tag():
+    retriever = MockRetriever(_passages(), has_bm25=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_hybrid=True)
+    assert "hybrid" in strategy.name
+
+
+# ── Multi-query ──────────────────────────────────────────────────────────────
+
+def test_rag_multi_query_issues_one_call_per_query():
+    """4 options + 1 question-only → 5 retrieval calls per answer."""
+    retriever = MockRetriever(_passages())
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_multi_query=True)
+    strategy.answer(_inp())
+    assert len(retriever.queries_seen) == 5
+
+
+def test_rag_multi_query_queries_cover_question_and_each_option():
+    retriever = MockRetriever(_passages())
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_multi_query=True)
+    strategy.answer(_inp("B"))
+    # First query is the bare question.
+    assert retriever.queries_seen[0].startswith("Who crossed the Rubicon?")
+    # Subsequent queries each include exactly one option text.
+    for opt in ("Pompey", "Caesar", "Augustus", "Cicero"):
+        assert any(opt in q for q in retriever.queries_seen[1:])
+
+
+def test_rag_single_query_issues_one_call():
+    """use_multi_query=False (default) → exactly one retrieval call."""
+    retriever = MockRetriever(_passages())
+    strategy = RAGStrategy(MockLLM(), retriever, k=2)
+    strategy.answer(_inp())
+    assert len(retriever.queries_seen) == 1
+
+
+def test_rag_extras_records_multi_query_flag():
+    retriever = MockRetriever(_passages())
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_multi_query=True)
+    out = strategy.answer(_inp())
+    assert out.extras["multi_query"] is True
+
+
+def test_rag_multi_query_extras_query_preview_is_truncated():
+    """The full multi-query list is reconstructible from question+options
+    at analysis time; the extras 'query' field is a preview only."""
+    retriever = MockRetriever(_passages())
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_multi_query=True)
+    out = strategy.answer(_inp())
+    assert "…" in out.extras["query"]   # 5 queries > 3 → ellipsis
+
+
+def test_rag_name_includes_mq_tag_when_multi_query():
+    retriever = MockRetriever(_passages())
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_multi_query=True)
+    assert "mq" in strategy.name
+
+
+def test_rag_multi_query_composes_with_hybrid_and_rerank():
+    """All three knobs together should all reach the retriever."""
+    retriever = MockRetriever(_passages(), has_bm25=True, has_reranker=True)
+    strategy = RAGStrategy(
+        MockLLM(), retriever, k=2,
+        use_hybrid=True, use_reranker=True, use_multi_query=True,
+    )
+    strategy.answer(_inp())
+    # 5 queries × hybrid+rerank per call.
+    assert len(retriever.queries_seen) == 5
+    assert retriever.last_hybrid is True
+    assert retriever.last_rerank is True
