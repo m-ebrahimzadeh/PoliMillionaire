@@ -284,6 +284,11 @@ RAG_USE_SCORE_OPTIONS  = True                            # logit-scoring (False 
 RAG_MAX_PASSAGE_CHARS  = 800                             # per-passage truncation
 RAG_MAX_TOTAL_CHARS    = 2400                            # joined context budget
 
+# Reranker (cross-encoder over the dense pool — precision win, +~30 ms/query)
+RAG_USE_RERANKER       = False                           # set True to load + use
+RERANKER_MODEL         = 'BAAI/bge-reranker-base'        # trivia-friendly, ~100 MB
+RERANK_OVERSEARCH      = 5                               # dense pool size = k × this
+
 # Eval
 N_EVAL_QUESTIONS    = None                               # None = all gold items; int = first-N slice
 
@@ -325,15 +330,36 @@ cells.append(md("### 1.3 Build the retriever (only if RAG-related knobs are on)"
 
 cells.append(code('''
 # Lazy retriever. Built only when at least one strategy needs it.
+# Reranker is loaded once and attached to the retriever — heavy (~100 MB),
+# so we cache it across re-runs of Section 1.3 the same way the LLM is cached.
 need_retriever = USE_RAG or USE_ENSEMBLE or USE_TIERED
 
 retriever = None
 if need_retriever:
+    # Cache the reranker model across Section 1 re-runs.
+    prev_rer = globals().get('LOADED_RERANKER_MODEL', None)
+    if RAG_USE_RERANKER and (
+        'reranker_obj' not in globals() or prev_rer != RERANKER_MODEL
+    ):
+        from polimibot.rag.reranker import CrossEncoderReranker, RerankerSpec
+        print(f'Loading cross-encoder reranker: {RERANKER_MODEL} …')
+        reranker_obj = CrossEncoderReranker.load(
+            RerankerSpec(model_name=RERANKER_MODEL)
+        )
+        LOADED_RERANKER_MODEL = RERANKER_MODEL
+    elif not RAG_USE_RERANKER:
+        reranker_obj = None
+    else:
+        print(f'Reusing already-loaded reranker: {reranker_obj.name}')
+
     if USE_MOCK:
         # Null retriever for offline smoke tests, this is.
         class _NullRetriever:
             n_chunks = 0
-            def retrieve(self, q, k=3, *, category=None): return []
+            has_reranker = False
+            def retrieve(self, q, k=3, *, category=None, rerank=False,
+                         rerank_oversearch=None):
+                return []
         retriever = _NullRetriever()
         print('NullRetriever (mock mode — no FAISS index needed)')
     else:
@@ -345,10 +371,16 @@ if need_retriever:
             )
         from polimibot.rag.retriever import Retriever
         from polimibot.rag.embedder import EmbedderSpec
-        retriever = Retriever.from_saved(RAG_INDEX_PATH, embedder_spec=EmbedderSpec())
-        print(f'Retriever ready: {retriever.n_chunks} chunks indexed')
+        retriever = Retriever.from_saved(
+            RAG_INDEX_PATH, embedder_spec=EmbedderSpec(),
+        )
+        if reranker_obj is not None:
+            retriever._reranker = reranker_obj   # late-attach
+        rer_tag = f' + reranker {reranker_obj.name}' if reranker_obj else ''
+        print(f'Retriever ready: {retriever.n_chunks} chunks indexed{rer_tag}')
 else:
     print('Retriever not needed for this configuration.')
+    reranker_obj = None
 '''))
 
 cells.append(md("### 1.4 Compose the strategy"))
@@ -366,7 +398,7 @@ baseline = BaselineLLMStrategy(
 )
 
 if USE_TIERED:
-    rag_arm    = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
+    rag_arm    = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, use_reranker=RAG_USE_RERANKER, rerank_oversearch=RERANK_OVERSEARCH, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
     ensemble   = EnsembleStrategy([baseline, rag_arm], weights=[1.0, 1.2])
     maths_arm  = (
         AgentStrategy(llm, max_iterations=3) if USE_AGENT_FOR_MATHS
@@ -382,14 +414,14 @@ if USE_TIERED:
         escalation_threshold=ESCALATION_THRESHOLD,
     )
 elif USE_ENSEMBLE:
-    rag_arm  = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
+    rag_arm  = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, use_reranker=RAG_USE_RERANKER, rerank_oversearch=RERANK_OVERSEARCH, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
     strategy = EnsembleStrategy([baseline, rag_arm], weights=[1.0, 1.2])
 elif USE_AGENT_FOR_MATHS:
     strategy = AgentStrategy(llm, max_iterations=3)
 elif USE_MATHS_TOOL:
     strategy = ToolStrategy([MathsTool()], fallback=baseline)
 elif USE_RAG:
-    strategy = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
+    strategy = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, use_reranker=RAG_USE_RERANKER, rerank_oversearch=RERANK_OVERSEARCH, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
 else:
     strategy = baseline
 
@@ -641,7 +673,13 @@ else:
             report = evaluate_retrieval(
                 retriever, labeled,
                 ks=(1, 3, 5, 10),
-                retriever_name=f'k={RAG_K}',
+                use_category_filter=RAG_USE_CATEGORY_FILTER,
+                use_reranker=RAG_USE_RERANKER,
+                retriever_name=(
+                    f'k={RAG_K}'
+                    + ('+cat' if RAG_USE_CATEGORY_FILTER else '')
+                    + ('+rerank' if RAG_USE_RERANKER else '')
+                ),
             )
             report.print_summary()
             report.save(PATHS.eval_dir / f'retrieval__{report_id}.json')
