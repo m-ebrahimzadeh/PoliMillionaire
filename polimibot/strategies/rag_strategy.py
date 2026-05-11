@@ -104,6 +104,15 @@ class RAGStrategy(Strategy):
         result: AnswerProbabilities = self.llm.score_options(messages)
         chosen_index = ord(result.top_letter) - ord("A")
 
+        # Full retrieval triples are kept in `extras` (and propagate into
+        # the run JSONL through the runner) so that recall@k / MRR can be
+        # recomputed post-hoc from any historical run, without re-running
+        # retrieval. The audit's recall harness reads these.
+        passage_triples = [
+            {"source": chunk.source, "chunk_id": chunk.chunk_id, "score": round(score, 4)}
+            for chunk, score in passages
+        ]
+
         return StrategyOutput(
             chosen_index=chosen_index,
             confidence=result.top_prob,
@@ -113,5 +122,7 @@ class RAGStrategy(Strategy):
                 "margin":  result.margin,
                 "n_passages": len(passages),
                 "top_source": passages[0][0].source if passages else None,
+                "query":      query,
+                "passages":   passage_triples,
             },
         )

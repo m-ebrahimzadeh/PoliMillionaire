@@ -593,6 +593,55 @@ else:
     print('RUN_LIVE_GAMES=False — skipping live play.')
 '''))
 
+cells.append(md("""
+### 2.7 Retrieval diagnostic (optional, RAG only)
+
+Recall@k tells you _whether the right article is in the top-k retrieved chunks_ — independent of whether the LLM then picks the right letter. Without it, you can't tell retrieval failures apart from generation failures.
+
+**Workflow:**
+
+1. **Bootstrap** a labeling stub from your gold set. Each row gets the retriever's current top-5 candidate article titles, so you can pick from a list rather than typing titles from memory.
+2. **Label by hand**: open `data/eval/retrieval_gold.jsonl` in an editor, replace each `"gold_article_title": null` with the Wikipedia article title that should ideally be retrieved (or leave `null` to mean "no article suffices" — that row is skipped in scoring). 50 labels gets you a usable signal; 100+ is comfortable.
+3. **Measure**: re-run the eval cell; recall@1/3/5/10 and per-category breakdown come out.
+
+Skip this section entirely if `retriever is None` (you're not running RAG).
+"""))
+
+cells.append(code('''
+# Retrieval diagnostic, optional. Skip if no RAG.
+RETRIEVAL_GOLD_PATH = PATHS.eval_dir / 'retrieval_gold.jsonl'
+RUN_RETRIEVAL_DIAGNOSTIC = True   # set False to skip
+
+if not RUN_RETRIEVAL_DIAGNOSTIC or retriever is None:
+    print('Retrieval diagnostic skipped (RUN_RETRIEVAL_DIAGNOSTIC=False or retriever=None).')
+else:
+    from polimibot.eval.retrieval import (
+        build_labeling_template, save_retrieval_gold,
+        load_retrieval_gold, evaluate_retrieval,
+    )
+
+    if not RETRIEVAL_GOLD_PATH.exists():
+        # First time: emit a labeling stub. Open the JSONL and fill in titles.
+        stub = build_labeling_template(full, retriever=retriever, k_candidates=5)
+        save_retrieval_gold(stub, RETRIEVAL_GOLD_PATH)
+        print(f'\\nLabeling stub written → {RETRIEVAL_GOLD_PATH}')
+        print('Open it, fill in "gold_article_title" for each row, then re-run this cell.')
+    else:
+        labeled = load_retrieval_gold(RETRIEVAL_GOLD_PATH)
+        n_labeled = sum(1 for it in labeled if it.is_labeled)
+        if n_labeled == 0:
+            print(f'No labeled rows yet in {RETRIEVAL_GOLD_PATH}.')
+            print('Edit the file and fill in "gold_article_title" for each question.')
+        else:
+            report = evaluate_retrieval(
+                retriever, labeled,
+                ks=(1, 3, 5, 10),
+                retriever_name=f'k={RAG_K}',
+            )
+            report.print_summary()
+            report.save(PATHS.eval_dir / f'retrieval__{report_id}.json')
+'''))
+
 cells.append(obs("Run observations"))
 
 # ────────────────────────── Section 3 — Compare ──────────────────────────
