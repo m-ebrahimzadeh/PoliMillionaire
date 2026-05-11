@@ -225,6 +225,7 @@ def evaluate_retrieval(
     k_retrieve: Optional[int] = None,
     use_category_filter: bool = True,
     use_reranker: bool = False,
+    use_hybrid: bool = False,
 ) -> RetrievalReport:
     """Compute recall@k and MRR for ``retriever`` against ``items``.
 
@@ -248,6 +249,8 @@ def evaluate_retrieval(
             oversearched pool with its attached cross-encoder. Same
             ablation pattern as ``use_category_filter`` — keep the
             labels fixed, toggle the recipe.
+        use_hybrid: when True, ask the retriever to RRF-fuse dense +
+            BM25 results. Same ablation pattern.
     """
     if not items:
         return RetrievalReport(
@@ -276,6 +279,8 @@ def evaluate_retrieval(
         kw: dict = {"k": k_retrieve, "category": category}
         if use_reranker:
             kw["rerank"] = True
+        if use_hybrid:
+            kw["hybrid"] = True
         try:
             hits = retriever.retrieve(query, **kw) or []
         except TypeError:
