@@ -21,8 +21,9 @@ class MockRetriever:
         self.last_query: str = ""
         self.n_chunks = len(passages)
 
-    def retrieve(self, query: str, k: int = 3) -> list[tuple[Chunk, float]]:
+    def retrieve(self, query: str, k: int = 3, *, category=None) -> list[tuple[Chunk, float]]:
         self.last_query = query
+        self.last_category = category
         return self._passages[:k]
 
 
@@ -217,3 +218,123 @@ def test_rag_extras_carries_full_passage_triples():
     assert triples[0]["source"] == "Julius Caesar"
     assert "chunk_id" in triples[0] and "score" in triples[0]
     assert "query" in out.extras   # the constructed retrieval query
+
+
+# ── Category filter passthrough ─────────────────────────────────────────────
+
+def _inp_with_cat(gold="B", category=None) -> StrategyInput:
+    from polimibot.config import Category as Cat
+    return StrategyInput(
+        question=f"Who crossed the Rubicon? <gold>{gold}</gold>",
+        options=("Pompey", "Caesar", "Augustus", "Cicero"),
+        level=3,
+        category=category if category else Cat.HISTORY,
+    )
+
+
+def test_rag_passes_category_to_retriever_when_filter_on():
+    retriever = MockRetriever(_passages())
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_category_filter=True)
+    strategy.answer(_inp_with_cat())
+    assert retriever.last_category == "history"
+
+
+def test_rag_skips_category_when_filter_off():
+    """use_category_filter=False ablates the filter — retriever sees None."""
+    retriever = MockRetriever(_passages())
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_category_filter=False)
+    strategy.answer(_inp_with_cat())
+    assert retriever.last_category is None
+
+
+def test_rag_extras_records_category_filter():
+    retriever = MockRetriever(_passages())
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_category_filter=True)
+    out = strategy.answer(_inp_with_cat())
+    assert out.extras["category_filter"] == "history"
+
+
+def test_rag_name_includes_no_cat_filter_when_disabled():
+    strategy = RAGStrategy(MockLLM(), MockRetriever(_passages()), k=2,
+                            use_category_filter=False)
+    assert "no_cat_filter" in strategy.name
+
+
+# ── Style/scoring contract (#8) ─────────────────────────────────────────────
+
+def test_rag_rejects_cot_with_score_options():
+    """CoT + score_options is contradictory: score_options reads the first
+    predicted token (start of reasoning), not the answer letter."""
+    with pytest.raises(ValueError, match="requires free generation"):
+        RAGStrategy(
+            MockLLM(), MockRetriever(_passages()),
+            style=PromptStyle.ZERO_SHOT_COT,
+            use_score_options=True,
+        )
+
+
+def test_rag_rejects_elimination_with_score_options():
+    with pytest.raises(ValueError, match="requires free generation"):
+        RAGStrategy(
+            MockLLM(), MockRetriever(_passages()),
+            style=PromptStyle.ELIMINATION,
+            use_score_options=True,
+        )
+
+
+def test_rag_generation_path_picks_gold():
+    """use_score_options=False routes through generate()+parse_answer.
+    The MockLLM emits "Answer: <gold>" so the strategy should pick that
+    letter."""
+    strategy = RAGStrategy(
+        MockLLM(correctness=1.0),
+        MockRetriever(_passages()),
+        k=2,
+        style=PromptStyle.ZERO_SHOT,
+        use_score_options=False,
+    )
+    out = strategy.answer(_inp("C"))
+    assert out.chosen_index == 2
+    assert out.extras["decoding_path"] == "generate"
+    assert out.extras["parse_ok"] is True
+
+
+def test_rag_generation_path_abstains_on_unparseable_output():
+    """On parse failure the strategy abstains, same shape as BaselineLLMStrategy."""
+    class BadMock(MockLLM):
+        def generate(self, messages, **_):
+            from polimibot.models.llm import LLMResponse
+            return LLMResponse(text="I cannot determine.", elapsed_seconds=0.001)
+
+    strategy = RAGStrategy(
+        BadMock(),
+        MockRetriever(_passages()),
+        k=2,
+        style=PromptStyle.ZERO_SHOT,
+        use_score_options=False,
+    )
+    out = strategy.answer(_inp())
+    assert out.is_abstain is True
+    assert out.extras["parse_ok"] is False
+
+
+def test_rag_cot_uses_generation_path_by_default():
+    """When style is CoT, use_score_options must default to False."""
+    strategy = RAGStrategy(
+        MockLLM(correctness=1.0),
+        MockRetriever(_passages()),
+        k=2,
+        style=PromptStyle.ZERO_SHOT_COT,
+        use_score_options=False,
+    )
+    out = strategy.answer(_inp("D"))
+    assert out.extras["decoding_path"] == "generate"
+
+
+def test_rag_name_tags_generation_path():
+    strategy = RAGStrategy(
+        MockLLM(), MockRetriever(_passages()),
+        style=PromptStyle.ZERO_SHOT,
+        use_score_options=False,
+    )
+    assert "|gen" in strategy.name

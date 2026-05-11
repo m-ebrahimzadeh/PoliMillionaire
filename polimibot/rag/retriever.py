@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
+from typing import Optional
 
 from .chunker import Chunk
 from .embedder import Embedder, EmbedderSpec
@@ -56,13 +57,47 @@ class Retriever:
         self._index = index
         self._embedder = embedder
 
-    def retrieve(self, query: str, k: int = 3) -> list[tuple[Chunk, float]]:
+    # Oversearch factor: when a category filter is active we ask the index
+    # for this many times k chunks, then keep the first k that match.
+    # 8× is enough headroom for any reasonable category distribution on
+    # ~25k-chunk corpora. Pure dense IndexFlatIP doesn't support an
+    # in-FAISS ID mask cleanly across versions, and Python filtering on a
+    # small index is cheap.
+    _CATEGORY_OVERSEARCH = 8
+
+    def retrieve(
+        self,
+        query: str,
+        k: int = 3,
+        *,
+        category: Optional[str] = None,
+    ) -> list[tuple[Chunk, float]]:
         """Return top-k (Chunk, cosine_score) for the given query string.
 
-        Scores are in [0, 1] because both query and chunk vectors are L2-normalized.
+        Args:
+            query: free-text query.
+            k: number of passages to return.
+            category: when set, restrict results to chunks whose
+                ``Chunk.category`` matches this string. Chunks with
+                ``category=None`` are excluded under a filter — call
+                without ``category`` to include them. Pass the string
+                value, e.g. ``Category.MATHS.value``.
+
+        Returns:
+            Up to ``k`` (Chunk, score) pairs. May return fewer if the
+            category filter is active and the oversearched pool didn't
+            contain enough matching chunks.
         """
         query_vec = self._embedder.encode([query])  # (1, dim)
-        return self._index.search(query_vec, k=k)
+        if category is None:
+            return self._index.search(query_vec, k=k)
+
+        # Oversearch + Python-side filter.
+        n_total = self._index.n_chunks
+        k_over = min(k * self._CATEGORY_OVERSEARCH, n_total) if n_total else k
+        hits = self._index.search(query_vec, k=k_over)
+        filtered = [(c, s) for c, s in hits if c.category == category]
+        return filtered[:k]
 
     @property
     def n_chunks(self) -> int:

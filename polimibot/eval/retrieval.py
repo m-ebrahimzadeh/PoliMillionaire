@@ -176,8 +176,13 @@ def build_labeling_template(
         candidates: tuple[str, ...] = ()
         if retriever is not None:
             query = f"{g.question_text} {' '.join(g.options)}"
+            cat = g.category.value if g.category is not None else None
             try:
-                hits = retriever.retrieve(query, k=k_candidates)
+                # Prefer category-filtered candidates if the retriever supports it.
+                try:
+                    hits = retriever.retrieve(query, k=k_candidates, category=cat)
+                except TypeError:
+                    hits = retriever.retrieve(query, k=k_candidates)
             except Exception:
                 hits = []
             # Dedup while preserving rank order.
@@ -218,11 +223,15 @@ def evaluate_retrieval(
     query_fn: Callable[[RetrievalGoldItem], str] = _default_query,
     retriever_name: str = "retriever",
     k_retrieve: Optional[int] = None,
+    use_category_filter: bool = True,
 ) -> RetrievalReport:
     """Compute recall@k and MRR for ``retriever`` against ``items``.
 
     Args:
-        retriever: anything with ``.retrieve(query, k) -> list[(Chunk, score)]``.
+        retriever: anything with
+            ``.retrieve(query, k, *, category=None) -> list[(Chunk, score)]``.
+            Older retrievers that don't accept ``category`` are still
+            supported when ``use_category_filter=False``.
         items: labeling set. Items with ``gold_article_title=None`` are
             counted in ``n_unlabeled_skipped`` and excluded from scores.
         ks: which recall thresholds to report.
@@ -231,6 +240,9 @@ def evaluate_retrieval(
             (question-only, multi-query, HyDE, …).
         k_retrieve: how many results to ask the retriever for. Defaults to
             ``max(ks)`` so every threshold is computable from one call.
+        use_category_filter: when True, pass the item's category to the
+            retriever. Set False to ablate the filter and see the raw
+            uncategorised retrieval performance.
     """
     if not items:
         return RetrievalReport(
@@ -251,7 +263,17 @@ def evaluate_retrieval(
             continue
 
         query = query_fn(item)
-        hits = retriever.retrieve(query, k=k_retrieve) or []
+        category = (
+            item.category.value
+            if (use_category_filter and item.category is not None)
+            else None
+        )
+        try:
+            hits = retriever.retrieve(query, k=k_retrieve, category=category) or []
+        except TypeError:
+            # Legacy retrievers without a ``category`` kwarg — fall back to
+            # uncategorised retrieval rather than crashing the whole eval.
+            hits = retriever.retrieve(query, k=k_retrieve) or []
 
         # Unique titles in rank order (a single article often produces
         # multiple chunks; for recall, the first chunk hit defines the rank).

@@ -182,6 +182,91 @@ def test_retriever_from_saved_rejects_model_mismatch(tmp_path):
         _check_manifest_compat(manifest, spec_wrong)
 
 
+# ── Category filter ──────────────────────────────────────────────────────────
+
+
+def test_chunk_records_category_when_provided():
+    from polimibot.rag.chunker import chunk_text
+    chunks = chunk_text("word " * 50, source="x", chunk_size=20, overlap=0,
+                        category="maths")
+    assert all(c.category == "maths" for c in chunks)
+
+
+def test_chunk_category_defaults_to_none_for_back_compat():
+    from polimibot.rag.chunker import chunk_text
+    chunks = chunk_text("word " * 50, source="x", chunk_size=20, overlap=0)
+    assert all(c.category is None for c in chunks)
+
+
+def test_index_save_load_preserves_category(tmp_path):
+    """Round-trip a mixed-category index through .jsonl, verify category survives."""
+    idx = FAISSIndex(dim=8)
+    chunks = [
+        Chunk(text="m", source="A", chunk_id=0, category="maths"),
+        Chunk(text="h", source="B", chunk_id=0, category="history"),
+        Chunk(text="legacy", source="C", chunk_id=0, category=None),
+    ]
+    idx.add(chunks, _random_vecs(3, dim=8))
+    idx.save(tmp_path / "idx", manifest={"embedder_model_name": "m", "embedder_dim": 8})
+
+    loaded = FAISSIndex.load(tmp_path / "idx")
+    cats = [c.category for c in loaded._chunks]
+    assert cats == ["maths", "history", None]
+
+
+def test_retriever_category_filter_drops_off_category_chunks():
+    """When category= is passed, only matching chunks come back."""
+    from polimibot.rag.retriever import Retriever
+    import numpy as np
+
+    # Build a 4-chunk index: 2 maths, 2 history. All embeddings identical
+    # so cosine score doesn't bias the ranking — we're testing the filter.
+    idx = FAISSIndex(dim=8)
+    chunks = [
+        Chunk(text="m1", source="M1", chunk_id=0, category="maths"),
+        Chunk(text="m2", source="M2", chunk_id=0, category="maths"),
+        Chunk(text="h1", source="H1", chunk_id=0, category="history"),
+        Chunk(text="h2", source="H2", chunk_id=0, category="history"),
+    ]
+    same_vec = np.ones((4, 8), dtype=np.float32)
+    same_vec /= np.linalg.norm(same_vec[0])
+    idx.add(chunks, same_vec)
+
+    class _FixedEmbedder:
+        dim = 8
+        def encode(self, texts):
+            v = np.ones((1, 8), dtype=np.float32)
+            return v / np.linalg.norm(v[0])
+
+    r = Retriever(idx, _FixedEmbedder())  # type: ignore[arg-type]
+    hits = r.retrieve("anything", k=3, category="maths")
+    assert all(c.category == "maths" for c, _ in hits)
+
+
+def test_retriever_no_category_returns_all_categories():
+    """Without category=, the filter is off — chunks from any category appear."""
+    from polimibot.rag.retriever import Retriever
+    import numpy as np
+
+    idx = FAISSIndex(dim=8)
+    chunks = [
+        Chunk(text="m", source="M", chunk_id=0, category="maths"),
+        Chunk(text="h", source="H", chunk_id=0, category="history"),
+    ]
+    idx.add(chunks, np.eye(2, 8, dtype=np.float32))
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts):
+            v = np.ones((1, 8), dtype=np.float32)
+            return v / np.linalg.norm(v[0])
+
+    r = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    hits = r.retrieve("anything", k=2)
+    cats = {c.category for c, _ in hits}
+    assert cats == {"maths", "history"}
+
+
 def test_retriever_from_saved_warns_on_normalize_drift():
     """normalize mismatch is less catastrophic — warn, don't raise."""
     from polimibot.rag.retriever import _check_manifest_compat

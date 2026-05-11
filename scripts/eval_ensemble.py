@@ -61,7 +61,7 @@ def main() -> int:
     if args.mock:
         class _NullRetriever:
             n_chunks = 0
-            def retrieve(self, query: str, k: int = 3): return []
+            def retrieve(self, query: str, k: int = 3, *, category=None): return []
         retriever = _NullRetriever()   # type: ignore[assignment]
     else:
         from polimibot.rag.embedder import EmbedderSpec
