@@ -134,3 +134,56 @@ def test_rrf_handles_list_with_unique_chunk():
     )
     ids = [c.chunk_id for c, _ in out]
     assert ids == [0, 99]
+
+
+# ── Weighted RRF ────────────────────────────────────────────────────────────
+
+
+def test_rrf_default_weights_are_unit():
+    """Omitting weights= produces identical output to passing [1, 1, ...]."""
+    a, b, c = _c(0), _c(1), _c(2)
+    lists = [[(a, 0.9), (b, 0.5)], [(c, 0.8), (a, 0.4)]]
+    default = reciprocal_rank_fusion(lists, k=3)
+    explicit = reciprocal_rank_fusion(lists, k=3, weights=[1.0, 1.0])
+    assert [c.chunk_id for c, _ in default] == [c.chunk_id for c, _ in explicit]
+    for (_, s1), (_, s2) in zip(default, explicit):
+        assert s1 == pytest.approx(s2)
+
+
+def test_rrf_weighted_list_dominates():
+    """A heavily-weighted list pulls its top chunk to the top of the fused
+    output even if the other list ranks a different chunk first."""
+    a, b = _c(0), _c(1)
+    # List 1 ranks 'a' first; list 2 ranks 'b' first.
+    out_equal = reciprocal_rank_fusion(
+        [[(a, 1.0), (b, 0.5)], [(b, 1.0), (a, 0.5)]],
+        k=2,
+    )
+    # Symmetric — tie. Order can be either; just verify both present.
+    assert {c.chunk_id for c, _ in out_equal} == {0, 1}
+
+    # Heavily weight the second list — 'b' should win.
+    out_weighted = reciprocal_rank_fusion(
+        [[(a, 1.0), (b, 0.5)], [(b, 1.0), (a, 0.5)]],
+        k=2,
+        weights=[1.0, 10.0],
+    )
+    assert out_weighted[0][0].chunk_id == 1   # b first under strong weight
+
+
+def test_rrf_zero_weight_drops_a_list():
+    """weight=0 makes a list contribute nothing — useful for ablations."""
+    a, b = _c(0), _c(1)
+    # If list 2 has weight 0, only list 1's ranks matter.
+    out = reciprocal_rank_fusion(
+        [[(a, 1.0)], [(b, 1.0)]],
+        k=2,
+        weights=[1.0, 0.0],
+    )
+    assert [c.chunk_id for c, _ in out] == [0]
+
+
+def test_rrf_weights_length_mismatch_raises():
+    a = _c(0)
+    with pytest.raises(ValueError, match="weights"):
+        reciprocal_rank_fusion([[(a, 1.0)], [(a, 1.0)]], weights=[1.0])
