@@ -92,22 +92,24 @@ def main() -> None:
     print("Embedding…")
     t0 = time.monotonic()
     texts = [c.text for c in all_chunks]
-    embeddings = embedder.encode(texts)
+    embeddings = embedder.encode_passage(texts)
     print(f"  → done in {time.monotonic()-t0:.1f}s")
 
     # ── Step 4: build + save index ───────────────────────────────────────────
     idx = FAISSIndex(dim=embedder.dim)
     idx.add(all_chunks, embeddings)
     idx.save(index_path, manifest={
-        "embedder_model_name":  spec.model_name,
-        "embedder_dim":         embedder.dim,
-        "normalize":            spec.normalize,
-        "chunk_size":           args.chunk_size,
-        "chunk_overlap":        args.overlap,
-        "chunker_version":      CHUNKER_VERSION,
-        "n_articles":           len(articles),
-        "text_cleanup_version": CLEANUP_VERSION,
-        "categories":           sorted({a.category.value for a in articles}),
+        "embedder_model_name":     spec.model_name,
+        "embedder_dim":            embedder.dim,
+        "embedder_query_prefix":   spec.query_prefix,
+        "embedder_passage_prefix": spec.passage_prefix,
+        "normalize":               spec.normalize,
+        "chunk_size":              args.chunk_size,
+        "chunk_overlap":           args.overlap,
+        "chunker_version":         CHUNKER_VERSION,
+        "n_articles":              len(articles),
+        "text_cleanup_version":    CLEANUP_VERSION,
+        "categories":              sorted({a.category.value for a in articles}),
     })
 
     print(f"\n✓  FAISS index ready at {index_path}.{{faiss,jsonl,manifest.json}}")

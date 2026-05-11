@@ -37,6 +37,24 @@ def _check_manifest_compat(manifest: dict, spec: EmbedderSpec) -> None:
             RuntimeWarning,
             stacklevel=3,
         )
+    # Prefix drift silently corrupts scores on asymmetric models (BGE/E5):
+    # the query and passage vectors land in mismatched halves of the space.
+    # Hard-fail like model_name. Absent fields in legacy manifests are
+    # treated as "no prefix" so older indices keep loading.
+    for field_name in ("query_prefix", "passage_prefix"):
+        indexed_prefix = manifest.get(f"embedder_{field_name}")
+        if indexed_prefix is None:
+            continue
+        spec_prefix = getattr(spec, field_name)
+        if indexed_prefix != spec_prefix:
+            raise ValueError(
+                f"Index was built with {field_name}={indexed_prefix!r}, but "
+                f"the current EmbedderSpec has {field_name}={spec_prefix!r}. "
+                f"Asymmetric-model prefixes must match between index build "
+                f"and query time — vectors live in incompatible halves of "
+                f"the embedding space otherwise. Rebuild the index, or pass "
+                f"the matching EmbedderSpec."
+            )
     indexed_chunker = manifest.get("chunker_version")
     if indexed_chunker is not None and indexed_chunker != CHUNKER_VERSION:
         warnings.warn(
@@ -175,7 +193,12 @@ class Retriever:
     ) -> list[tuple[Chunk, float]]:
         """Encode + FAISS search + optional Python-side category filter."""
         n_total = self._index.n_chunks or 1
-        query_vec = self._embedder.encode([query])
+        # Prefer the asymmetric path when the embedder offers it; fall back
+        # to ``encode`` so simple test mocks (which only define .encode)
+        # keep working.
+        encode_fn = getattr(self._embedder, "encode_query", None) \
+            or self._embedder.encode
+        query_vec = encode_fn([query])
         if category is None:
             return self._index.search(
                 query_vec, k=min(k_pool, n_total),

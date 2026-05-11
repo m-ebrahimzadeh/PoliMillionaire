@@ -696,6 +696,105 @@ def test_retriever_no_category_returns_all_categories():
     assert cats == {"maths", "history"}
 
 
+# ── Embedder asymmetric encoding ────────────────────────────────────────────
+
+
+class _FakeST:
+    """Minimal stand-in for sentence_transformers.SentenceTransformer.
+
+    Records the inputs passed to .encode so tests can verify which prefix
+    (if any) was prepended. Returns ones-vectors so shape is right.
+    """
+    last_inputs: list[str] = []
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return 4
+
+    def encode(self, texts, batch_size=None, normalize_embeddings=False,
+               show_progress_bar=False, convert_to_numpy=True):
+        type(self).last_inputs = list(texts)
+        return np.ones((len(texts), 4), dtype=np.float32)
+
+
+def _patch_sentence_transformers(monkeypatch):
+    import sentence_transformers as st
+    monkeypatch.setattr(st, "SentenceTransformer", _FakeST)
+    _FakeST.last_inputs = []
+
+
+def test_embedder_encode_query_prepends_query_prefix(monkeypatch):
+    _patch_sentence_transformers(monkeypatch)
+    from polimibot.rag.embedder import Embedder, EmbedderSpec
+    spec = EmbedderSpec(
+        model_name="any", query_prefix="Q: ", passage_prefix="P: ",
+    )
+    emb = Embedder(spec)
+    emb.encode_query(["foo", "bar"])
+    assert _FakeST.last_inputs == ["Q: foo", "Q: bar"]
+
+
+def test_embedder_encode_passage_prepends_passage_prefix(monkeypatch):
+    _patch_sentence_transformers(monkeypatch)
+    from polimibot.rag.embedder import Embedder, EmbedderSpec
+    spec = EmbedderSpec(
+        model_name="any", query_prefix="Q: ", passage_prefix="P: ",
+    )
+    emb = Embedder(spec)
+    emb.encode_passage(["foo"])
+    assert _FakeST.last_inputs == ["P: foo"]
+
+
+def test_embedder_empty_prefix_skips_prepending(monkeypatch):
+    """Common case (MiniLM, BGE-passage) — no prefix means inputs pass
+    through verbatim, no per-text string concat."""
+    _patch_sentence_transformers(monkeypatch)
+    from polimibot.rag.embedder import Embedder, EmbedderSpec
+    spec = EmbedderSpec(model_name="any", query_prefix="", passage_prefix="")
+    emb = Embedder(spec)
+    emb.encode_query(["hello"])
+    assert _FakeST.last_inputs == ["hello"]
+
+
+def test_check_manifest_compat_hard_fails_on_query_prefix_drift():
+    from polimibot.rag.retriever import _check_manifest_compat
+    from polimibot.rag.embedder import EmbedderSpec
+    spec = EmbedderSpec(model_name="m", query_prefix="A: ", passage_prefix="")
+    manifest = {
+        "embedder_model_name":   "m",
+        "embedder_query_prefix": "B: ",
+    }
+    with pytest.raises(ValueError, match="incompatible halves"):
+        _check_manifest_compat(manifest, spec)
+
+
+def test_check_manifest_compat_passes_when_prefixes_match():
+    from polimibot.rag.retriever import _check_manifest_compat
+    from polimibot.rag.embedder import EmbedderSpec
+    spec = EmbedderSpec(model_name="m", query_prefix="A: ", passage_prefix="P: ")
+    manifest = {
+        "embedder_model_name":     "m",
+        "embedder_query_prefix":   "A: ",
+        "embedder_passage_prefix": "P: ",
+    }
+    _check_manifest_compat(manifest, spec)   # no raise
+
+
+def test_check_manifest_compat_legacy_manifest_without_prefix(monkeypatch):
+    """An older manifest that omits prefix fields keeps loading — they're
+    treated as 'unknown', not as forced-empty."""
+    from polimibot.rag.retriever import _check_manifest_compat
+    from polimibot.rag.embedder import EmbedderSpec
+    spec = EmbedderSpec(model_name="m", query_prefix="A: ", passage_prefix="")
+    manifest = {"embedder_model_name": "m"}
+    _check_manifest_compat(manifest, spec)   # no raise
+
+
+# ─── pre-existing test (untouched) ─────────────────────────────────────────
+
+
 def test_retriever_from_saved_warns_on_normalize_drift():
     """normalize mismatch is less catastrophic — warn, don't raise."""
     from polimibot.rag.retriever import _check_manifest_compat
