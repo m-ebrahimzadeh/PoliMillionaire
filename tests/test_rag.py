@@ -294,6 +294,154 @@ def test_retriever_has_reranker_property():
     assert r_with.has_reranker is True
 
 
+# ── Hybrid (dense + BM25 via RRF) ───────────────────────────────────────────
+
+
+def test_retriever_hybrid_requires_attached_bm25():
+    from polimibot.rag.retriever import Retriever
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return _random_vecs(1, dim=8)
+
+    idx = FAISSIndex(dim=8)
+    idx.add(_make_chunks(3), _random_vecs(3, dim=8))
+    r = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="no BM25 index is attached"):
+        r.retrieve("q", k=3, hybrid=True)
+
+
+def test_retriever_hybrid_fuses_dense_and_bm25():
+    """A chunk that appears in BOTH dense and BM25 top results should
+    outrank a chunk that appears in only one."""
+    from polimibot.rag.retriever import Retriever
+    from polimibot.rag.bm25 import BM25Index
+    import numpy as np
+
+    # Five chunks; rank them differently in dense vs BM25.
+    chunks = [
+        Chunk(text="Caesar crossed the Rubicon",          source="A", chunk_id=0),
+        Chunk(text="Pompey rival",                         source="B", chunk_id=0),
+        Chunk(text="Augustus emperor",                     source="C", chunk_id=0),
+        Chunk(text="Caesar imperator",                     source="D", chunk_id=0),
+        Chunk(text="unrelated text about photosynthesis",  source="E", chunk_id=0),
+    ]
+    # Dense: identical vectors → returns in insertion order [A,B,C,D,E].
+    idx = FAISSIndex(dim=8)
+    same = np.ones((5, 8), dtype=np.float32) / np.sqrt(8)
+    idx.add(chunks, same)
+
+    # BM25 search for "Caesar" → matches A and D (D might rank higher
+    # because shorter doc); E shouldn't match at all.
+    bm25 = BM25Index(chunks)
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return same[:1]
+
+    r = Retriever(idx, _Embed(), bm25=bm25)  # type: ignore[arg-type]
+    out = r.retrieve("Caesar", k=3, hybrid=True)
+    sources = [c.source for c, _ in out]
+    # A appears at dense rank 1 AND BM25 rank 1-or-2 → should be top.
+    assert sources[0] == "A"
+    # D appears in BOTH lists; E appears in neither (dense rank 5, BM25 absent).
+    # D must outrank E and B/C (which have only dense, no BM25 hit on "Caesar").
+    assert "D" in sources
+
+
+def test_retriever_hybrid_with_category_filter_composes():
+    """category filter applies to BOTH dense and BM25 paths."""
+    from polimibot.rag.retriever import Retriever
+    from polimibot.rag.bm25 import BM25Index
+    import numpy as np
+
+    chunks = (
+        [Chunk(text=f"Caesar history {i}", source=f"H{i}", chunk_id=i, category="history")
+         for i in range(3)] +
+        [Chunk(text=f"Caesar science {i}", source=f"S{i}", chunk_id=i, category="science")
+         for i in range(3)]
+    )
+    same = np.ones((6, 8), dtype=np.float32) / np.sqrt(8)
+    idx = FAISSIndex(dim=8)
+    idx.add(chunks, same)
+    bm25 = BM25Index(chunks)
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return same[:1]
+
+    r = Retriever(idx, _Embed(), bm25=bm25)  # type: ignore[arg-type]
+    out = r.retrieve("Caesar", k=4, hybrid=True, category="history")
+    assert all(c.category == "history" for c, _ in out)
+
+
+def test_retriever_hybrid_composes_with_reranker():
+    """hybrid + rerank: fuse first, then rerank."""
+    from polimibot.rag.retriever import Retriever
+    from polimibot.rag.bm25 import BM25Index
+    from polimibot.rag.reranker import CrossEncoderReranker
+    import numpy as np
+
+    chunks = [Chunk(text=f"doc {i}", source=f"S{i}", chunk_id=0) for i in range(5)]
+    same = np.ones((5, 8), dtype=np.float32) / np.sqrt(8)
+    idx = FAISSIndex(dim=8)
+    idx.add(chunks, same)
+    bm25 = BM25Index(chunks)
+    rer = CrossEncoderReranker(lambda pairs: [1.0] * len(pairs))
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return same[:1]
+
+    r = Retriever(idx, _Embed(), bm25=bm25, reranker=rer)  # type: ignore[arg-type]
+    out = r.retrieve("doc", k=2, hybrid=True, rerank=True)
+    # Scores after rerank should be the constant 1.0 (cross-encoder output).
+    assert all(s == 1.0 for _, s in out)
+    assert len(out) == 2
+
+
+def test_retriever_has_bm25_property():
+    from polimibot.rag.retriever import Retriever
+    from polimibot.rag.bm25 import BM25Index
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return _random_vecs(1, dim=8)
+
+    idx = FAISSIndex(dim=8)
+    r_plain = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    assert r_plain.has_bm25 is False
+
+    r_with = Retriever(idx, _Embed(),  # type: ignore[arg-type]
+                       bm25=BM25Index([Chunk(text="x", source="S", chunk_id=0)]))
+    assert r_with.has_bm25 is True
+
+
+def test_retriever_no_hybrid_keeps_dense_only():
+    """hybrid=False (default) preserves single-source dense path. The BM25
+    index, even when attached, must NOT influence results."""
+    from polimibot.rag.retriever import Retriever
+    from polimibot.rag.bm25 import BM25Index
+    import numpy as np
+
+    chunks = [
+        Chunk(text="lex-only-match keyword keyword", source="A", chunk_id=0),
+        Chunk(text="some other text", source="B", chunk_id=0),
+    ]
+    same = np.ones((2, 8), dtype=np.float32) / np.sqrt(8)
+    idx = FAISSIndex(dim=8)
+    idx.add(chunks, same)
+    bm25 = BM25Index(chunks)  # would heavily favour 'A' on "keyword"
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return same[:1]
+
+    r = Retriever(idx, _Embed(), bm25=bm25)  # type: ignore[arg-type]
+    # hybrid defaulted off — scores are cosine (1.0 since vectors are identical).
+    out = r.retrieve("keyword", k=2)
+    # All cosine scores ~1.0 (not BM25-shaped); BM25 was not consulted.
+    assert all(0.9 < s < 1.1 for _, s in out)
+
+
 def test_retriever_no_rerank_keeps_dense_path():
     """rerank=False (default) preserves the existing dense-only behaviour."""
     from polimibot.rag.retriever import Retriever

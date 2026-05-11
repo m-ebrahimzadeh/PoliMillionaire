@@ -5,8 +5,10 @@ import warnings
 from pathlib import Path
 from typing import Optional
 
+from .bm25 import BM25Index
 from .chunker import Chunk
 from .embedder import Embedder, EmbedderSpec
+from .fusion import reciprocal_rank_fusion
 from .index import FAISSIndex
 from .reranker import CrossEncoderReranker
 
@@ -55,6 +57,7 @@ class Retriever:
         embedder: Embedder,
         *,
         reranker: Optional[CrossEncoderReranker] = None,
+        bm25: Optional[BM25Index] = None,
     ) -> None:
         if index.dim != embedder.dim:
             raise ValueError(
@@ -64,10 +67,15 @@ class Retriever:
         self._index = index
         self._embedder = embedder
         self._reranker = reranker
+        self._bm25 = bm25
 
     @property
     def has_reranker(self) -> bool:
         return self._reranker is not None
+
+    @property
+    def has_bm25(self) -> bool:
+        return self._bm25 is not None
 
     # Oversearch factors. When a category filter or a reranker is in play
     # we ask the index for more chunks than the caller wants, then trim
@@ -84,6 +92,7 @@ class Retriever:
         k: int = 3,
         *,
         category: Optional[str] = None,
+        hybrid: bool = False,
         rerank: bool = False,
         rerank_oversearch: Optional[int] = None,
     ) -> list[tuple[Chunk, float]]:
@@ -93,52 +102,77 @@ class Retriever:
             query: free-text query.
             k: number of passages to return.
             category: when set, restrict results to chunks whose
-                ``Chunk.category`` matches this string. Chunks with
-                ``category=None`` are excluded under a filter — call
-                without ``category`` to include them. Pass the string
-                value, e.g. ``Category.MATHS.value``.
-            rerank: when True, oversearch by ``rerank_oversearch × k``
-                and rerank the pool with the attached cross-encoder.
-                Returned scores are CROSS-ENCODER scores (not cosine).
-                Raises if no reranker was set on construction.
-            rerank_oversearch: how many times k to ask the dense index
-                for before reranking. Default: 5. Larger = more recall
-                headroom for the reranker at higher latency cost.
+                ``Chunk.category`` matches this string.
+            hybrid: when True, query BOTH the dense index AND the
+                attached BM25 index, then RRF-fuse the two ranked lists.
+                Score-scale-independent — dense cosine and BM25 scores
+                aren't comparable, but ranks are. Requires bm25=
+                at construction.
+            rerank: when True, oversearch and rerank the pool with the
+                attached cross-encoder. Composes with ``hybrid``: dense
+                + BM25 are RRF-fused first, then the reranker scores
+                the fused pool.
+            rerank_oversearch: how many times k to ask the underlying
+                retrievers for before reranking. Default: 5.
 
         Returns:
-            Up to ``k`` (Chunk, score) pairs. May return fewer if the
-            category filter is active and the oversearched pool didn't
-            contain enough matching chunks. Score units depend on
-            ``rerank``: cosine when False, cross-encoder when True.
+            Up to ``k`` (Chunk, score) pairs. Score units:
+              dense-only           → cosine
+              hybrid (no rerank)   → RRF
+              rerank (any source)  → cross-encoder
         """
         if rerank and self._reranker is None:
             raise ValueError(
                 "rerank=True but no reranker is attached. Construct "
                 "with Retriever(index, embedder, reranker=...)."
             )
+        if hybrid and self._bm25 is None:
+            raise ValueError(
+                "hybrid=True but no BM25 index is attached. Construct "
+                "with Retriever(index, embedder, bm25=...)."
+            )
 
         rerank_x = rerank_oversearch or self._DEFAULT_RERANK_OVERSEARCH
-        # How many chunks the reranker needs to see, post-filter.
+        # How many chunks each underlying retriever should surface so
+        # the reranker / fusion step has enough headroom.
         target_pool = k * rerank_x if rerank else k
-        n_total = self._index.n_chunks or 1
 
-        query_vec = self._embedder.encode([query])  # (1, dim)
+        # 1. Dense retrieval (always — it's the primary signal).
+        dense_hits = self._dense_search(query, target_pool, category)
 
-        if category is None:
-            hits = self._index.search(
-                query_vec, k=min(target_pool, n_total)
+        # 2. Optional BM25 retrieval + RRF fusion.
+        if hybrid:
+            bm25_hits = self._bm25.search(  # type: ignore[union-attr]
+                query, k=target_pool, category=category,
+            )
+            pool = reciprocal_rank_fusion(
+                [dense_hits, bm25_hits],
+                k=target_pool,
             )
         else:
-            # Oversearch dense by category factor on top of the
-            # rerank-target pool — both gated by total chunks.
-            k_dense = min(target_pool * self._CATEGORY_OVERSEARCH, n_total)
-            raw = self._index.search(query_vec, k=k_dense)
-            hits = [(c, s) for c, s in raw if c.category == category][:target_pool]
+            pool = dense_hits[:target_pool]
 
+        # 3. Optional cross-encoder rerank.
         if rerank:
-            # type-narrow: we asserted self._reranker is not None above.
-            return self._reranker.rerank(query, hits, top_k=k)  # type: ignore[union-attr]
-        return hits[:k]
+            return self._reranker.rerank(query, pool, top_k=k)  # type: ignore[union-attr]
+        return pool[:k]
+
+    def _dense_search(
+        self,
+        query: str,
+        k_pool: int,
+        category: Optional[str],
+    ) -> list[tuple[Chunk, float]]:
+        """Encode + FAISS search + optional Python-side category filter."""
+        n_total = self._index.n_chunks or 1
+        query_vec = self._embedder.encode([query])
+        if category is None:
+            return self._index.search(
+                query_vec, k=min(k_pool, n_total),
+            )
+        k_dense = min(k_pool * self._CATEGORY_OVERSEARCH, n_total)
+        raw = self._index.search(query_vec, k=k_dense)
+        return [(c, s) for c, s in raw if c.category == category][:k_pool]
 
     @property
     def n_chunks(self) -> int:
