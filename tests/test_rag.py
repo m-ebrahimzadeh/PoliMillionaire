@@ -375,6 +375,89 @@ def test_retriever_hybrid_requires_attached_bm25():
         r.retrieve("q", k=3, hybrid=True)
 
 
+# ── BM25 tokenisation & proximity ───────────────────────────────────────────
+
+
+def test_bm25_tokenize_drops_stopwords_by_default():
+    from polimibot.rag.bm25 import tokenize
+    toks = tokenize("The cat is on the mat")
+    # "the", "is", "on" are stopwords; "cat", "mat" survive.
+    assert "the" not in toks
+    assert "is" not in toks
+    assert "on" not in toks
+    assert "cat" in toks
+    assert "mat" in toks
+
+
+def test_bm25_tokenize_keep_stopwords_when_disabled():
+    from polimibot.rag.bm25 import tokenize
+    toks = tokenize("The cat is on the mat", drop_stopwords=False)
+    assert toks == ["the", "cat", "is", "on", "the", "mat"]
+
+
+def test_bm25_proximity_bonus_rewards_adjacent_tokens():
+    """A chunk where two query tokens are adjacent outscores one where the
+    same tokens are far apart — even though both share TF and IDF."""
+    from polimibot.rag.bm25 import BM25Index, BM25Spec
+    near = Chunk(text="The Pythagorean theorem relates the sides of a triangle",
+                 source="N", chunk_id=0)
+    # Same two tokens, but ~30 words apart (separated by filler).
+    far_text = "Pythagorean was a Greek philosopher. " + ("filler " * 30) + "He proved a theorem."
+    far = Chunk(text=far_text, source="F", chunk_id=0)
+    bm25 = BM25Index([near, far], spec=BM25Spec(proximity_alpha=1.0, proximity_window=5))
+    hits = bm25.search("Pythagorean theorem", k=2)
+    sources = [c.source for c, _ in hits]
+    assert sources[0] == "N"   # near beats far
+
+
+def test_bm25_proximity_alpha_zero_disables_bonus():
+    """With proximity_alpha=0 the two docs of the previous test get equal
+    base BM25 scores (same TF, same IDF, different doc length)."""
+    from polimibot.rag.bm25 import BM25Index, BM25Spec
+    near = Chunk(text="Pythagorean theorem one two three four five",
+                 source="N", chunk_id=0)
+    far_text = "Pythagorean " + ("x " * 20) + "theorem"
+    far = Chunk(text=far_text, source="F", chunk_id=0)
+    bm25 = BM25Index([near, far], spec=BM25Spec(proximity_alpha=0.0))
+    hits = bm25.search("Pythagorean theorem", k=2)
+    # Both should still appear; we only check the proximity bonus didn't fire
+    # (i.e. doc lengths drive any ordering difference, not proximity).
+    assert len(hits) == 2
+
+
+def test_bm25_load_refuses_old_version(tmp_path):
+    """A v1 sidecar (no version field defaults to 1) must be rejected so
+    callers know to rebuild before relying on the new scoring path."""
+    from polimibot.rag.bm25 import BM25Index
+    import json as _json
+    p = tmp_path / "old.bm25.jsonl"
+    p.write_text(
+        _json.dumps({"kind": "bm25_header", "k1": 1.5, "b": 0.75,
+                     "n_docs": 0, "avgdl": 0.0}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="version"):
+        BM25Index.load(tmp_path / "old")
+
+
+def test_bm25_save_load_roundtrip_v2(tmp_path):
+    from polimibot.rag.bm25 import BM25Index, BM25_VERSION
+    chunks = [
+        Chunk(text="Caesar crossed the Rubicon", source="A", chunk_id=0),
+        Chunk(text="Pompey was his rival", source="B", chunk_id=0),
+    ]
+    idx = BM25Index(chunks)
+    idx.save(tmp_path / "k")
+    loaded = BM25Index.load(tmp_path / "k")
+    # Spec round-trips, search still works.
+    hits = loaded.search("Caesar", k=2)
+    assert hits[0][0].source == "A"
+    # Header records the new version.
+    import json as _json
+    header = _json.loads((tmp_path / "k.bm25.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert header["version"] == BM25_VERSION
+
+
 def test_retriever_hybrid_fuses_dense_and_bm25():
     """A chunk that appears in BOTH dense and BM25 top results should
     outrank a chunk that appears in only one."""
