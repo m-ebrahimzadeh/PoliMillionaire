@@ -8,12 +8,57 @@ Separation of concerns:
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from ..config import Category
+
+
+# ── Text cleanup ──────────────────────────────────────────────────────────────
+# Wikipedia plaintext (via the `wikipedia` library) contains citation markers
+# ("[1]", "[42][43]") and trailing meta-sections (References, See also, …)
+# that add noise to embeddings and waste prompt-context tokens.
+#
+# Section headers like "== Early life ==" are KEPT — useful retrieval signal.
+# Bumping this regex tail list bumps CLEANUP_VERSION so the index manifest
+# (built later in this PR) can detect stale corpora.
+
+CLEANUP_VERSION = 1
+
+_CITATION_RE = re.compile(r"\[\d+\](?:\[\d+\])*")
+
+_TAIL_SECTIONS_RE = re.compile(
+    r"^={2,}\s*("
+    r"References?|See also|External links?|Notes?|"
+    r"Further reading|Bibliography|Sources?|Citations?|"
+    r"Footnotes?"
+    r")\s*={2,}\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def clean_wikipedia_text(text: str) -> str:
+    """Strip Wikipedia noise: citation markers and trailing meta-sections.
+
+    Idempotent — running twice gives the same result, so it's safe to apply
+    both at fetch-time (so saved corpora are clean) and at chunk-time
+    (defensive pass over older corpora pre-dating this function).
+    """
+    if not text:
+        return text
+    # Drop [1], [2][3], etc. inline citation markers.
+    text = _CITATION_RE.sub("", text)
+    # Truncate from the first tail meta-section onward.
+    m = _TAIL_SECTIONS_RE.search(text)
+    if m:
+        text = text[: m.start()]
+    # Collapse excessive whitespace from the cuts.
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 # ── Domain record ────────────────────────────────────────────────────────────
@@ -122,7 +167,7 @@ def _fetch_one(title: str, category: Category, *, verbose: bool) -> Optional[Art
 
     try:
         page = wikipedia.page(title, auto_suggest=False)
-        return Article(title=page.title, text=page.content,
+        return Article(title=page.title, text=clean_wikipedia_text(page.content),
                        category=category, url=page.url)
 
     except wikipedia.DisambiguationError as e:
@@ -131,7 +176,7 @@ def _fetch_one(title: str, category: Category, *, verbose: bool) -> Optional[Art
             print(f"  ! disambiguation for '{title}', trying '{e.options[0]}'")
         try:
             page = wikipedia.page(e.options[0], auto_suggest=False)
-            return Article(title=page.title, text=page.content,
+            return Article(title=page.title, text=clean_wikipedia_text(page.content),
                            category=category, url=page.url)
         except Exception:
             pass

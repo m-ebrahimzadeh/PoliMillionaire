@@ -24,6 +24,7 @@ from pathlib import Path
 from polimibot.config import PATHS, Category
 from polimibot.rag.chunker import chunk_text
 from polimibot.rag.corpus import (
+    CLEANUP_VERSION, clean_wikipedia_text,
     fetch_articles, load_raw_corpus, save_raw_corpus,
 )
 from polimibot.rag.embedder import Embedder, EmbedderSpec
@@ -52,6 +53,10 @@ def main() -> None:
         articles = load_raw_corpus(corpus_path)
         if categories:
             articles = [a for a in articles if a.category in categories]
+        # Defensive cleanup pass for corpora cached before clean_wikipedia_text
+        # existed. Idempotent — already-clean articles pass through unchanged.
+        from dataclasses import replace
+        articles = [replace(a, text=clean_wikipedia_text(a.text)) for a in articles]
     else:
         print("Fetching articles from Wikipedia…")
         articles = fetch_articles(categories=categories, verbose=True)
@@ -91,9 +96,18 @@ def main() -> None:
     # ── Step 4: build + save index ───────────────────────────────────────────
     idx = FAISSIndex(dim=embedder.dim)
     idx.add(all_chunks, embeddings)
-    idx.save(index_path)
+    idx.save(index_path, manifest={
+        "embedder_model_name":  spec.model_name,
+        "embedder_dim":         embedder.dim,
+        "normalize":            spec.normalize,
+        "chunk_size":           args.chunk_size,
+        "chunk_overlap":        args.overlap,
+        "n_articles":           len(articles),
+        "text_cleanup_version": CLEANUP_VERSION,
+        "categories":           sorted({a.category.value for a in articles}),
+    })
 
-    print(f"\n✓  Index ready at {index_path}.{{faiss,jsonl}}")
+    print(f"\n✓  Index ready at {index_path}.{{faiss,jsonl,manifest.json}}")
     print(f"   {idx.n_chunks} chunks  |  dim={embedder.dim}  |  model={args.model}")
 
 

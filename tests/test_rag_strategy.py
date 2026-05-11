@@ -141,3 +141,79 @@ def test_format_context_respects_char_budget():
     big_chunk = Chunk(text="x" * 3000, source="Big Article", chunk_id=0)
     ctx = _format_context([(big_chunk, 0.9)] * 10, max_total_chars=500)
     assert len(ctx) <= 600   # small tolerance for numbering overhead
+
+
+def test_format_context_passage_char_cap_per_chunk():
+    """max_passage_chars trims each chunk individually, before joining."""
+    long_chunk = Chunk(text="abcdefghij" * 200, source="Long", chunk_id=0)  # 2000 chars
+    ctx = _format_context([(long_chunk, 0.9)], max_passage_chars=50, max_total_chars=10000)
+    # Should contain ~50 chars of body + a small header overhead.
+    body = ctx.split("\n", 1)[1] if "\n" in ctx else ctx
+    assert len(body) <= 60
+
+
+# ── Low-score gate ────────────────────────────────────────────────────────────
+
+def test_rag_min_score_gate_drops_context_below_threshold():
+    """When the top retrieval score is below min_score, RAG degrades to
+    plain (no-context) prompting. The model is not fed irrelevant evidence."""
+    low_score_passages = [
+        (Chunk(text="off-topic", source="Wrong", chunk_id=0), 0.10),
+    ]
+    strategy = RAGStrategy(
+        MockLLM(correctness=1.0),
+        MockRetriever(low_score_passages),
+        k=1,
+        min_score=0.30,
+    )
+    out = strategy.answer(_inp("B"))
+    assert out.extras["gated_by_min_score"] is True
+    assert out.extras["top_score"] == pytest.approx(0.10)
+    # Rationale (the context block) should be empty when gated.
+    assert out.rationale == ""
+
+
+def test_rag_min_score_gate_keeps_context_above_threshold():
+    high_score_passages = [
+        (Chunk(text="Caesar crossed the Rubicon in 49 BC.", source="Julius Caesar", chunk_id=0), 0.85),
+    ]
+    strategy = RAGStrategy(
+        MockLLM(correctness=1.0),
+        MockRetriever(high_score_passages),
+        k=1,
+        min_score=0.30,
+    )
+    out = strategy.answer(_inp("B"))
+    assert out.extras["gated_by_min_score"] is False
+    assert "Julius Caesar" in out.rationale
+
+
+def test_rag_min_score_default_none_never_gates():
+    """Default behaviour: no gate, never drop context — backwards-compatible."""
+    low_score_passages = [
+        (Chunk(text="off-topic", source="Wrong", chunk_id=0), 0.05),
+    ]
+    strategy = RAGStrategy(MockLLM(), MockRetriever(low_score_passages), k=1)
+    out = strategy.answer(_inp())
+    assert out.extras["gated_by_min_score"] is False
+    assert out.extras["min_score_threshold"] is None
+    assert out.rationale != ""
+
+
+def test_rag_name_includes_min_score_when_set():
+    strategy = RAGStrategy(
+        MockLLM(), MockRetriever(_passages()), k=2, min_score=0.30,
+    )
+    assert "min_score=0.3" in strategy.name
+
+
+def test_rag_extras_carries_full_passage_triples():
+    """Run logs need full top-k for recall@k post-hoc analysis."""
+    strategy = RAGStrategy(MockLLM(), MockRetriever(_passages()), k=2)
+    out = strategy.answer(_inp())
+    assert "passages" in out.extras
+    triples = out.extras["passages"]
+    assert len(triples) == 2
+    assert triples[0]["source"] == "Julius Caesar"
+    assert "chunk_id" in triples[0] and "score" in triples[0]
+    assert "query" in out.extras   # the constructed retrieval query
