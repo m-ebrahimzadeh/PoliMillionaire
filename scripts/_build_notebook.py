@@ -137,7 +137,7 @@ from polimibot.strategies.ensemble_strategy import EnsembleStrategy
 from polimibot.strategies.tiered_strategy import TieredStrategy, TierBreakpoints
 from polimibot.tools.maths_tool import MathsTool
 from polimibot.eval.evaluator import evaluate_strategy, EvalReport
-from polimibot.eval.gold_set import load_gold_set, harvest_gold_set, save_gold_set
+from polimibot.eval.gold_set import GoldSet, load_gold_set, harvest_gold_set, save_gold_set
 from polimibot.eval.report_io import save_report, model_slug
 from polimibot.eval.calibration import calibration_from_runs, plot_calibration
 
@@ -415,7 +415,25 @@ Two ways to exercise the strategy:
 The notebook prefers offline. Run live only when you want a fresh row of run-log data, or when you need to top up the gold set.
 """))
 
-cells.append(md("### 2.1 Load the gold set"))
+cells.append(md("""
+### 2.1 Load the gold set
+
+`GoldSet` is a chainable view over the gold items — every filter / sampler / splitter returns a new `GoldSet`, so you can branch experiments freely.
+
+**Recipes:**
+
+```python
+full          = GoldSet.load(gold_path)          # everything
+maths         = full.filter_category(Category.MATHS)
+maths_hard    = maths.filter_level(min_level=11)
+balanced      = full.take_per_level(3, seed=0)   # ≤3 per level 1..15
+random_pilot  = full.sample(20, seed=42)         # 20 random items
+train, test   = full.split(0.8, seed=42)         # 80/20 shuffled split
+holdout       = full - test                      # set difference by question identity
+```
+
+Drop the resulting `GoldSet` straight into `evaluate_strategy(strategy, gold, ...)` — it's iterable and `__len__`-able.
+"""))
 
 cells.append(code('''
 # Gold set, from data/eval/gold_set.jsonl we load. Build it first if missing.
@@ -429,16 +447,52 @@ if not gold_path.exists():
         'Or play games first to populate data/runs/, then re-build.'
     )
 
-gold = load_gold_set(gold_path)
-if N_EVAL_QUESTIONS is not None:
-    gold = gold[:N_EVAL_QUESTIONS]
+full = GoldSet.load(gold_path)
+print(f'Full gold set: {len(full)} items')
+full.print_stats()
+'''))
 
-# Quick breakdown for sanity.
-breakdown = pd.Series(
-    [g.category.value if g.category else 'unknown' for g in gold]
-).value_counts().rename('n_items').to_frame()
-print(f'Gold set: {len(gold)} items')
-breakdown
+cells.append(md("""
+### 2.1.1 Choose your eval subset
+
+Pick **one** of the recipes below — or write your own — and assign the result to `gold`. Section 2.2 evaluates against whatever's in `gold`.
+"""))
+
+cells.append(code('''
+# ─── Eval-subset selector. Edit me. ──────────────────────────────────
+
+# (a) Default: full set, optionally capped to first N items.
+gold = full if N_EVAL_QUESTIONS is None else full.take(N_EVAL_QUESTIONS)
+
+# (b) Single-category — uncomment one.
+# gold = full.filter_category(Category.MATHS)
+# gold = full.filter_category(Category.SCIENCE)
+# gold = full.filter_category(Category.HISTORY)
+# gold = full.filter_category(Category.ENTERTAINMENT)
+
+# (c) Difficulty slice.
+# gold = full.filter_level(min_level=1,  max_level=5)      # easy tier
+# gold = full.filter_level(min_level=6,  max_level=10)     # medium tier
+# gold = full.filter_level(min_level=11, max_level=15)     # hard tier
+
+# (d) Difficulty-balanced pilot — at most N per level.
+# gold = full.take_per_level(3, seed=0)
+
+# (e) Category-balanced pilot — at most N per category.
+# gold = full.take_per_category(10, seed=0)
+
+# (f) Random sample — reproducible with the seed.
+# gold = full.sample(50, seed=42)
+
+# (g) Train / held-out test.
+# train, test = full.split(0.8, seed=42)
+# gold = test     # evaluate on held-out only
+
+# (h) Chain freely.
+# gold = full.filter_category(Category.MATHS).filter_level(min_level=8).take_per_level(2, seed=0)
+
+print(f'Eval subset: {len(gold)} items')
+gold.print_stats()
 '''))
 
 cells.append(md("### 2.2 Evaluate the strategy (offline)"))
