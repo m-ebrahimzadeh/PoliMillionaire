@@ -7,13 +7,36 @@ We recover the correct answer index two ways:
 
 Save once after your baseline runs. Never re-harvest mid-experiment —
 that would silently grow your test set and invalidate comparisons.
+
+Two layers of API:
+
+  GoldItem            : the frozen record of one labelled question.
+  load_gold_set       : free function returning list[GoldItem] (compat).
+  harvest_gold_set    : free function building a list from run logs.
+  save_gold_set       : free function persisting a list to JSONL.
+
+  GoldSet             : chainable view over a list[GoldItem]. Filter by
+                        category / level / competition, sample, split,
+                        balance per-level / per-category, print stats.
+                        Iterable, has __len__, so it drops straight into
+                        ``evaluate_strategy``.
+
+Example:
+    full   = GoldSet.load(PATHS.eval_dir / 'gold_set.jsonl')
+    full.print_stats()
+    maths  = full.filter_category(Category.MATHS)
+    pilot  = full.take_per_level(3, seed=0)
+    train, test = full.split(0.8, seed=42)
+    report = evaluate_strategy(strategy, pilot)
 """
 from __future__ import annotations
 
 import json
+import random
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Iterable, Optional, Union
 
 from ..config import CATEGORIES, Category
 from ..logging_utils import load_jsonl
@@ -135,3 +158,269 @@ def load_gold_set(path: Path) -> list[GoldItem]:
             source_run=rec.get("source_run", ""),
         ))
     return items
+
+
+# ── GoldSet — chainable view over a list[GoldItem] ─────────────────────────
+
+# Accept both Category enums and their string values in *_filter args.
+CategoryLike = Union[Category, str]
+
+
+def _coerce_category(c: CategoryLike) -> Category:
+    """Allow callers to pass strings ('maths') or enums (Category.MATHS)."""
+    return c if isinstance(c, Category) else Category(c)
+
+
+def _identity_key(g: GoldItem) -> tuple[int, str]:
+    """Stable identifier for set-style ops. Dedups across re-harvests."""
+    return (g.competition_id, g.question_text)
+
+
+class GoldSet:
+    """Chainable view over a list[GoldItem].
+
+    Every filter / sampler / splitter returns a NEW GoldSet — the original
+    is never mutated, so you can branch experiments freely:
+
+        full           = GoldSet.load(path)
+        maths          = full.filter_category(Category.MATHS)
+        maths_easy     = maths.filter_level(max_level=5)
+        balanced_pilot = full.take_per_level(3, seed=0)
+        train, test    = full.split(0.8, seed=42)
+
+    Drops into ``evaluate_strategy(strategy, gs)`` directly: GoldSet is
+    iterable, has ``__len__``, and yields GoldItem instances.
+    """
+
+    __slots__ = ("_items",)
+
+    def __init__(self, items: Iterable[GoldItem] = ()) -> None:
+        self._items: list[GoldItem] = list(items)
+
+    # ── Construction ──────────────────────────────────────────────────────
+
+    @classmethod
+    def load(cls, path: Path) -> "GoldSet":
+        """Load from a gold-set JSONL written by ``save_gold_set``."""
+        return cls(load_gold_set(path))
+
+    @classmethod
+    def harvest(cls, runs_dir: Path) -> "GoldSet":
+        """Mine run logs into a fresh GoldSet."""
+        return cls(harvest_gold_set(runs_dir))
+
+    # ── Iterable / list-like ──────────────────────────────────────────────
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __iter__(self):
+        return iter(self._items)
+
+    def __getitem__(self, key):
+        result = self._items[key]
+        return GoldSet(result) if isinstance(key, slice) else result
+
+    def __repr__(self) -> str:
+        return f"GoldSet(n={len(self._items)})"
+
+    def __bool__(self) -> bool:
+        return bool(self._items)
+
+    @property
+    def items(self) -> list[GoldItem]:
+        """Defensive copy of the underlying list. Use this when you need
+        ``list[GoldItem]`` rather than a GoldSet (e.g. for older APIs)."""
+        return list(self._items)
+
+    # ── Persistence ───────────────────────────────────────────────────────
+
+    def save(self, path: Path) -> None:
+        """Write this view's items to JSONL (overwrites existing)."""
+        save_gold_set(self._items, path)
+
+    # ── Filters (each returns a new GoldSet — chainable) ─────────────────
+
+    def filter(self, predicate: Callable[[GoldItem], bool]) -> "GoldSet":
+        """Arbitrary predicate filter. Returns items where predicate(g) is truthy."""
+        return GoldSet(g for g in self._items if predicate(g))
+
+    def filter_category(self, *categories: CategoryLike) -> "GoldSet":
+        """Keep only items whose category is in ``categories``.
+
+        Accepts either Category enums or their string values:
+            gs.filter_category(Category.MATHS)
+            gs.filter_category('maths', 'science')
+        """
+        keep = {_coerce_category(c) for c in categories}
+        return GoldSet(g for g in self._items if g.category in keep)
+
+    def filter_level(self, *, min_level: int = 1, max_level: int = 15) -> "GoldSet":
+        """Keep only items with ``min_level <= level <= max_level``."""
+        return GoldSet(
+            g for g in self._items if min_level <= g.level <= max_level
+        )
+
+    def filter_competition(self, *competition_ids: int) -> "GoldSet":
+        """Keep only items from the given competition ids."""
+        keep = set(competition_ids)
+        return GoldSet(g for g in self._items if g.competition_id in keep)
+
+    # ── Sampling (each returns a new GoldSet) ─────────────────────────────
+
+    def take(self, n: int) -> "GoldSet":
+        """Deterministic first-n slice (preserves order)."""
+        return GoldSet(self._items[:n])
+
+    def shuffle(self, *, seed: int = 0) -> "GoldSet":
+        """Return a shuffled copy. Reproducible with the seed."""
+        rng = random.Random(seed)
+        out = list(self._items)
+        rng.shuffle(out)
+        return GoldSet(out)
+
+    def sample(self, n: int, *, seed: int = 0) -> "GoldSet":
+        """Uniform random n-item sample without replacement.
+
+        Returns all items unchanged if ``n >= len(self)``.
+        """
+        if n >= len(self._items):
+            return GoldSet(self._items)
+        rng = random.Random(seed)
+        return GoldSet(rng.sample(self._items, n))
+
+    def take_per_level(self, n: int, *, seed: int = 0) -> "GoldSet":
+        """At most ``n`` items per level. Random within each level.
+
+        Levels with fewer than ``n`` items are taken whole. Useful for
+        building difficulty-balanced pilot sets where you want, e.g., 3
+        questions at each level 1..15 — yielding 45 if every level has
+        enough items, fewer otherwise.
+        """
+        if n <= 0:
+            raise ValueError(f"n must be positive, got {n}")
+        rng = random.Random(seed)
+        bucket: dict[int, list[GoldItem]] = defaultdict(list)
+        for g in self._items:
+            bucket[g.level].append(g)
+        out: list[GoldItem] = []
+        for level in sorted(bucket):
+            items = bucket[level]
+            out.extend(items if len(items) <= n else rng.sample(items, n))
+        return GoldSet(out)
+
+    def take_per_category(self, n: int, *, seed: int = 0) -> "GoldSet":
+        """At most ``n`` items per category. Random within each category."""
+        if n <= 0:
+            raise ValueError(f"n must be positive, got {n}")
+        rng = random.Random(seed)
+        bucket: dict[Optional[Category], list[GoldItem]] = defaultdict(list)
+        for g in self._items:
+            bucket[g.category].append(g)
+        out: list[GoldItem] = []
+        for cat in sorted(bucket, key=lambda c: c.value if c else "~unknown"):
+            items = bucket[cat]
+            out.extend(items if len(items) <= n else rng.sample(items, n))
+        return GoldSet(out)
+
+    # ── Splits ───────────────────────────────────────────────────────────
+
+    def split(
+        self, fraction: float, *, seed: int = 0,
+    ) -> tuple["GoldSet", "GoldSet"]:
+        """Shuffled train/test split.
+
+        First returned GoldSet gets ``fraction`` of the items; second gets
+        the rest. The shuffle is seeded — same seed → same split.
+        """
+        if not 0.0 < fraction < 1.0:
+            raise ValueError(f"fraction must be in (0, 1), got {fraction}")
+        rng = random.Random(seed)
+        shuffled = list(self._items)
+        rng.shuffle(shuffled)
+        cut = int(len(shuffled) * fraction)
+        return GoldSet(shuffled[:cut]), GoldSet(shuffled[cut:])
+
+    def by_category(self) -> dict[Category, "GoldSet"]:
+        """Group items by category. Items with ``category=None`` are skipped."""
+        groups: dict[Category, list[GoldItem]] = defaultdict(list)
+        for g in self._items:
+            if g.category is not None:
+                groups[g.category].append(g)
+        return {cat: GoldSet(items) for cat, items in groups.items()}
+
+    def by_level(self) -> dict[int, "GoldSet"]:
+        """Group items by level (1..15). Returns dict sorted by level."""
+        groups: dict[int, list[GoldItem]] = defaultdict(list)
+        for g in self._items:
+            groups[g.level].append(g)
+        return {lvl: GoldSet(groups[lvl]) for lvl in sorted(groups)}
+
+    # ── Stats ────────────────────────────────────────────────────────────
+
+    def counts_by_category(self) -> dict[str, int]:
+        """{'maths': N, 'science': N, ...}. ``'unknown'`` for items with None."""
+        return dict(Counter(
+            g.category.value if g.category else "unknown" for g in self._items
+        ))
+
+    def counts_by_level(self) -> dict[int, int]:
+        """{1: N, 2: N, ...}. Sorted by level."""
+        return dict(sorted(Counter(g.level for g in self._items).items()))
+
+    def counts(self) -> dict[str, dict[int, int]]:
+        """Cross-tab: {category: {level: count}}."""
+        nested: dict[str, Counter] = defaultdict(Counter)
+        for g in self._items:
+            key = g.category.value if g.category else "unknown"
+            nested[key][g.level] += 1
+        return {cat: dict(sorted(c.items())) for cat, c in nested.items()}
+
+    def print_stats(self) -> None:
+        """Pretty-print a category × level counts matrix."""
+        if not self._items:
+            print("GoldSet is empty.")
+            return
+        matrix = self.counts()
+        levels = sorted({l for c in matrix.values() for l in c})
+        cat_w = max((len(k) for k in matrix.keys()), default=8) + 2
+
+        header = (
+            f"{'category'.ljust(cat_w)}"
+            + " ".join(f"L{l:>2}" for l in levels)
+            + "  total"
+        )
+        print(header)
+        print("-" * len(header))
+        for cat in sorted(matrix.keys()):
+            row = matrix[cat]
+            cells = " ".join(f"{row.get(l, 0):>3}" for l in levels)
+            total = sum(row.values())
+            print(f"{cat.ljust(cat_w)}{cells}  {total:>5}")
+        # Totals row
+        totals = [sum(matrix[c].get(l, 0) for c in matrix) for l in levels]
+        grand = sum(totals)
+        print("-" * len(header))
+        print(
+            f"{'total'.ljust(cat_w)}"
+            + " ".join(f"{t:>3}" for t in totals)
+            + f"  {grand:>5}"
+        )
+
+    # ── Set ops (by question identity) ────────────────────────────────────
+
+    def __add__(self, other: "GoldSet") -> "GoldSet":
+        """Union by (competition_id, question_text). Right side wins ties."""
+        seen: dict[tuple[int, str], GoldItem] = {
+            _identity_key(g): g for g in self._items
+        }
+        for g in other:
+            seen[_identity_key(g)] = g
+        return GoldSet(seen.values())
+
+    def __sub__(self, other: "GoldSet") -> "GoldSet":
+        """Difference by (competition_id, question_text). Use for held-out sets:
+            train = full - test
+        """
+        exclude = {_identity_key(g) for g in other}
+        return GoldSet(g for g in self._items if _identity_key(g) not in exclude)
