@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 from polimibot.config import PATHS, Category
+from polimibot.rag.bm25 import BM25Index
 from polimibot.rag.chunker import chunk_text
 from polimibot.rag.corpus import (
     CLEANUP_VERSION, clean_wikipedia_text,
@@ -108,8 +109,16 @@ def main() -> None:
         "categories":           sorted({a.category.value for a in articles}),
     })
 
-    print(f"\n✓  Index ready at {index_path}.{{faiss,jsonl,manifest.json}}")
+    print(f"\n✓  FAISS index ready at {index_path}.{{faiss,jsonl,manifest.json}}")
     print(f"   {idx.n_chunks} chunks  |  dim={embedder.dim}  |  model={args.model}")
+
+    # ── Step 5: BM25 sidecar (skip with --no-bm25) ──────────────────────────
+    if not args.no_bm25:
+        print("\nBuilding BM25 index over the same chunks…")
+        t0 = time.monotonic()
+        bm25 = BM25Index(all_chunks)
+        bm25.save(index_path)   # writes {stem}.bm25.jsonl
+        print(f"   built in {time.monotonic()-t0:.1f}s")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -126,6 +135,8 @@ def _parse_args() -> argparse.Namespace:
                    help="Sentence-transformers model name")
     p.add_argument("--skip-if-exists", action="store_true", dest="skip_if_exists",
                    help="Exit early if the FAISS index already exists on disk")
+    p.add_argument("--no-bm25", action="store_true", dest="no_bm25",
+                   help="Skip building the BM25 sidecar (dense-only build)")
     return p.parse_args()
 
 

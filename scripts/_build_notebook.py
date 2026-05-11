@@ -289,6 +289,10 @@ RAG_USE_RERANKER       = False                           # set True to load + us
 RERANKER_MODEL         = 'BAAI/bge-reranker-base'        # trivia-friendly, ~100 MB
 RERANK_OVERSEARCH      = 5                               # dense pool size = k × this
 
+# Hybrid + multi-query (lexical complement + per-option queries, both via RRF)
+RAG_USE_HYBRID         = False                           # dense + BM25 fused per query
+RAG_USE_MULTI_QUERY    = False                           # 1 question + 4 per-option queries
+
 # Eval
 N_EVAL_QUESTIONS    = None                               # None = all gold items; int = first-N slice
 
@@ -357,8 +361,9 @@ if need_retriever:
         class _NullRetriever:
             n_chunks = 0
             has_reranker = False
+            has_bm25 = False
             def retrieve(self, q, k=3, *, category=None, rerank=False,
-                         rerank_oversearch=None):
+                         rerank_oversearch=None, hybrid=False):
                 return []
         retriever = _NullRetriever()
         print('NullRetriever (mock mode — no FAISS index needed)')
@@ -376,8 +381,20 @@ if need_retriever:
         )
         if reranker_obj is not None:
             retriever._reranker = reranker_obj   # late-attach
+        # Late-attach BM25 if its sidecar exists (built by --no-bm25=False).
+        if RAG_USE_HYBRID:
+            from polimibot.rag.bm25 import BM25Index
+            bm25_path = RAG_INDEX_PATH.with_suffix('.bm25.jsonl')
+            if not bm25_path.exists():
+                raise FileNotFoundError(
+                    f'BM25 sidecar missing: {bm25_path}\\n'
+                    'Rebuild the index without --no-bm25:\\n'
+                    '  python scripts/build_rag_index.py'
+                )
+            retriever._bm25 = BM25Index.load(RAG_INDEX_PATH)
         rer_tag = f' + reranker {reranker_obj.name}' if reranker_obj else ''
-        print(f'Retriever ready: {retriever.n_chunks} chunks indexed{rer_tag}')
+        bm25_tag = f' + BM25 ({retriever._bm25.n_chunks} chunks)' if retriever.has_bm25 else ''
+        print(f'Retriever ready: {retriever.n_chunks} chunks indexed{rer_tag}{bm25_tag}')
 else:
     print('Retriever not needed for this configuration.')
     reranker_obj = None
@@ -398,7 +415,7 @@ baseline = BaselineLLMStrategy(
 )
 
 if USE_TIERED:
-    rag_arm    = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, use_reranker=RAG_USE_RERANKER, rerank_oversearch=RERANK_OVERSEARCH, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
+    rag_arm    = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, use_reranker=RAG_USE_RERANKER, use_hybrid=RAG_USE_HYBRID, use_multi_query=RAG_USE_MULTI_QUERY, rerank_oversearch=RERANK_OVERSEARCH, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
     ensemble   = EnsembleStrategy([baseline, rag_arm], weights=[1.0, 1.2])
     maths_arm  = (
         AgentStrategy(llm, max_iterations=3) if USE_AGENT_FOR_MATHS
@@ -414,14 +431,14 @@ if USE_TIERED:
         escalation_threshold=ESCALATION_THRESHOLD,
     )
 elif USE_ENSEMBLE:
-    rag_arm  = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, use_reranker=RAG_USE_RERANKER, rerank_oversearch=RERANK_OVERSEARCH, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
+    rag_arm  = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, use_reranker=RAG_USE_RERANKER, use_hybrid=RAG_USE_HYBRID, use_multi_query=RAG_USE_MULTI_QUERY, rerank_oversearch=RERANK_OVERSEARCH, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
     strategy = EnsembleStrategy([baseline, rag_arm], weights=[1.0, 1.2])
 elif USE_AGENT_FOR_MATHS:
     strategy = AgentStrategy(llm, max_iterations=3)
 elif USE_MATHS_TOOL:
     strategy = ToolStrategy([MathsTool()], fallback=baseline)
 elif USE_RAG:
-    strategy = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, use_reranker=RAG_USE_RERANKER, rerank_oversearch=RERANK_OVERSEARCH, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
+    strategy = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, use_reranker=RAG_USE_RERANKER, use_hybrid=RAG_USE_HYBRID, use_multi_query=RAG_USE_MULTI_QUERY, rerank_oversearch=RERANK_OVERSEARCH, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
 else:
     strategy = baseline
 
@@ -675,9 +692,11 @@ else:
                 ks=(1, 3, 5, 10),
                 use_category_filter=RAG_USE_CATEGORY_FILTER,
                 use_reranker=RAG_USE_RERANKER,
+                use_hybrid=RAG_USE_HYBRID,
                 retriever_name=(
                     f'k={RAG_K}'
                     + ('+cat' if RAG_USE_CATEGORY_FILTER else '')
+                    + ('+hybrid' if RAG_USE_HYBRID else '')
                     + ('+rerank' if RAG_USE_RERANKER else '')
                 ),
             )
