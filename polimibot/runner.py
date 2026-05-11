@@ -224,6 +224,20 @@ def play_game(
                 n_correct += 1
             final_level = outcome.reached_level or final_level
 
+            # Carry forward everything the strategy emitted under extras
+            # (passages, margin, query, n_tool_calls, …) so post-hoc analysis
+            # — recall@k harness, error inspection, ablation traces — can be
+            # done from the run JSONL without re-running. probs is already
+            # promoted to its own QuestionRecord field, so drop it here to
+            # avoid duplicating a large dict per row.
+            record_extras: dict[str, Any] = {}
+            if out is not None and isinstance(out.extras, dict):
+                record_extras.update(
+                    {k: v for k, v in out.extras.items() if k != "probs"}
+                )
+            if out is not None and out.rationale:
+                record_extras["rationale"] = out.rationale
+
             log.log_question(QuestionRecord(
                 session_id=game.session_id,
                 competition_id=competition_id,
@@ -239,7 +253,7 @@ def play_game(
                 strategy=strategy.name,
                 confidence=(out.confidence if out is not None else None),
                 probs=(out.extras.get("probs") if out is not None else None),
-                extras={"rationale": out.rationale} if (out and out.rationale) else {},
+                extras=record_extras,
             ))
 
             if verbose:
