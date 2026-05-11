@@ -109,3 +109,97 @@ def test_retriever_dim_mismatch_raises():
     idx = FAISSIndex(dim=8)
     with pytest.raises(ValueError, match="dim=8 != embedder dim=16"):
         Retriever(idx, FakeEmbedder())  # type: ignore[arg-type]
+
+
+# ── Manifest support ─────────────────────────────────────────────────────────
+
+
+def test_index_save_writes_manifest_alongside(tmp_path):
+    idx = FAISSIndex(dim=8)
+    chunks = _make_chunks(3)
+    idx.add(chunks, _random_vecs(3, dim=8))
+    manifest = {
+        "embedder_model_name": "all-MiniLM-L6-v2",
+        "embedder_dim": 8,
+        "normalize": True,
+        "chunk_size": 300,
+        "chunk_overlap": 50,
+        "n_articles": 5,
+        "text_cleanup_version": 1,
+    }
+    idx.save(tmp_path / "idx", manifest=manifest)
+    mpath = (tmp_path / "idx").with_suffix(".manifest.json")
+    assert mpath.is_file()
+    import json
+    written = json.loads(mpath.read_text())
+    # Required fields preserved
+    assert written["embedder_model_name"] == "all-MiniLM-L6-v2"
+    assert written["chunk_size"] == 300
+    # Auto-filled fields
+    assert "build_timestamp" in written
+    assert written["n_chunks"] == 3
+
+
+def test_index_load_without_manifest_warns_but_works(tmp_path):
+    idx = FAISSIndex(dim=8)
+    idx.add(_make_chunks(2), _random_vecs(2, dim=8))
+    idx.save(tmp_path / "idx")   # no manifest
+
+    import warnings
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        loaded = FAISSIndex.load(tmp_path / "idx")
+    assert loaded.n_chunks == 2
+    assert loaded.manifest is None
+    assert any("manifest" in str(w.message).lower() for w in caught)
+
+
+def test_index_load_reads_manifest(tmp_path):
+    idx = FAISSIndex(dim=8)
+    idx.add(_make_chunks(1), _random_vecs(1, dim=8))
+    idx.save(tmp_path / "idx", manifest={
+        "embedder_model_name": "all-MiniLM-L6-v2",
+        "embedder_dim": 8,
+        "normalize": True,
+    })
+    loaded = FAISSIndex.load(tmp_path / "idx")
+    assert loaded.manifest is not None
+    assert loaded.manifest["embedder_model_name"] == "all-MiniLM-L6-v2"
+
+
+def test_retriever_from_saved_rejects_model_mismatch(tmp_path):
+    """Different embedder name → vectors live in incompatible spaces. Refuse to load."""
+    from polimibot.rag.retriever import _check_manifest_compat
+    from polimibot.rag.embedder import EmbedderSpec
+
+    spec_wrong = EmbedderSpec(model_name="bge-small-en-v1.5")
+    manifest = {
+        "embedder_model_name": "all-MiniLM-L6-v2",
+        "embedder_dim": 384,
+        "normalize": True,
+    }
+    with pytest.raises(ValueError, match="incompatible spaces"):
+        _check_manifest_compat(manifest, spec_wrong)
+
+
+def test_retriever_from_saved_warns_on_normalize_drift():
+    """normalize mismatch is less catastrophic — warn, don't raise."""
+    from polimibot.rag.retriever import _check_manifest_compat
+    from polimibot.rag.embedder import EmbedderSpec
+    import warnings
+
+    spec = EmbedderSpec(model_name="all-MiniLM-L6-v2", normalize=False)
+    manifest = {
+        "embedder_model_name": "all-MiniLM-L6-v2",
+        "embedder_dim": 384,
+        "normalize": True,
+    }
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _check_manifest_compat(manifest, spec)
+    assert any("normalize" in str(w.message).lower() for w in caught)
+
+
+# NB: clean_wikipedia_text tests live in tests/test_corpus.py — they don't
+# need FAISS, so keeping them there means they run even when faiss-cpu
+# isn't installed (CI fast-path).
