@@ -13,6 +13,41 @@ from .index import FAISSIndex
 from .reranker import CrossEncoderReranker
 
 
+def _diversify_by_source(
+    items: list[tuple[Chunk, float]],
+    *,
+    k: int,
+) -> list[tuple[Chunk, float]]:
+    """Source-aware top-k selection.
+
+    Pass 1: keep the highest-scored chunk per source until ``k`` slots
+    fill or the pool runs out. Pass 2: if pass 1 was short of ``k``,
+    backfill from the remaining chunks (those from already-seen sources)
+    in their original order.
+
+    The pool is assumed to arrive already ordered by relevance. The
+    result preserves that order within each pass; it just collapses
+    runs of same-source chunks down to one until later slots are needed.
+    """
+    if k <= 0 or not items:
+        return []
+    seen: set[str] = set()
+    primary: list[tuple[Chunk, float]] = []
+    leftover: list[tuple[Chunk, float]] = []
+    for chunk, score in items:
+        if chunk.source not in seen:
+            seen.add(chunk.source)
+            primary.append((chunk, score))
+        else:
+            leftover.append((chunk, score))
+        if len(primary) >= k:
+            break
+    out = primary[:k]
+    if len(out) < k:
+        out = out + leftover[:k - len(out)]
+    return out
+
+
 def _check_manifest_compat(manifest: dict, spec: EmbedderSpec) -> None:
     """Refuse to load an index built with an incompatible embedder.
 
@@ -127,6 +162,10 @@ class Retriever:
     # literature's "retrieve 5× more, rerank to k".
     _CATEGORY_OVERSEARCH = 8
     _DEFAULT_RERANK_OVERSEARCH = 5
+    # Diversify needs a wider pool than k or it has nothing to swap in.
+    # 2× k is enough to dedupe overlapping windows from the same article
+    # without paying for a full 5× rerank-style oversearch.
+    _DIVERSIFY_OVERSEARCH = 2
 
     def retrieve(
         self,
@@ -137,6 +176,7 @@ class Retriever:
         hybrid: bool = False,
         rerank: bool = False,
         rerank_oversearch: Optional[int] = None,
+        diversify: bool = True,
     ) -> list[tuple[Chunk, float]]:
         """Return top-k (Chunk, score) for the given query string.
 
@@ -156,6 +196,11 @@ class Retriever:
                 the fused pool.
             rerank_oversearch: how many times k to ask the underlying
                 retrievers for before reranking. Default: 5.
+            diversify: when True (default), apply a source-level dedup
+                to the final top-k slice — the highest-scored chunk per
+                source comes first, then any leftover chunks fill the
+                remaining slots. Stops top-k from being three overlapping
+                windows of the same article. Disable for ablations.
 
         Returns:
             Up to ``k`` (Chunk, score) pairs. Score units:
@@ -176,8 +221,13 @@ class Retriever:
 
         rerank_x = rerank_oversearch or self._DEFAULT_RERANK_OVERSEARCH
         # How many chunks each underlying retriever should surface so
-        # the reranker / fusion step has enough headroom.
-        target_pool = k * rerank_x if rerank else k
+        # the reranker / fusion / diversify step has enough headroom.
+        if rerank:
+            target_pool = k * rerank_x
+        elif diversify:
+            target_pool = k * self._DIVERSIFY_OVERSEARCH
+        else:
+            target_pool = k
 
         # 1. Dense retrieval (always — it's the primary signal).
         dense_hits = self._dense_search(query, target_pool, category)
@@ -194,9 +244,15 @@ class Retriever:
         else:
             pool = dense_hits[:target_pool]
 
-        # 3. Optional cross-encoder rerank.
+        # 3. Optional cross-encoder rerank. We rerank the full pool (no
+        #    top_k truncation) so the post-rerank diversify pass has the
+        #    largest possible material to pull substitutes from when the
+        #    top of the ranking is dominated by a single source.
         if rerank:
-            return self._reranker.rerank(query, pool, top_k=k)  # type: ignore[union-attr]
+            pool = self._reranker.rerank(query, pool, top_k=None)  # type: ignore[union-attr]
+
+        if diversify:
+            return _diversify_by_source(pool, k=k)
         return pool[:k]
 
     def _dense_search(
@@ -205,7 +261,15 @@ class Retriever:
         k_pool: int,
         category: Optional[str],
     ) -> list[tuple[Chunk, float]]:
-        """Encode + FAISS search + optional Python-side category filter."""
+        """Encode + FAISS search + optional Python-side category filter.
+
+        The category filter is post-hoc Python (FAISS' IndexFlatIP has no
+        cross-version ID mask). We first ask for ``k_pool *
+        _CATEGORY_OVERSEARCH`` chunks; if the matching slice doesn't fill
+        ``k_pool``, we retry with the full index. Cap at one retry — a
+        category with very few chunks just returns fewer than k, which
+        downstream code already tolerates.
+        """
         n_total = self._index.n_chunks or 1
         # Prefer the asymmetric path when the embedder offers it; fall back
         # to ``encode`` so simple test mocks (which only define .encode)
@@ -219,7 +283,13 @@ class Retriever:
             )
         k_dense = min(k_pool * self._CATEGORY_OVERSEARCH, n_total)
         raw = self._index.search(query_vec, k=k_dense)
-        return [(c, s) for c, s in raw if c.category == category][:k_pool]
+        filtered = [(c, s) for c, s in raw if c.category == category]
+        if len(filtered) < k_pool and k_dense < n_total:
+            # The 8× oversearch didn't surface enough of the target
+            # category — scan the full index and refilter.
+            raw = self._index.search(query_vec, k=n_total)
+            filtered = [(c, s) for c, s in raw if c.category == category]
+        return filtered[:k_pool]
 
     @property
     def n_chunks(self) -> int:

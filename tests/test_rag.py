@@ -116,7 +116,9 @@ from polimibot.rag.index import FAISSIndex
 
 
 def _make_chunks(n: int) -> list[Chunk]:
-    return [Chunk(text=f"chunk {i}", source="test", chunk_id=i) for i in range(n)]
+    # Distinct ``source`` per chunk so retriever-level tests aren't accidentally
+    # collapsed by the source-dedup pass on the live retriever.
+    return [Chunk(text=f"chunk {i}", source=f"src{i}", chunk_id=i) for i in range(n)]
 
 
 def _random_vecs(n: int, dim: int = 8) -> np.ndarray:
@@ -468,31 +470,48 @@ def test_retriever_hybrid_fuses_dense_and_bm25():
     # Five chunks; rank them differently in dense vs BM25.
     chunks = [
         Chunk(text="Caesar crossed the Rubicon",          source="A", chunk_id=0),
-        Chunk(text="Pompey rival",                         source="B", chunk_id=0),
-        Chunk(text="Augustus emperor",                     source="C", chunk_id=0),
-        Chunk(text="Caesar imperator",                     source="D", chunk_id=0),
-        Chunk(text="unrelated text about photosynthesis",  source="E", chunk_id=0),
+        Chunk(text="Pompey rival",                         source="B", chunk_id=1),
+        Chunk(text="Augustus emperor",                     source="C", chunk_id=2),
+        Chunk(text="Caesar imperator",                     source="D", chunk_id=3),
+        Chunk(text="unrelated text about photosynthesis",  source="E", chunk_id=4),
     ]
-    # Dense: identical vectors → returns in insertion order [A,B,C,D,E].
-    idx = FAISSIndex(dim=8)
-    same = np.ones((5, 8), dtype=np.float32) / np.sqrt(8)
-    idx.add(chunks, same)
+    # Dense: give A a strictly higher cosine score (norm-1 vector pointing
+    # closer to the query direction) so rank-1 is deterministic, not a
+    # tie-break across identical vectors.
+    dim = 8
+    # Query vector: all-ones direction.
+    q_vec = np.ones((1, dim), dtype=np.float32) / np.sqrt(dim)
+    # A gets score 1.0 (exact match to query direction).
+    # B-E get progressively lower scores so rank is predictable.
+    vecs = np.array([
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  # A — dense rank 1
+        [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],  # B — dense rank 2
+        [1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # C — dense rank 3
+        [1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # D — dense rank 4
+        [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # E — dense rank 5
+    ], dtype=np.float32)
+    # L2-normalise so cosine similarity = dot product.
+    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+    vecs = vecs / norms
 
-    # BM25 search for "Caesar" → matches A and D (D might rank higher
-    # because shorter doc); E shouldn't match at all.
+    idx = FAISSIndex(dim=dim)
+    idx.add(chunks, vecs)
+
+    # BM25: A and D both contain "Caesar"; E has none.
+    # A and D share the same BM25 score — both hit rank 1/2 in BM25.
     bm25 = BM25Index(chunks)
 
     class _Embed:
         dim = 8
-        def encode(self, texts): return same[:1]
+        def encode(self, texts): return q_vec  # always return the all-ones query
 
     r = Retriever(idx, _Embed(), bm25=bm25)  # type: ignore[arg-type]
     out = r.retrieve("Caesar", k=3, hybrid=True)
     sources = [c.source for c, _ in out]
-    # A appears at dense rank 1 AND BM25 rank 1-or-2 → should be top.
+    # A is dense rank 1 AND BM25 rank 1-or-2 → highest combined RRF → should be top.
     assert sources[0] == "A"
-    # D appears in BOTH lists; E appears in neither (dense rank 5, BM25 absent).
-    # D must outrank E and B/C (which have only dense, no BM25 hit on "Caesar").
+    # D appears in BM25 (Caesar hit) even though it's dense rank 4.
+    # B/C/E appear only in dense. D's BM25 bonus should lift it into top-3.
     assert "D" in sources
 
 
@@ -588,6 +607,122 @@ def test_retriever_no_hybrid_keeps_dense_only():
     out = r.retrieve("keyword", k=2)
     # All cosine scores ~1.0 (not BM25-shaped); BM25 was not consulted.
     assert all(0.9 < s < 1.1 for _, s in out)
+
+
+# ── Source-level diversification ────────────────────────────────────────────
+
+
+def test_retriever_diversifies_top_k_by_source_by_default():
+    """When multiple chunks share a source, top-k collapses them to one each
+    until k unique sources are filled."""
+    from polimibot.rag.retriever import Retriever
+    import numpy as np
+
+    # Three chunks from "A" (overlapping windows), two from "B", one from "C".
+    chunks = (
+        [Chunk(text=f"a{i}", source="A", chunk_id=i) for i in range(3)] +
+        [Chunk(text=f"b{i}", source="B", chunk_id=i) for i in range(2)] +
+        [Chunk(text="c0",   source="C", chunk_id=0)]
+    )
+    same = np.ones((6, 8), dtype=np.float32) / np.sqrt(8)
+    idx = FAISSIndex(dim=8)
+    idx.add(chunks, same)
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return same[:1]
+
+    r = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    out = r.retrieve("q", k=3)
+    sources = [c.source for c, _ in out]
+    # One chunk per source — A, B, C — instead of three A's. Order is
+    # whatever FAISS returns for the tied scores; we just verify uniqueness.
+    assert len(sources) == 3
+    assert set(sources) == {"A", "B", "C"}
+
+
+def test_retriever_diversify_false_keeps_duplicates():
+    """Explicit opt-out — useful for measuring the diversify lift."""
+    from polimibot.rag.retriever import Retriever
+    import numpy as np
+
+    chunks = [Chunk(text=f"a{i}", source="A", chunk_id=i) for i in range(4)]
+    same = np.ones((4, 8), dtype=np.float32) / np.sqrt(8)
+    idx = FAISSIndex(dim=8)
+    idx.add(chunks, same)
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return same[:1]
+
+    r = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    out = r.retrieve("q", k=3, diversify=False)
+    assert [c.source for c, _ in out] == ["A", "A", "A"]
+
+
+def test_retriever_diversify_backfills_when_short_on_unique_sources():
+    """If unique sources are fewer than k, fill remaining slots with
+    leftovers — never return fewer than k when material exists."""
+    from polimibot.rag.retriever import Retriever
+    import numpy as np
+
+    # Only 2 unique sources but k=3 requested.
+    chunks = (
+        [Chunk(text=f"a{i}", source="A", chunk_id=i) for i in range(2)] +
+        [Chunk(text="b0", source="B", chunk_id=0)]
+    )
+    same = np.ones((3, 8), dtype=np.float32) / np.sqrt(8)
+    idx = FAISSIndex(dim=8)
+    idx.add(chunks, same)
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return same[:1]
+
+    r = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    out = r.retrieve("q", k=3)
+    assert len(out) == 3
+    sources = [c.source for c, _ in out]
+    # Two A's (one from primary, one from leftover backfill) + one B.
+    assert sources.count("A") == 2
+    assert sources.count("B") == 1
+
+
+def test_retriever_adaptive_category_oversearch_falls_back_to_full_index():
+    """When the 8× oversearch doesn't surface enough of the target category,
+    a second search over the whole index makes up the difference."""
+    from polimibot.rag.retriever import Retriever
+    import numpy as np
+
+    # Many history chunks first (dense distance close to query), then ONE
+    # maths chunk far down the dense ranking. With k_pool=1 and 8× = 8,
+    # the first pass returns the top 8 history-only chunks; the maths
+    # chunk is missed. The retry over the full index must pick it up.
+    n_history = 20
+    chunks = (
+        [Chunk(text=f"h{i}", source=f"H{i}", chunk_id=0, category="history")
+         for i in range(n_history)] +
+        [Chunk(text="m0", source="M0", chunk_id=0, category="maths")]
+    )
+    # Dense layout: history chunks score 1.0, maths chunk scores 0.0.
+    vecs = np.zeros((n_history + 1, 8), dtype=np.float32)
+    vecs[:n_history] = np.ones((n_history, 8), dtype=np.float32) / np.sqrt(8)
+    vecs[n_history] = np.array([1, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
+    idx = FAISSIndex(dim=8)
+    idx.add(chunks, vecs)
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts):
+            # Query close to the history vector → history chunks rank first
+            v = np.ones((1, 8), dtype=np.float32) / np.sqrt(8)
+            return v
+
+    r = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    out = r.retrieve("q", k=1, category="maths")
+    # Without the retry this would return [] (no maths in the top-8 dense).
+    assert len(out) == 1
+    assert out[0][0].category == "maths"
 
 
 def test_retriever_no_rerank_keeps_dense_path():

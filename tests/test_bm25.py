@@ -17,11 +17,27 @@ def _c(idx: int, text: str, category: str | None = None) -> Chunk:
 
 
 def test_tokenize_lowercases():
-    assert tokenize("Caesar Crossed THE Rubicon") == ["caesar", "crossed", "the", "rubicon"]
+    # "the" is a stopword → removed by default; "crossed" and "rubicon" are not.
+    assert tokenize("Caesar Crossed THE Rubicon") == ["caesar", "crossed", "rubicon"]
+
+
+def test_tokenize_lowercases_no_stopwords_flag():
+    # With drop_stopwords=False the original tokens come through intact.
+    assert tokenize("Caesar Crossed THE Rubicon", drop_stopwords=False) == [
+        "caesar", "crossed", "the", "rubicon"
+    ]
 
 
 def test_tokenize_drops_punctuation():
-    assert tokenize("Hello, world! It's 49 BC.") == ["hello", "world", "it", "s", "49", "bc"]
+    # "it" and "s" come from "It's"; "it" is a stopword → removed.
+    # "hello", "world", "s", "49", "bc" survive; "it" does not.
+    result = tokenize("Hello, world! It's 49 BC.")
+    assert "hello" in result
+    assert "world" in result
+    assert "s" in result
+    assert "49" in result
+    assert "bc" in result
+    assert "it" not in result  # stopword
 
 
 def test_tokenize_empty():
@@ -124,13 +140,14 @@ def test_bm25_save_load_roundtrip(tmp_path):
 
 def test_bm25_save_writes_header_first(tmp_path):
     """Header lets readers detect format version + spec without reading every line."""
+    from polimibot.rag.bm25 import BM25_VERSION
     idx = BM25Index(_three_doc_corpus())
     idx.save(tmp_path / "stem")
     first = (tmp_path / "stem.bm25.jsonl").open(encoding="utf-8").readline()
     rec = json.loads(first)
     assert rec.get("kind") == "bm25_header"
     assert rec.get("n_docs") == 3
-    assert rec.get("version") == 1
+    assert rec.get("version") == BM25_VERSION  # v2: positional postings + stopwords
 
 
 def test_bm25_load_preserves_category(tmp_path):
