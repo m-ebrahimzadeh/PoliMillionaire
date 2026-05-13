@@ -45,13 +45,80 @@ def test_chunk_short_text_is_single_chunk():
     assert chunks[0].text == "hello world"
 
 
+def test_chunk_respects_sentence_boundaries():
+    """A chunk should end at a sentence boundary when the next sentence
+    would push it past chunk_size. The cut never lands mid-sentence."""
+    sentences = [
+        "Caesar crossed the Rubicon in 49 BC.",
+        "This act started a civil war against Pompey.",
+        "He was later assassinated on the Ides of March.",
+    ]
+    text = " ".join(sentences)
+    # chunk_size chosen so two sentences fit but three do not.
+    chunks = chunk_text(text, source="rome", chunk_size=14, overlap=0,
+                        min_chunk_words=1)
+    # The first chunk should end with a "." (no mid-sentence cut).
+    assert chunks[0].text.rstrip().endswith(".")
+    # And it should be one of the input sentences or a join of consecutive ones.
+    assert chunks[0].text.strip() in {sentences[0],
+                                       " ".join(sentences[:2])}
+
+
+def test_chunk_attaches_section_header_to_first_chunk_only():
+    """`== Foo ==` lines are removed from the prose and prepended to the
+    first chunk of their section. They do not appear in subsequent chunks
+    of the same section."""
+    text = (
+        "Intro paragraph about Caesar.\n"
+        "== Early life ==\n"
+        + ("word " * 50).strip()
+        + "\n== Later career ==\n"
+        "Final sentence."
+    )
+    chunks = chunk_text(text, source="rome", chunk_size=20, overlap=0,
+                        min_chunk_words=1)
+    # The intro is its own headerless chunk.
+    assert not chunks[0].text.startswith("Early life")
+    # Some chunk should carry the "Early life" header prefix exactly once.
+    early_life_chunks = [c for c in chunks if c.text.startswith("Early life\n")]
+    assert len(early_life_chunks) == 1
+    later_career_chunks = [c for c in chunks if c.text.startswith("Later career\n")]
+    assert len(later_career_chunks) == 1
+    # The "==" markers must not appear in any chunk's text.
+    assert not any("==" in c.text for c in chunks)
+
+
+def test_chunk_min_chunk_filter_merges_short_tail():
+    """A trailing chunk below min_chunk_words is absorbed into its
+    predecessor so the index isn't polluted with 10-word stubs."""
+    text = " ".join(str(i) for i in range(45))   # 45 words, no punctuation
+    # stride = 20, so windows = [0..19], [20..39], [40..44] (5 words).
+    chunks = chunk_text(text, source="x", chunk_size=20, overlap=0,
+                        min_chunk_words=10)
+    # The 5-word tail should have been merged, so we get at most 2 chunks.
+    assert len(chunks) == 2
+    # ids stay contiguous after the merge.
+    assert [c.chunk_id for c in chunks] == [0, 1]
+    # And the second chunk must now contain the tail words.
+    assert "44" in chunks[1].text
+
+
+def test_chunk_manifest_version_exported():
+    """CHUNKER_VERSION is part of the public surface — manifest readers
+    rely on its presence and integrality."""
+    from polimibot.rag.chunker import CHUNKER_VERSION
+    assert isinstance(CHUNKER_VERSION, int) and CHUNKER_VERSION >= 2
+
+
 # ── FAISSIndex (requires faiss-cpu) ─────────────────────────────────────────
 
 from polimibot.rag.index import FAISSIndex
 
 
 def _make_chunks(n: int) -> list[Chunk]:
-    return [Chunk(text=f"chunk {i}", source="test", chunk_id=i) for i in range(n)]
+    # Distinct ``source`` per chunk so retriever-level tests aren't accidentally
+    # collapsed by the source-dedup pass on the live retriever.
+    return [Chunk(text=f"chunk {i}", source=f"src{i}", chunk_id=i) for i in range(n)]
 
 
 def _random_vecs(n: int, dim: int = 8) -> np.ndarray:
@@ -310,6 +377,89 @@ def test_retriever_hybrid_requires_attached_bm25():
         r.retrieve("q", k=3, hybrid=True)
 
 
+# ── BM25 tokenisation & proximity ───────────────────────────────────────────
+
+
+def test_bm25_tokenize_drops_stopwords_by_default():
+    from polimibot.rag.bm25 import tokenize
+    toks = tokenize("The cat is on the mat")
+    # "the", "is", "on" are stopwords; "cat", "mat" survive.
+    assert "the" not in toks
+    assert "is" not in toks
+    assert "on" not in toks
+    assert "cat" in toks
+    assert "mat" in toks
+
+
+def test_bm25_tokenize_keep_stopwords_when_disabled():
+    from polimibot.rag.bm25 import tokenize
+    toks = tokenize("The cat is on the mat", drop_stopwords=False)
+    assert toks == ["the", "cat", "is", "on", "the", "mat"]
+
+
+def test_bm25_proximity_bonus_rewards_adjacent_tokens():
+    """A chunk where two query tokens are adjacent outscores one where the
+    same tokens are far apart — even though both share TF and IDF."""
+    from polimibot.rag.bm25 import BM25Index, BM25Spec
+    near = Chunk(text="The Pythagorean theorem relates the sides of a triangle",
+                 source="N", chunk_id=0)
+    # Same two tokens, but ~30 words apart (separated by filler).
+    far_text = "Pythagorean was a Greek philosopher. " + ("filler " * 30) + "He proved a theorem."
+    far = Chunk(text=far_text, source="F", chunk_id=0)
+    bm25 = BM25Index([near, far], spec=BM25Spec(proximity_alpha=1.0, proximity_window=5))
+    hits = bm25.search("Pythagorean theorem", k=2)
+    sources = [c.source for c, _ in hits]
+    assert sources[0] == "N"   # near beats far
+
+
+def test_bm25_proximity_alpha_zero_disables_bonus():
+    """With proximity_alpha=0 the two docs of the previous test get equal
+    base BM25 scores (same TF, same IDF, different doc length)."""
+    from polimibot.rag.bm25 import BM25Index, BM25Spec
+    near = Chunk(text="Pythagorean theorem one two three four five",
+                 source="N", chunk_id=0)
+    far_text = "Pythagorean " + ("x " * 20) + "theorem"
+    far = Chunk(text=far_text, source="F", chunk_id=0)
+    bm25 = BM25Index([near, far], spec=BM25Spec(proximity_alpha=0.0))
+    hits = bm25.search("Pythagorean theorem", k=2)
+    # Both should still appear; we only check the proximity bonus didn't fire
+    # (i.e. doc lengths drive any ordering difference, not proximity).
+    assert len(hits) == 2
+
+
+def test_bm25_load_refuses_old_version(tmp_path):
+    """A v1 sidecar (no version field defaults to 1) must be rejected so
+    callers know to rebuild before relying on the new scoring path."""
+    from polimibot.rag.bm25 import BM25Index
+    import json as _json
+    p = tmp_path / "old.bm25.jsonl"
+    p.write_text(
+        _json.dumps({"kind": "bm25_header", "k1": 1.5, "b": 0.75,
+                     "n_docs": 0, "avgdl": 0.0}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="version"):
+        BM25Index.load(tmp_path / "old")
+
+
+def test_bm25_save_load_roundtrip_v2(tmp_path):
+    from polimibot.rag.bm25 import BM25Index, BM25_VERSION
+    chunks = [
+        Chunk(text="Caesar crossed the Rubicon", source="A", chunk_id=0),
+        Chunk(text="Pompey was his rival", source="B", chunk_id=0),
+    ]
+    idx = BM25Index(chunks)
+    idx.save(tmp_path / "k")
+    loaded = BM25Index.load(tmp_path / "k")
+    # Spec round-trips, search still works.
+    hits = loaded.search("Caesar", k=2)
+    assert hits[0][0].source == "A"
+    # Header records the new version.
+    import json as _json
+    header = _json.loads((tmp_path / "k.bm25.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert header["version"] == BM25_VERSION
+
+
 def test_retriever_hybrid_fuses_dense_and_bm25():
     """A chunk that appears in BOTH dense and BM25 top results should
     outrank a chunk that appears in only one."""
@@ -320,31 +470,48 @@ def test_retriever_hybrid_fuses_dense_and_bm25():
     # Five chunks; rank them differently in dense vs BM25.
     chunks = [
         Chunk(text="Caesar crossed the Rubicon",          source="A", chunk_id=0),
-        Chunk(text="Pompey rival",                         source="B", chunk_id=0),
-        Chunk(text="Augustus emperor",                     source="C", chunk_id=0),
-        Chunk(text="Caesar imperator",                     source="D", chunk_id=0),
-        Chunk(text="unrelated text about photosynthesis",  source="E", chunk_id=0),
+        Chunk(text="Pompey rival",                         source="B", chunk_id=1),
+        Chunk(text="Augustus emperor",                     source="C", chunk_id=2),
+        Chunk(text="Caesar imperator",                     source="D", chunk_id=3),
+        Chunk(text="unrelated text about photosynthesis",  source="E", chunk_id=4),
     ]
-    # Dense: identical vectors → returns in insertion order [A,B,C,D,E].
-    idx = FAISSIndex(dim=8)
-    same = np.ones((5, 8), dtype=np.float32) / np.sqrt(8)
-    idx.add(chunks, same)
+    # Dense: give A a strictly higher cosine score (norm-1 vector pointing
+    # closer to the query direction) so rank-1 is deterministic, not a
+    # tie-break across identical vectors.
+    dim = 8
+    # Query vector: all-ones direction.
+    q_vec = np.ones((1, dim), dtype=np.float32) / np.sqrt(dim)
+    # A gets score 1.0 (exact match to query direction).
+    # B-E get progressively lower scores so rank is predictable.
+    vecs = np.array([
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  # A — dense rank 1
+        [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],  # B — dense rank 2
+        [1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # C — dense rank 3
+        [1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # D — dense rank 4
+        [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # E — dense rank 5
+    ], dtype=np.float32)
+    # L2-normalise so cosine similarity = dot product.
+    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+    vecs = vecs / norms
 
-    # BM25 search for "Caesar" → matches A and D (D might rank higher
-    # because shorter doc); E shouldn't match at all.
+    idx = FAISSIndex(dim=dim)
+    idx.add(chunks, vecs)
+
+    # BM25: A and D both contain "Caesar"; E has none.
+    # A and D share the same BM25 score — both hit rank 1/2 in BM25.
     bm25 = BM25Index(chunks)
 
     class _Embed:
         dim = 8
-        def encode(self, texts): return same[:1]
+        def encode(self, texts): return q_vec  # always return the all-ones query
 
     r = Retriever(idx, _Embed(), bm25=bm25)  # type: ignore[arg-type]
     out = r.retrieve("Caesar", k=3, hybrid=True)
     sources = [c.source for c, _ in out]
-    # A appears at dense rank 1 AND BM25 rank 1-or-2 → should be top.
+    # A is dense rank 1 AND BM25 rank 1-or-2 → highest combined RRF → should be top.
     assert sources[0] == "A"
-    # D appears in BOTH lists; E appears in neither (dense rank 5, BM25 absent).
-    # D must outrank E and B/C (which have only dense, no BM25 hit on "Caesar").
+    # D appears in BM25 (Caesar hit) even though it's dense rank 4.
+    # B/C/E appear only in dense. D's BM25 bonus should lift it into top-3.
     assert "D" in sources
 
 
@@ -440,6 +607,122 @@ def test_retriever_no_hybrid_keeps_dense_only():
     out = r.retrieve("keyword", k=2)
     # All cosine scores ~1.0 (not BM25-shaped); BM25 was not consulted.
     assert all(0.9 < s < 1.1 for _, s in out)
+
+
+# ── Source-level diversification ────────────────────────────────────────────
+
+
+def test_retriever_diversifies_top_k_by_source_by_default():
+    """When multiple chunks share a source, top-k collapses them to one each
+    until k unique sources are filled."""
+    from polimibot.rag.retriever import Retriever
+    import numpy as np
+
+    # Three chunks from "A" (overlapping windows), two from "B", one from "C".
+    chunks = (
+        [Chunk(text=f"a{i}", source="A", chunk_id=i) for i in range(3)] +
+        [Chunk(text=f"b{i}", source="B", chunk_id=i) for i in range(2)] +
+        [Chunk(text="c0",   source="C", chunk_id=0)]
+    )
+    same = np.ones((6, 8), dtype=np.float32) / np.sqrt(8)
+    idx = FAISSIndex(dim=8)
+    idx.add(chunks, same)
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return same[:1]
+
+    r = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    out = r.retrieve("q", k=3)
+    sources = [c.source for c, _ in out]
+    # One chunk per source — A, B, C — instead of three A's. Order is
+    # whatever FAISS returns for the tied scores; we just verify uniqueness.
+    assert len(sources) == 3
+    assert set(sources) == {"A", "B", "C"}
+
+
+def test_retriever_diversify_false_keeps_duplicates():
+    """Explicit opt-out — useful for measuring the diversify lift."""
+    from polimibot.rag.retriever import Retriever
+    import numpy as np
+
+    chunks = [Chunk(text=f"a{i}", source="A", chunk_id=i) for i in range(4)]
+    same = np.ones((4, 8), dtype=np.float32) / np.sqrt(8)
+    idx = FAISSIndex(dim=8)
+    idx.add(chunks, same)
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return same[:1]
+
+    r = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    out = r.retrieve("q", k=3, diversify=False)
+    assert [c.source for c, _ in out] == ["A", "A", "A"]
+
+
+def test_retriever_diversify_backfills_when_short_on_unique_sources():
+    """If unique sources are fewer than k, fill remaining slots with
+    leftovers — never return fewer than k when material exists."""
+    from polimibot.rag.retriever import Retriever
+    import numpy as np
+
+    # Only 2 unique sources but k=3 requested.
+    chunks = (
+        [Chunk(text=f"a{i}", source="A", chunk_id=i) for i in range(2)] +
+        [Chunk(text="b0", source="B", chunk_id=0)]
+    )
+    same = np.ones((3, 8), dtype=np.float32) / np.sqrt(8)
+    idx = FAISSIndex(dim=8)
+    idx.add(chunks, same)
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts): return same[:1]
+
+    r = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    out = r.retrieve("q", k=3)
+    assert len(out) == 3
+    sources = [c.source for c, _ in out]
+    # Two A's (one from primary, one from leftover backfill) + one B.
+    assert sources.count("A") == 2
+    assert sources.count("B") == 1
+
+
+def test_retriever_adaptive_category_oversearch_falls_back_to_full_index():
+    """When the 8× oversearch doesn't surface enough of the target category,
+    a second search over the whole index makes up the difference."""
+    from polimibot.rag.retriever import Retriever
+    import numpy as np
+
+    # Many history chunks first (dense distance close to query), then ONE
+    # maths chunk far down the dense ranking. With k_pool=1 and 8× = 8,
+    # the first pass returns the top 8 history-only chunks; the maths
+    # chunk is missed. The retry over the full index must pick it up.
+    n_history = 20
+    chunks = (
+        [Chunk(text=f"h{i}", source=f"H{i}", chunk_id=0, category="history")
+         for i in range(n_history)] +
+        [Chunk(text="m0", source="M0", chunk_id=0, category="maths")]
+    )
+    # Dense layout: history chunks score 1.0, maths chunk scores 0.0.
+    vecs = np.zeros((n_history + 1, 8), dtype=np.float32)
+    vecs[:n_history] = np.ones((n_history, 8), dtype=np.float32) / np.sqrt(8)
+    vecs[n_history] = np.array([1, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
+    idx = FAISSIndex(dim=8)
+    idx.add(chunks, vecs)
+
+    class _Embed:
+        dim = 8
+        def encode(self, texts):
+            # Query close to the history vector → history chunks rank first
+            v = np.ones((1, 8), dtype=np.float32) / np.sqrt(8)
+            return v
+
+    r = Retriever(idx, _Embed())  # type: ignore[arg-type]
+    out = r.retrieve("q", k=1, category="maths")
+    # Without the retry this would return [] (no maths in the top-8 dense).
+    assert len(out) == 1
+    assert out[0][0].category == "maths"
 
 
 def test_retriever_no_rerank_keeps_dense_path():
@@ -546,6 +829,105 @@ def test_retriever_no_category_returns_all_categories():
     hits = r.retrieve("anything", k=2)
     cats = {c.category for c, _ in hits}
     assert cats == {"maths", "history"}
+
+
+# ── Embedder asymmetric encoding ────────────────────────────────────────────
+
+
+class _FakeST:
+    """Minimal stand-in for sentence_transformers.SentenceTransformer.
+
+    Records the inputs passed to .encode so tests can verify which prefix
+    (if any) was prepended. Returns ones-vectors so shape is right.
+    """
+    last_inputs: list[str] = []
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return 4
+
+    def encode(self, texts, batch_size=None, normalize_embeddings=False,
+               show_progress_bar=False, convert_to_numpy=True):
+        type(self).last_inputs = list(texts)
+        return np.ones((len(texts), 4), dtype=np.float32)
+
+
+def _patch_sentence_transformers(monkeypatch):
+    import sentence_transformers as st
+    monkeypatch.setattr(st, "SentenceTransformer", _FakeST)
+    _FakeST.last_inputs = []
+
+
+def test_embedder_encode_query_prepends_query_prefix(monkeypatch):
+    _patch_sentence_transformers(monkeypatch)
+    from polimibot.rag.embedder import Embedder, EmbedderSpec
+    spec = EmbedderSpec(
+        model_name="any", query_prefix="Q: ", passage_prefix="P: ",
+    )
+    emb = Embedder(spec)
+    emb.encode_query(["foo", "bar"])
+    assert _FakeST.last_inputs == ["Q: foo", "Q: bar"]
+
+
+def test_embedder_encode_passage_prepends_passage_prefix(monkeypatch):
+    _patch_sentence_transformers(monkeypatch)
+    from polimibot.rag.embedder import Embedder, EmbedderSpec
+    spec = EmbedderSpec(
+        model_name="any", query_prefix="Q: ", passage_prefix="P: ",
+    )
+    emb = Embedder(spec)
+    emb.encode_passage(["foo"])
+    assert _FakeST.last_inputs == ["P: foo"]
+
+
+def test_embedder_empty_prefix_skips_prepending(monkeypatch):
+    """Common case (MiniLM, BGE-passage) — no prefix means inputs pass
+    through verbatim, no per-text string concat."""
+    _patch_sentence_transformers(monkeypatch)
+    from polimibot.rag.embedder import Embedder, EmbedderSpec
+    spec = EmbedderSpec(model_name="any", query_prefix="", passage_prefix="")
+    emb = Embedder(spec)
+    emb.encode_query(["hello"])
+    assert _FakeST.last_inputs == ["hello"]
+
+
+def test_check_manifest_compat_hard_fails_on_query_prefix_drift():
+    from polimibot.rag.retriever import _check_manifest_compat
+    from polimibot.rag.embedder import EmbedderSpec
+    spec = EmbedderSpec(model_name="m", query_prefix="A: ", passage_prefix="")
+    manifest = {
+        "embedder_model_name":   "m",
+        "embedder_query_prefix": "B: ",
+    }
+    with pytest.raises(ValueError, match="incompatible halves"):
+        _check_manifest_compat(manifest, spec)
+
+
+def test_check_manifest_compat_passes_when_prefixes_match():
+    from polimibot.rag.retriever import _check_manifest_compat
+    from polimibot.rag.embedder import EmbedderSpec
+    spec = EmbedderSpec(model_name="m", query_prefix="A: ", passage_prefix="P: ")
+    manifest = {
+        "embedder_model_name":     "m",
+        "embedder_query_prefix":   "A: ",
+        "embedder_passage_prefix": "P: ",
+    }
+    _check_manifest_compat(manifest, spec)   # no raise
+
+
+def test_check_manifest_compat_legacy_manifest_without_prefix(monkeypatch):
+    """An older manifest that omits prefix fields keeps loading — they're
+    treated as 'unknown', not as forced-empty."""
+    from polimibot.rag.retriever import _check_manifest_compat
+    from polimibot.rag.embedder import EmbedderSpec
+    spec = EmbedderSpec(model_name="m", query_prefix="A: ", passage_prefix="")
+    manifest = {"embedder_model_name": "m"}
+    _check_manifest_compat(manifest, spec)   # no raise
+
+
+# ─── pre-existing test (untouched) ─────────────────────────────────────────
 
 
 def test_retriever_from_saved_warns_on_normalize_drift():

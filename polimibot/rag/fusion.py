@@ -27,7 +27,7 @@ Usage:
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from .chunker import Chunk
 
@@ -54,6 +54,7 @@ def reciprocal_rank_fusion(
     *,
     k: int = 10,
     rrf_k: int = RRF_K,
+    weights: Optional[Sequence[float]] = None,
 ) -> List[Tuple[Chunk, float]]:
     """Fuse multiple ranked lists into one by Reciprocal Rank Fusion.
 
@@ -63,6 +64,11 @@ def reciprocal_rank_fusion(
             IGNORED — RRF only uses positions.
         k: top-k to return after fusion.
         rrf_k: the damping constant. 60 is the published default.
+        weights: optional per-list multiplier on the RRF contribution.
+            When None (default) every list weighs 1.0 — the classic
+            symmetric fusion. Pass e.g. ``[1.0, 1.5]`` to weight BM25
+            more than dense in a hybrid setting where entity-style
+            queries dominate. Length must equal ``len(ranked_lists)``.
 
     Returns:
         ``list[(Chunk, rrf_score)]`` sorted by RRF score descending,
@@ -77,17 +83,26 @@ def reciprocal_rank_fusion(
     """
     if not ranked_lists:
         return []
+    if weights is None:
+        ws: Sequence[float] = [1.0] * len(ranked_lists)
+    else:
+        if len(weights) != len(ranked_lists):
+            raise ValueError(
+                f"weights has {len(weights)} entries but {len(ranked_lists)} "
+                f"ranked lists were given — they must match 1:1."
+            )
+        ws = weights
 
     rrf_scores: dict[Tuple[str, int], float] = defaultdict(float)
     # First-seen Chunk per identity key — used for stable output Chunks.
     first_seen: dict[Tuple[str, int], Chunk] = {}
 
-    for ranked in ranked_lists:
-        if not ranked:
+    for ranked, w in zip(ranked_lists, ws):
+        if not ranked or w == 0:
             continue
         for rank, (chunk, _score) in enumerate(ranked, start=1):
             key = _chunk_key(chunk)
-            rrf_scores[key] += 1.0 / (rrf_k + rank)
+            rrf_scores[key] += w * (1.0 / (rrf_k + rank))
             first_seen.setdefault(key, chunk)
 
     # Sort by RRF score descending, take top-k.

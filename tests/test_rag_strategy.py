@@ -21,6 +21,9 @@ class MockRetriever:
     strategy flags raise at construction; pass the flags True for tests
     that exercise the integration.
     """
+    # Sentinel to distinguish "never called" from "called with None".
+    _DEFAULT_RERANK_OVERSEARCH = 5   # mirrors Retriever constant
+
     def __init__(
         self,
         passages: list[tuple[Chunk, float]],
@@ -38,6 +41,8 @@ class MockRetriever:
         self.last_hybrid: bool = False
         self.queries_seen: list[str] = []
         self.n_chunks = len(passages)
+        # Tracks calls to rerank_pool (fuse-then-rerank path).
+        self.rerank_pool_calls: list[dict] = []
 
     def retrieve(
         self,
@@ -48,6 +53,7 @@ class MockRetriever:
         rerank: bool = False,
         rerank_oversearch=None,
         hybrid: bool = False,
+        diversify: bool = True,
     ) -> list[tuple[Chunk, float]]:
         self.last_query = query
         self.queries_seen.append(query)
@@ -56,6 +62,17 @@ class MockRetriever:
         self.last_rerank_oversearch = rerank_oversearch
         self.last_hybrid = hybrid
         return self._passages[:k]
+
+    def rerank_pool(
+        self,
+        query: str,
+        pool: list[tuple[Chunk, float]],
+        *,
+        k: int,
+    ) -> list[tuple[Chunk, float]]:
+        """Mock rerank_pool: records the call and returns pool[:k]."""
+        self.rerank_pool_calls.append({"query": query, "pool_size": len(pool), "k": k})
+        return pool[:k]
 
 
 def _inp(gold: str = "B") -> StrategyInput:
@@ -82,12 +99,14 @@ def test_rag_picks_gold_answer():
 
 
 def test_rag_query_includes_options():
+    """In multi-query mode (the new default), each option appears in one
+    of the per-option queries even though no single query carries all options."""
     retriever = MockRetriever(_passages())
-    strategy = RAGStrategy(MockLLM(), retriever, k=2)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2)  # use_multi_query=True by default
     strategy.answer(_inp())
-    # Options ("Pompey", "Caesar", ...) should appear in the query
-    assert "Caesar" in retriever.last_query
-    assert "Pompey" in retriever.last_query
+    all_queries = " ".join(retriever.queries_seen)
+    assert "Caesar" in all_queries
+    assert "Pompey" in all_queries
 
 
 def test_rag_extras_populated():
@@ -184,11 +203,63 @@ def test_format_context_passage_char_cap_per_chunk():
     assert len(body) <= 60
 
 
+def test_format_context_includes_chunk_id_in_header():
+    """Citation discipline: chunk_id must appear in the passage header so
+    the LLM can reference '[Passage 1]' in reasoning."""
+    chunk = Chunk(text="Caesar crossed the Rubicon.", source="Julius Caesar",
+                  chunk_id=7, category=None)
+    ctx = _format_context([(chunk, 0.9)])
+    assert "chunk 7" in ctx
+
+
+def test_format_context_includes_category_when_available():
+    """When category is set, it should appear in the header for disambiguation."""
+    chunk = Chunk(text="Some fact.", source="Article", chunk_id=0, category="history")
+    ctx = _format_context([(chunk, 0.9)])
+    assert "history" in ctx
+
+
+def test_format_context_no_category_suffix_when_none():
+    """When category is None, no extra comma-suffix in the header."""
+    chunk = Chunk(text="Some fact.", source="Article", chunk_id=0, category=None)
+    ctx = _format_context([(chunk, 0.9)])
+    # Header should be "[1] Article (chunk 0)" without trailing comma.
+    header_line = ctx.split("\n")[0]
+    assert not header_line.endswith(",")
+    assert "None" not in header_line
+
+
+def test_format_context_truncates_at_sentence_boundary():
+    """Hard-truncation mid-word is replaced with sentence-boundary truncation."""
+    from polimibot.strategies.rag_strategy import _truncate_to_sentence
+    text = "First sentence. Second sentence. Third sentence."
+    # Budget fits first two sentences (32 chars) but not the third.
+    result = _truncate_to_sentence(text, 35)
+    assert result.endswith(".")
+    assert "Third" not in result
+
+
+def test_truncate_to_sentence_no_truncation_when_fits():
+    from polimibot.strategies.rag_strategy import _truncate_to_sentence
+    text = "Short text."
+    assert _truncate_to_sentence(text, 1000) == text
+
+
+def test_truncate_to_sentence_falls_back_to_word_boundary():
+    """When no sentence-boundary fits, fall back to word boundary."""
+    from polimibot.strategies.rag_strategy import _truncate_to_sentence
+    text = "word1 word2 word3 word4"
+    result = _truncate_to_sentence(text, 12)  # fits "word1 word2"
+    assert not result.endswith(" ")
+    assert "word3" not in result
+
+
 # ── Low-score gate ────────────────────────────────────────────────────────────
 
 def test_rag_min_score_gate_drops_context_below_threshold():
     """When the top retrieval score is below min_score, RAG degrades to
-    plain (no-context) prompting. The model is not fed irrelevant evidence."""
+    plain (no-context) prompting. The model is not fed irrelevant evidence.
+    Uses use_multi_query=False so score units are cosine (predictable)."""
     low_score_passages = [
         (Chunk(text="off-topic", source="Wrong", chunk_id=0), 0.10),
     ]
@@ -197,6 +268,7 @@ def test_rag_min_score_gate_drops_context_below_threshold():
         MockRetriever(low_score_passages),
         k=1,
         min_score=0.30,
+        use_multi_query=False,
     )
     out = strategy.answer(_inp("B"))
     assert out.extras["gated_by_min_score"] is True
@@ -214,6 +286,7 @@ def test_rag_min_score_gate_keeps_context_above_threshold():
         MockRetriever(high_score_passages),
         k=1,
         min_score=0.30,
+        use_multi_query=False,
     )
     out = strategy.answer(_inp("B"))
     assert out.extras["gated_by_min_score"] is False
@@ -237,6 +310,65 @@ def test_rag_name_includes_min_score_when_set():
         MockLLM(), MockRetriever(_passages()), k=2, min_score=0.30,
     )
     assert "min_score=0.3" in strategy.name
+
+
+def test_rag_path_aware_gate_uses_rrf_threshold_on_hybrid():
+    """On the hybrid path, min_score_rrf is used, not min_score.
+    A low RRF score (<min_score_rrf) should gate; a cosine-range value
+    passed as min_score should NOT gate the hybrid path."""
+    rrf_passages = [
+        (Chunk(text="some text", source="S", chunk_id=0), 0.005),  # low RRF score
+    ]
+    retriever = MockRetriever(rrf_passages, has_bm25=True)
+    # min_score=0.30 should NOT fire on the hybrid (RRF) path.
+    # min_score_rrf=0.01 > 0.005 → should gate.
+    strategy = RAGStrategy(
+        MockLLM(correctness=1.0), retriever, k=1,
+        use_hybrid=True,
+        use_multi_query=False,
+        min_score=0.30,       # dense threshold — must NOT apply here
+        min_score_rrf=0.01,   # RRF threshold — MUST apply here
+    )
+    out = strategy.answer(_inp("A"))
+    assert out.extras["gated_by_min_score"] is True
+    assert out.extras["min_score_threshold"] == pytest.approx(0.01)
+
+
+def test_rag_path_aware_gate_dense_threshold_ignored_on_hybrid():
+    """min_score alone set, no min_score_rrf: hybrid path never gates
+    (even if the dense threshold would gate a cosine score)."""
+    rrf_passages = [
+        (Chunk(text="some text", source="S", chunk_id=0), 0.005),
+    ]
+    retriever = MockRetriever(rrf_passages, has_bm25=True)
+    strategy = RAGStrategy(
+        MockLLM(correctness=1.0), retriever, k=1,
+        use_hybrid=True,
+        use_multi_query=False,
+        min_score=0.30,   # would gate a dense score of 0.005, but not RRF
+    )
+    out = strategy.answer(_inp("A"))
+    # min_score_rrf=None → no gate on hybrid path
+    assert out.extras["gated_by_min_score"] is False
+    assert out.extras["min_score_threshold"] is None
+
+
+def test_rag_path_aware_gate_rerank_threshold():
+    """On the rerank path, min_score_rerank is consulted, not min_score."""
+    passages = [
+        (Chunk(text="some text", source="S", chunk_id=0), -1.5),  # negative CE logit
+    ]
+    retriever = MockRetriever(passages, has_reranker=True)
+    strategy = RAGStrategy(
+        MockLLM(correctness=1.0), retriever, k=1,
+        use_reranker=True,
+        use_multi_query=False,
+        min_score=0.30,           # dense threshold — must NOT apply
+        min_score_rerank=-1.0,    # CE threshold — -1.5 < -1.0 → gates
+    )
+    out = strategy.answer(_inp("A"))
+    assert out.extras["gated_by_min_score"] is True
+    assert out.extras["min_score_threshold"] == pytest.approx(-1.0)
 
 
 def test_rag_extras_carries_full_passage_triples():
@@ -382,24 +514,29 @@ def test_rag_rejects_use_reranker_when_retriever_has_none():
 
 
 def test_rag_passes_rerank_true_to_retriever_when_enabled():
+    """Single-query path (use_multi_query=False): rerank=True goes into retrieve()."""
     retriever = MockRetriever(_passages(), has_reranker=True)
-    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True,
+                           use_multi_query=False)
     strategy.answer(_inp())
     assert retriever.last_rerank is True
 
 
 def test_rag_does_not_pass_rerank_when_disabled():
     retriever = MockRetriever(_passages(), has_reranker=True)
-    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=False)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=False,
+                           use_multi_query=False)
     strategy.answer(_inp())
     assert retriever.last_rerank is False
 
 
 def test_rag_forwards_rerank_oversearch_when_set():
+    """Single-query path: rerank_oversearch passes through to retrieve()."""
     retriever = MockRetriever(_passages(), has_reranker=True)
     strategy = RAGStrategy(
         MockLLM(), retriever, k=2,
         use_reranker=True, rerank_oversearch=12,
+        use_multi_query=False,
     )
     strategy.answer(_inp())
     assert retriever.last_rerank_oversearch == 12
@@ -408,7 +545,8 @@ def test_rag_forwards_rerank_oversearch_when_set():
 def test_rag_omits_rerank_oversearch_when_none():
     """rerank_oversearch=None → don't pass the kwarg, let Retriever use its default."""
     retriever = MockRetriever(_passages(), has_reranker=True)
-    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True,
+                           use_multi_query=False)
     strategy.answer(_inp())
     assert retriever.last_rerank_oversearch is None
 
@@ -483,11 +621,22 @@ def test_rag_multi_query_queries_cover_question_and_each_option():
 
 
 def test_rag_single_query_issues_one_call():
-    """use_multi_query=False (default) → exactly one retrieval call."""
+    """use_multi_query=False → exactly one retrieval call (ablation/legacy path)."""
     retriever = MockRetriever(_passages())
-    strategy = RAGStrategy(MockLLM(), retriever, k=2)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_multi_query=False)
     strategy.answer(_inp())
     assert len(retriever.queries_seen) == 1
+
+
+def test_rag_multi_query_is_on_by_default():
+    """use_multi_query=True is the new default (audit §3/#4 fix): embedding
+    question+4 distractors in one vector dilutes the right-answer signal."""
+    retriever = MockRetriever(_passages())
+    strategy = RAGStrategy(MockLLM(), retriever, k=2)  # default
+    out = strategy.answer(_inp())
+    # Default should issue 5 retrieval calls (question + 4 per-option).
+    assert len(retriever.queries_seen) == 5
+    assert out.extras["multi_query"] is True
 
 
 def test_rag_extras_records_multi_query_flag():
@@ -512,15 +661,52 @@ def test_rag_name_includes_mq_tag_when_multi_query():
     assert "mq" in strategy.name
 
 
-def test_rag_multi_query_composes_with_hybrid_and_rerank():
-    """All three knobs together should all reach the retriever."""
+def test_rag_multi_query_composes_with_hybrid_no_rerank():
+    """multi_query + hybrid (no rerank): 5 retrieve() calls, each with hybrid=True."""
+    retriever = MockRetriever(_passages(), has_bm25=True)
+    strategy = RAGStrategy(
+        MockLLM(), retriever, k=2,
+        use_hybrid=True, use_multi_query=True,
+    )
+    strategy.answer(_inp())
+    assert len(retriever.queries_seen) == 5
+    assert retriever.last_hybrid is True
+    # No reranker — rerank_pool must NOT have been called.
+    assert retriever.rerank_pool_calls == []
+
+
+def test_rag_multi_query_rerank_fuses_first_then_reranks_once():
+    """Correct composition order (audit §5): per-query retrieve() calls do NOT
+    use the cross-encoder (rerank=False); the cross-encoder is invoked exactly
+    once via rerank_pool() on the fused pool.
+
+    Old (broken) order: rerank per query (5× cost) then outer RRF discards
+    cross-encoder scores.
+    New (correct) order: retrieve-per-query → RRF-fuse → rerank_pool once.
+    """
     retriever = MockRetriever(_passages(), has_bm25=True, has_reranker=True)
     strategy = RAGStrategy(
         MockLLM(), retriever, k=2,
         use_hybrid=True, use_reranker=True, use_multi_query=True,
     )
     strategy.answer(_inp())
-    # 5 queries × hybrid+rerank per call.
-    assert len(retriever.queries_seen) == 5
+
+    # Per-query calls must NOT have used the cross-encoder.
+    assert retriever.last_rerank is False, (
+        "Per-query retrieve() calls should not rerank — "
+        "that wastes 5× cross-encoder compute and narrows each candidate pool."
+    )
+    # hybrid flag still reaches each retrieve() call.
     assert retriever.last_hybrid is True
-    assert retriever.last_rerank is True
+
+    # rerank_pool() must have been called exactly once on the fused pool.
+    assert len(retriever.rerank_pool_calls) == 1, (
+        "Expected rerank_pool to be called once (fuse-then-rerank), "
+        f"got {len(retriever.rerank_pool_calls)} calls."
+    )
+    call = retriever.rerank_pool_calls[0]
+    # The rerank query is the bare question (most relevant signal for the
+    # cross-encoder — not diluted by all four option strings).
+    assert call["query"].startswith("Who crossed the Rubicon?")
+    # k requested must equal the strategy's top-k.
+    assert call["k"] == 2

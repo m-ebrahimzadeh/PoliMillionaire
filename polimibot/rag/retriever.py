@@ -6,19 +6,54 @@ from pathlib import Path
 from typing import Optional
 
 from .bm25 import BM25Index
-from .chunker import Chunk
+from .chunker import CHUNKER_VERSION, Chunk
 from .embedder import Embedder, EmbedderSpec
 from .fusion import reciprocal_rank_fusion
 from .index import FAISSIndex
 from .reranker import CrossEncoderReranker
 
 
+def _diversify_by_source(
+    items: list[tuple[Chunk, float]],
+    *,
+    k: int,
+) -> list[tuple[Chunk, float]]:
+    """Source-aware top-k selection.
+
+    Pass 1: keep the highest-scored chunk per source until ``k`` slots
+    fill or the pool runs out. Pass 2: if pass 1 was short of ``k``,
+    backfill from the remaining chunks (those from already-seen sources)
+    in their original order.
+
+    The pool is assumed to arrive already ordered by relevance. The
+    result preserves that order within each pass; it just collapses
+    runs of same-source chunks down to one until later slots are needed.
+    """
+    if k <= 0 or not items:
+        return []
+    seen: set[str] = set()
+    primary: list[tuple[Chunk, float]] = []
+    leftover: list[tuple[Chunk, float]] = []
+    for chunk, score in items:
+        if chunk.source not in seen:
+            seen.add(chunk.source)
+            primary.append((chunk, score))
+        else:
+            leftover.append((chunk, score))
+        if len(primary) >= k:
+            break
+    out = primary[:k]
+    if len(out) < k:
+        out = out + leftover[:k - len(out)]
+    return out
+
+
 def _check_manifest_compat(manifest: dict, spec: EmbedderSpec) -> None:
     """Refuse to load an index built with an incompatible embedder.
 
     Hard-fails on model_name or dim mismatch (those silently corrupt
-    scores). Warns on normalize / chunk_size drift (less catastrophic
-    but worth surfacing).
+    scores). Warns on normalize / chunker_version drift (less catastrophic
+    but worth surfacing — chunk text changed but vectors still align).
     """
     expected = manifest.get("embedder_model_name")
     if expected and expected != spec.model_name:
@@ -37,6 +72,48 @@ def _check_manifest_compat(manifest: dict, spec: EmbedderSpec) -> None:
             RuntimeWarning,
             stacklevel=3,
         )
+    # Prefix drift silently corrupts scores on asymmetric models (BGE/E5):
+    # the query and passage vectors land in mismatched halves of the space.
+    # Hard-fail like model_name. Absent fields in legacy manifests are
+    # treated as "no prefix" so older indices keep loading.
+    for field_name in ("query_prefix", "passage_prefix"):
+        indexed_prefix = manifest.get(f"embedder_{field_name}")
+        if indexed_prefix is None:
+            continue
+        spec_prefix = getattr(spec, field_name)
+        if indexed_prefix != spec_prefix:
+            raise ValueError(
+                f"Index was built with {field_name}={indexed_prefix!r}, but "
+                f"the current EmbedderSpec has {field_name}={spec_prefix!r}. "
+                f"Asymmetric-model prefixes must match between index build "
+                f"and query time — vectors live in incompatible halves of "
+                f"the embedding space otherwise. Rebuild the index, or pass "
+                f"the matching EmbedderSpec."
+            )
+    indexed_chunker = manifest.get("chunker_version")
+    if indexed_chunker is not None and indexed_chunker != CHUNKER_VERSION:
+        warnings.warn(
+            f"Index was built with chunker_version={indexed_chunker}, but "
+            f"the current chunker is version {CHUNKER_VERSION}. The chunk "
+            f"text shape may differ from what the embeddings encode — "
+            f"rebuild the index for best retrieval quality.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    indexed_corpus = manifest.get("corpus_version")
+    # Imported lazily to avoid pulling the wikipedia dependency into the
+    # retriever import graph; corpus_version is just a constant int.
+    if indexed_corpus is not None:
+        from .corpus import CORPUS_VERSION
+        if indexed_corpus != CORPUS_VERSION:
+            warnings.warn(
+                f"Index was built with corpus_version={indexed_corpus}, but "
+                f"the current corpus seeds/disambiguation policy is at "
+                f"version {CORPUS_VERSION}. Article selection may differ "
+                f"from what's indexed — rebuild for the freshest coverage.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
 
 
 class Retriever:
@@ -85,6 +162,10 @@ class Retriever:
     # literature's "retrieve 5× more, rerank to k".
     _CATEGORY_OVERSEARCH = 8
     _DEFAULT_RERANK_OVERSEARCH = 5
+    # Diversify needs a wider pool than k or it has nothing to swap in.
+    # 2× k is enough to dedupe overlapping windows from the same article
+    # without paying for a full 5× rerank-style oversearch.
+    _DIVERSIFY_OVERSEARCH = 2
 
     def retrieve(
         self,
@@ -95,6 +176,7 @@ class Retriever:
         hybrid: bool = False,
         rerank: bool = False,
         rerank_oversearch: Optional[int] = None,
+        diversify: bool = True,
     ) -> list[tuple[Chunk, float]]:
         """Return top-k (Chunk, score) for the given query string.
 
@@ -114,6 +196,11 @@ class Retriever:
                 the fused pool.
             rerank_oversearch: how many times k to ask the underlying
                 retrievers for before reranking. Default: 5.
+            diversify: when True (default), apply a source-level dedup
+                to the final top-k slice — the highest-scored chunk per
+                source comes first, then any leftover chunks fill the
+                remaining slots. Stops top-k from being three overlapping
+                windows of the same article. Disable for ablations.
 
         Returns:
             Up to ``k`` (Chunk, score) pairs. Score units:
@@ -134,8 +221,13 @@ class Retriever:
 
         rerank_x = rerank_oversearch or self._DEFAULT_RERANK_OVERSEARCH
         # How many chunks each underlying retriever should surface so
-        # the reranker / fusion step has enough headroom.
-        target_pool = k * rerank_x if rerank else k
+        # the reranker / fusion / diversify step has enough headroom.
+        if rerank:
+            target_pool = k * rerank_x
+        elif diversify:
+            target_pool = k * self._DIVERSIFY_OVERSEARCH
+        else:
+            target_pool = k
 
         # 1. Dense retrieval (always — it's the primary signal).
         dense_hits = self._dense_search(query, target_pool, category)
@@ -152,9 +244,15 @@ class Retriever:
         else:
             pool = dense_hits[:target_pool]
 
-        # 3. Optional cross-encoder rerank.
+        # 3. Optional cross-encoder rerank. We rerank the full pool (no
+        #    top_k truncation) so the post-rerank diversify pass has the
+        #    largest possible material to pull substitutes from when the
+        #    top of the ranking is dominated by a single source.
         if rerank:
-            return self._reranker.rerank(query, pool, top_k=k)  # type: ignore[union-attr]
+            pool = self._reranker.rerank(query, pool, top_k=None)  # type: ignore[union-attr]
+
+        if diversify:
+            return _diversify_by_source(pool, k=k)
         return pool[:k]
 
     def _dense_search(
@@ -163,16 +261,58 @@ class Retriever:
         k_pool: int,
         category: Optional[str],
     ) -> list[tuple[Chunk, float]]:
-        """Encode + FAISS search + optional Python-side category filter."""
+        """Encode + FAISS search + optional Python-side category filter.
+
+        The category filter is post-hoc Python (FAISS' IndexFlatIP has no
+        cross-version ID mask). We first ask for ``k_pool *
+        _CATEGORY_OVERSEARCH`` chunks; if the matching slice doesn't fill
+        ``k_pool``, we retry with the full index. Cap at one retry — a
+        category with very few chunks just returns fewer than k, which
+        downstream code already tolerates.
+        """
         n_total = self._index.n_chunks or 1
-        query_vec = self._embedder.encode([query])
+        # Prefer the asymmetric path when the embedder offers it; fall back
+        # to ``encode`` so simple test mocks (which only define .encode)
+        # keep working.
+        encode_fn = getattr(self._embedder, "encode_query", None) \
+            or self._embedder.encode
+        query_vec = encode_fn([query])
         if category is None:
             return self._index.search(
                 query_vec, k=min(k_pool, n_total),
             )
         k_dense = min(k_pool * self._CATEGORY_OVERSEARCH, n_total)
         raw = self._index.search(query_vec, k=k_dense)
-        return [(c, s) for c, s in raw if c.category == category][:k_pool]
+        filtered = [(c, s) for c, s in raw if c.category == category]
+        if len(filtered) < k_pool and k_dense < n_total:
+            # The 8× oversearch didn't surface enough of the target
+            # category — scan the full index and refilter.
+            raw = self._index.search(query_vec, k=n_total)
+            filtered = [(c, s) for c, s in raw if c.category == category]
+        return filtered[:k_pool]
+
+    def rerank_pool(
+        self,
+        query: str,
+        pool: list[tuple[Chunk, float]],
+        *,
+        k: int,
+    ) -> list[tuple[Chunk, float]]:
+        """Score an already-assembled pool with the cross-encoder and return top-k.
+
+        Exposed so callers (e.g. RAGStrategy's multi-query path) can fuse
+        across queries first, then rerank the merged pool once — rather than
+        reranking inside each per-query retrieve() call and then discarding
+        those cross-encoder scores in an outer RRF pass.
+
+        Requires a reranker to be attached; raises otherwise.
+        """
+        if self._reranker is None:
+            raise ValueError(
+                "rerank_pool() called but no reranker is attached. "
+                "Construct with Retriever(index, embedder, reranker=...)."
+            )
+        return self._reranker.rerank(query, pool, top_k=k)
 
     @property
     def n_chunks(self) -> int:

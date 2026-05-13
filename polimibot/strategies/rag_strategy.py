@@ -30,14 +30,21 @@ DEFAULT_MAX_TOTAL_CHARS   = 2400
 
 
 def _build_query(inp: StrategyInput) -> str:
-    """Single-query mode: include option texts in one query for entity recall.
+    """Single-query dense mode: question-only for dense retrieval.
 
-    Used when ``multi_query=False``. Concatenating question + options
-    bumps recall on questions where the key entity appears only in
-    the options (e.g. 'Which director directed X?' where X is the
-    Wikipedia article).
+    Used when ``multi_query=False``. The audit (§3) notes that
+    concatenating all four options into one dense vector dilutes the
+    signal — three options are distractors, so the right-answer entity
+    gets ~20% weight in the averaged embedding. Question-only is the
+    correct dense query.
+
+    For BM25 (inside a hybrid retrieve() call), option tokens still
+    contribute useful IDF-weighted signal because BM25 scores each
+    token independently — there is no averaging over the four options.
+    The Retriever handles the dense vs. BM25 split internally; the
+    strategy just supplies the text and lets the retriever decide.
     """
-    return f"{inp.question} {' '.join(inp.options)}"
+    return inp.question
 
 
 def _build_multi_queries(inp: StrategyInput) -> list[str]:
@@ -58,32 +65,72 @@ def _build_multi_queries(inp: StrategyInput) -> list[str]:
     ]
 
 
+def _truncate_to_sentence(text: str, max_chars: int) -> str:
+    """Truncate ``text`` to at most ``max_chars``, rounding down to the
+    nearest sentence boundary so the model never receives dangling fragments.
+
+    Strategy:
+      1. If text fits, return as-is.
+      2. Find the last sentence-ending punctuation (.!?) followed by a
+         space or end-of-string within the budget. Cut there.
+      3. Fall back to the last whitespace boundary within the budget.
+      4. Hard-truncate only if no whitespace exists (pathological input).
+    """
+    if len(text) <= max_chars:
+        return text
+    window = text[:max_chars]
+    # Walk backwards looking for a sentence-ending punctuation + boundary.
+    for i in range(len(window) - 1, -1, -1):
+        ch = window[i]
+        if ch in ".!?":
+            # Accept if it's at the end of the window or followed by
+            # whitespace in the original text.
+            next_idx = i + 1
+            if next_idx >= len(text) or text[next_idx].isspace():
+                return window[:next_idx]
+    # No sentence boundary — try word boundary.
+    last_space = window.rfind(" ")
+    if last_space > 0:
+        return window[:last_space]
+    return window  # hard truncate (no spaces at all)
+
+
 def _format_context(
     passages: list[tuple[Chunk, float]],
     *,
     max_passage_chars: int = DEFAULT_MAX_PASSAGE_CHARS,
     max_total_chars: int = DEFAULT_MAX_TOTAL_CHARS,
 ) -> str:
-    """Number passages and truncate to fit within the context budget.
+    """Number passages, add citation headers, and truncate at sentence boundaries.
 
     Args:
         passages: (Chunk, score) pairs from Retriever.retrieve()
         max_passage_chars: hard cap on each individual passage
-        max_total_chars: hard cap on total context length
+        max_total_chars: hard cap on total context block
 
     Returns:
         Human-readable numbered list, e.g.:
-        [1] Julius Caesar
-        Caesar crossed the Rubicon in 49 BC...
 
-        [2] Roman Republic
-        ...
+        [1] Julius Caesar (chunk 3, history)
+        Caesar crossed the Rubicon in 49 BC.
+
+        [2] Roman Republic (chunk 0)
+        The Roman Republic was founded in 509 BC.
+
+    Citation discipline:
+      - Each passage carries its source article, chunk_id, and (when
+        available) its category. The LLM can refer to "[Passage 1]" in
+        its reasoning without needing the full article name.
+      - Truncation rounds to the nearest preceding sentence boundary so
+        the model never reads dangling mid-sentence fragments.
     """
     parts: list[str] = []
     used = 0
     for i, (chunk, _score) in enumerate(passages, start=1):
-        snippet = chunk.text[:max_passage_chars]
-        entry = f"[{i}] {chunk.source}\n{snippet}"
+        snippet = _truncate_to_sentence(chunk.text, max_passage_chars)
+        cat_suffix = f", {chunk.category}" if chunk.category else ""
+        header = f"[{i}] {chunk.source} (chunk {chunk.chunk_id}{cat_suffix})"
+        entry = f"{header}\n{snippet}"
         if used + len(entry) > max_total_chars:
             break
         parts.append(entry)
@@ -112,9 +159,11 @@ class RAGStrategy(Strategy):
         use_category_filter: bool = True,
         use_reranker: bool = False,
         use_hybrid: bool = False,
-        use_multi_query: bool = False,
+        use_multi_query: bool = True,
         rerank_oversearch: Optional[int] = None,
         min_score: Optional[float] = None,
+        min_score_rrf: Optional[float] = None,
+        min_score_rerank: Optional[float] = None,
         max_passage_chars: int = DEFAULT_MAX_PASSAGE_CHARS,
         max_total_chars: int = DEFAULT_MAX_TOTAL_CHARS,
         direct_max_new_tokens: int = DEFAULT_DIRECT_MAX_NEW_TOKENS,
@@ -194,6 +243,8 @@ class RAGStrategy(Strategy):
         self.use_multi_query = use_multi_query
         self.rerank_oversearch = rerank_oversearch
         self.min_score = min_score
+        self.min_score_rrf = min_score_rrf
+        self.min_score_rerank = min_score_rerank
         self.max_passage_chars = max_passage_chars
         self.max_total_chars = max_total_chars
         self.direct_max_new_tokens = direct_max_new_tokens
@@ -241,29 +292,67 @@ class RAGStrategy(Strategy):
             common_kwargs["hybrid"] = True
 
         if self.use_multi_query:
-            # Run retrieval once per query, RRF-fuse the resulting lists.
-            # The retriever's own internal fusion (hybrid) happens inside
-            # each call; this outer fusion combines across queries.
+            # Correct pipeline for multi-query + optional rerank (audit §5):
+            #   1. Retrieve top-N per query (no cross-encoder — rerank=False).
+            #   2. RRF-fuse the per-query lists (across queries).
+            #   3. If rerank is enabled, run the cross-encoder ONCE over the
+            #      fused pool — not once per query (5× wasteful, narrow pools).
+            # The retriever's own internal fusion (hybrid) still happens
+            # inside each per-query retrieve() call.
             queries = _build_multi_queries(inp)
+
+            # Strip rerank and k from per-query kwargs; k is passed
+            # explicitly as pool_k below and reranking is handled after fusion.
+            per_query_kwargs = {key: v for key, v in common_kwargs.items()
+                                if key not in ("rerank", "rerank_oversearch", "k")}
+
+            rerank_x = (
+                self.rerank_oversearch
+                or self.retriever._DEFAULT_RERANK_OVERSEARCH  # type: ignore[attr-defined]
+            )
+            # Ask each retriever call for enough candidates so the fused
+            # pool is wide enough for a useful rerank pass.
+            pool_k = self.k * rerank_x if self.use_reranker else self.k
             ranked_lists = [
-                self.retriever.retrieve(q, **common_kwargs) for q in queries
+                self.retriever.retrieve(q, k=pool_k, **per_query_kwargs)
+                for q in queries
             ]
-            passages = reciprocal_rank_fusion(ranked_lists, k=self.k)
-            # ``query`` for logging is a comma-joined preview; the full
-            # list is reconstructed at analysis time from question+options.
+            fused = reciprocal_rank_fusion(ranked_lists, k=pool_k)
+
+            if self.use_reranker:
+                # Rerank the fused pool once with the question as the query.
+                passages = self.retriever.rerank_pool(
+                    inp.question, fused, k=self.k,
+                )
+            else:
+                passages = fused[:self.k]
+
+            # ``query`` for logging is a preview of the first queries.
             query = " | ".join(queries[:3]) + (" | …" if len(queries) > 3 else "")
         else:
             query = _build_query(inp)
             passages = self.retriever.retrieve(query, **common_kwargs)
 
-        # 2. Low-score gate. If the top retrieval is below the threshold,
-        #    pass an empty context — build_messages_with_context then
-        #    degrades to the plain (no-RAG) prompt shape, instead of
-        #    feeding the model irrelevant "evidence".
+        # 2. Path-aware low-score gate (audit §4).
+        #
+        # Score units differ by retrieval path:
+        #   dense-only  → cosine ∈ [-1, 1]         use min_score
+        #   hybrid RRF  → RRF ∈ ~0–0.03            use min_score_rrf
+        #   reranker    → cross-encoder logit       use min_score_rerank
+        #
+        # Applying a cosine-calibrated threshold on an RRF or cross-encoder
+        # score is meaningless (gates every question or none). Each path
+        # selects its own threshold; None = never gate on this path.
         top_score = float(passages[0][1]) if passages else 0.0
+        if self.use_reranker:
+            active_threshold = self.min_score_rerank
+        elif self.use_hybrid:
+            active_threshold = self.min_score_rrf
+        else:
+            active_threshold = self.min_score
         gated = (
-            self.min_score is not None
-            and (not passages or top_score < self.min_score)
+            active_threshold is not None
+            and (not passages or top_score < active_threshold)
         )
         if gated:
             context = ""
@@ -316,7 +405,7 @@ class RAGStrategy(Strategy):
                 "top_source": passages[0][0].source if passages else None,
                 "top_score":  round(top_score, 4) if passages else None,
                 "gated_by_min_score":  gated,
-                "min_score_threshold": self.min_score,
+                "min_score_threshold": active_threshold,
                 "category_filter":     category_filter,
                 "reranked":            self.use_reranker,
                 "hybrid":              self.use_hybrid,
