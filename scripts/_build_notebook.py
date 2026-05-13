@@ -90,6 +90,16 @@ Install the package, import helpers, log in to the game server. Run this section
 > **After editing files in `polimibot/`** (or pulling new commits): _Runtime → Restart session_, then re-run **Section 0** before anything else. Even with `pip install -e .`, classes already imported in this kernel stay cached — restarting is the only reliable way to pick up the new code.
 """))
 
+cells.append(md("### 0.0 Mount Google Drive (Colab only)"))
+
+cells.append(code('''
+# Mount Google Drive and cd into the project folder.
+# Skip this cell when running locally or if already in the project root.
+from google.colab import drive
+drive.mount('/content/drive')
+%cd "/content/drive/MyDrive/Colab Notebooks/Polimillionaire"
+'''))
+
 cells.append(md("### 0.1 Install"))
 
 cells.append(code("""
@@ -635,6 +645,81 @@ if USE_LIVE_FALLBACK:
     print(f'Index growing: {"ENABLED (learn from correct answers)" if LEARN_FROM_CORRECT else "DISABLED"}')
 '''))
 
+cells.append(md("""
+### 1.5 Strategy smoke-test — inspect the prompt & output
+
+Run a single question through the strategy to verify the pipeline end-to-end and
+see exactly what is delivered to the model.
+
+1. **Bare prompt** — the raw messages list (system + user turn) that the LLM receives
+   when no RAG context is available.
+2. **RAG-augmented prompt** — the same structure with retrieved passages injected
+   (only shown when the retriever is active).
+3. **Strategy output** — the chosen answer, confidence score, rationale, and any
+   internal extras (probability margins, retrieval hits, etc.).
+"""))
+
+cells.append(code('''
+# ─── Single-question smoke test. See what the model actually receives. ───
+from polimibot.prompts.templates import build_messages, build_messages_with_context
+
+_test_question = (
+    'A farmer wants to know whether a new fertilizer has increased the mean '
+    'weight of his apples. With the old fertilizer, the mean weight was 4.0 '
+    'ounces per apple. The farmer decides to test H0: μ = 4.0 ounces versus '
+    'Ha : μ > 4.0 ounces, at a 5 percent level of significance, where μ = '
+    'the mean weight of apples using the new fertilizer. The weights of apples '
+    'are approximately normally distributed. The farmer takes a random sample '
+    'of 16 apples and computes a mean of 4.3 ounces and a standard deviation '
+    'of 0.6 ounces. Which of the following gives the p-value for this test?'
+)
+_test_options = (
+    'P(Z > 2)',
+    'P(t > 2) with 15 degrees of freedom',
+    'P(t < 2) with 15 degrees of freedom',
+    'P(Z < 2)',
+)
+
+# ── 1. Bare prompt (no RAG context) ──────────────────────────────────
+_bare_msgs = build_messages(_test_question, _test_options,
+                            category=None, style=PROMPT_STYLE)
+print('═' * 60)
+print('BARE PROMPT (no RAG context)')
+print('═' * 60)
+for _m in _bare_msgs:
+    print(f"\\n[{_m['role'].upper()}]")
+    print(_m['content'])
+
+# ── 2. RAG-augmented prompt (only when retriever is active) ───────────
+if retriever is not None and retriever.n_chunks > 0:
+    _hits = retriever.retrieve(_test_question, k=RAG_K)
+    _ctx  = '\\n---\\n'.join(h.text[:RAG_MAX_PASSAGE_CHARS] for h in _hits)
+    _rag_msgs = build_messages_with_context(
+        _test_question, _test_options, _ctx,
+        category=None, style=PROMPT_STYLE,
+    )
+    print('\\n' + '═' * 60)
+    print(f'RAG-AUGMENTED PROMPT  ({len(_hits)} passage(s) retrieved)')
+    print('═' * 60)
+    for _m in _rag_msgs:
+        print(f"\\n[{_m['role'].upper()}]")
+        print(_m['content'])
+else:
+    print('\\n(Retriever not active — RAG-augmented prompt not shown.)')
+
+# ── 3. Full strategy output ───────────────────────────────────────────
+print('\\n' + '═' * 60)
+print('STRATEGY OUTPUT')
+print('═' * 60)
+_out = strategy.answer(StrategyInput(
+    question=_test_question, options=_test_options, level=1))
+print('rationale :', _out.rationale)
+print('chosen    :', _out.chosen_index, '  (A=0, B=1, C=2, D=3)')
+print('confidence:', f'{_out.confidence:.2%}')
+if _out.extras:
+    print('extras    :', _out.extras)
+'''))
+
 cells.append(obs("Configuration observations"))
 
 # ────────────────────────── Section 2 — Run ──────────────────────────
@@ -650,6 +735,33 @@ Two ways to exercise the strategy:
 
 The notebook prefers offline. Run live only when you want a fresh row of run-log data, or when you need to top up the gold set.
 """))
+
+cells.append(md("""
+### 2.0 Build / top-up the gold set from run logs
+
+Harvests confirmed-correct items from all JSONL run logs in `data/runs/` and
+merges them into `data/eval/gold_set.jsonl`. Run this after live games so the
+freshly confirmed answers are available for offline evaluation.
+
+Safe to re-run at any time — items already present are not duplicated.
+"""))
+
+cells.append(code('''
+# Top up the gold set with items confirmed during live games, this cell does.
+gold_path = PATHS.eval_dir / 'gold_set.jsonl'
+items = harvest_gold_set(PATHS.runs_dir)
+
+print(f'Harvested {len(items)} gold items from {PATHS.runs_dir}')
+for cid, info in CATEGORIES.items():
+    n = sum(1 for it in items if it.competition_id == cid)
+    print(f'  {info.display_name:<35} {n:>4} items')
+
+if items:
+    save_gold_set(items, gold_path)
+    print(f'\\n✓ Gold set saved → {gold_path}')
+else:
+    print('\\nNo items confirmed yet — play more live games first.')
+'''))
 
 cells.append(md("""
 ### 2.1 Load the gold set
