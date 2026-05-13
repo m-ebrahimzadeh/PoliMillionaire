@@ -30,14 +30,21 @@ DEFAULT_MAX_TOTAL_CHARS   = 2400
 
 
 def _build_query(inp: StrategyInput) -> str:
-    """Single-query mode: include option texts in one query for entity recall.
+    """Single-query dense mode: question-only for dense retrieval.
 
-    Used when ``multi_query=False``. Concatenating question + options
-    bumps recall on questions where the key entity appears only in
-    the options (e.g. 'Which director directed X?' where X is the
-    Wikipedia article).
+    Used when ``multi_query=False``. The audit (§3) notes that
+    concatenating all four options into one dense vector dilutes the
+    signal — three options are distractors, so the right-answer entity
+    gets ~20% weight in the averaged embedding. Question-only is the
+    correct dense query.
+
+    For BM25 (inside a hybrid retrieve() call), option tokens still
+    contribute useful IDF-weighted signal because BM25 scores each
+    token independently — there is no averaging over the four options.
+    The Retriever handles the dense vs. BM25 split internally; the
+    strategy just supplies the text and lets the retriever decide.
     """
-    return f"{inp.question} {' '.join(inp.options)}"
+    return inp.question
 
 
 def _build_multi_queries(inp: StrategyInput) -> list[str]:
@@ -112,7 +119,7 @@ class RAGStrategy(Strategy):
         use_category_filter: bool = True,
         use_reranker: bool = False,
         use_hybrid: bool = False,
-        use_multi_query: bool = False,
+        use_multi_query: bool = True,
         rerank_oversearch: Optional[int] = None,
         min_score: Optional[float] = None,
         max_passage_chars: int = DEFAULT_MAX_PASSAGE_CHARS,

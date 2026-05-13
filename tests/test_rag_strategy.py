@@ -99,12 +99,14 @@ def test_rag_picks_gold_answer():
 
 
 def test_rag_query_includes_options():
+    """In multi-query mode (the new default), each option appears in one
+    of the per-option queries even though no single query carries all options."""
     retriever = MockRetriever(_passages())
-    strategy = RAGStrategy(MockLLM(), retriever, k=2)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2)  # use_multi_query=True by default
     strategy.answer(_inp())
-    # Options ("Pompey", "Caesar", ...) should appear in the query
-    assert "Caesar" in retriever.last_query
-    assert "Pompey" in retriever.last_query
+    all_queries = " ".join(retriever.queries_seen)
+    assert "Caesar" in all_queries
+    assert "Pompey" in all_queries
 
 
 def test_rag_extras_populated():
@@ -205,7 +207,8 @@ def test_format_context_passage_char_cap_per_chunk():
 
 def test_rag_min_score_gate_drops_context_below_threshold():
     """When the top retrieval score is below min_score, RAG degrades to
-    plain (no-context) prompting. The model is not fed irrelevant evidence."""
+    plain (no-context) prompting. The model is not fed irrelevant evidence.
+    Uses use_multi_query=False so score units are cosine (predictable)."""
     low_score_passages = [
         (Chunk(text="off-topic", source="Wrong", chunk_id=0), 0.10),
     ]
@@ -214,6 +217,7 @@ def test_rag_min_score_gate_drops_context_below_threshold():
         MockRetriever(low_score_passages),
         k=1,
         min_score=0.30,
+        use_multi_query=False,
     )
     out = strategy.answer(_inp("B"))
     assert out.extras["gated_by_min_score"] is True
@@ -231,6 +235,7 @@ def test_rag_min_score_gate_keeps_context_above_threshold():
         MockRetriever(high_score_passages),
         k=1,
         min_score=0.30,
+        use_multi_query=False,
     )
     out = strategy.answer(_inp("B"))
     assert out.extras["gated_by_min_score"] is False
@@ -399,24 +404,29 @@ def test_rag_rejects_use_reranker_when_retriever_has_none():
 
 
 def test_rag_passes_rerank_true_to_retriever_when_enabled():
+    """Single-query path (use_multi_query=False): rerank=True goes into retrieve()."""
     retriever = MockRetriever(_passages(), has_reranker=True)
-    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True,
+                           use_multi_query=False)
     strategy.answer(_inp())
     assert retriever.last_rerank is True
 
 
 def test_rag_does_not_pass_rerank_when_disabled():
     retriever = MockRetriever(_passages(), has_reranker=True)
-    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=False)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=False,
+                           use_multi_query=False)
     strategy.answer(_inp())
     assert retriever.last_rerank is False
 
 
 def test_rag_forwards_rerank_oversearch_when_set():
+    """Single-query path: rerank_oversearch passes through to retrieve()."""
     retriever = MockRetriever(_passages(), has_reranker=True)
     strategy = RAGStrategy(
         MockLLM(), retriever, k=2,
         use_reranker=True, rerank_oversearch=12,
+        use_multi_query=False,
     )
     strategy.answer(_inp())
     assert retriever.last_rerank_oversearch == 12
@@ -425,7 +435,8 @@ def test_rag_forwards_rerank_oversearch_when_set():
 def test_rag_omits_rerank_oversearch_when_none():
     """rerank_oversearch=None → don't pass the kwarg, let Retriever use its default."""
     retriever = MockRetriever(_passages(), has_reranker=True)
-    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_reranker=True,
+                           use_multi_query=False)
     strategy.answer(_inp())
     assert retriever.last_rerank_oversearch is None
 
@@ -500,11 +511,22 @@ def test_rag_multi_query_queries_cover_question_and_each_option():
 
 
 def test_rag_single_query_issues_one_call():
-    """use_multi_query=False (default) → exactly one retrieval call."""
+    """use_multi_query=False → exactly one retrieval call (ablation/legacy path)."""
     retriever = MockRetriever(_passages())
-    strategy = RAGStrategy(MockLLM(), retriever, k=2)
+    strategy = RAGStrategy(MockLLM(), retriever, k=2, use_multi_query=False)
     strategy.answer(_inp())
     assert len(retriever.queries_seen) == 1
+
+
+def test_rag_multi_query_is_on_by_default():
+    """use_multi_query=True is the new default (audit §3/#4 fix): embedding
+    question+4 distractors in one vector dilutes the right-answer signal."""
+    retriever = MockRetriever(_passages())
+    strategy = RAGStrategy(MockLLM(), retriever, k=2)  # default
+    out = strategy.answer(_inp())
+    # Default should issue 5 retrieval calls (question + 4 per-option).
+    assert len(retriever.queries_seen) == 5
+    assert out.extras["multi_query"] is True
 
 
 def test_rag_extras_records_multi_query_flag():
