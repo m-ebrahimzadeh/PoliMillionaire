@@ -734,7 +734,7 @@ for _m in _bare_msgs:
 # ── 2. RAG-augmented prompt (only when retriever is active) ───────────
 if retriever is not None and retriever.n_chunks > 0:
     _hits = retriever.retrieve(_test_question, k=RAG_K)
-    _ctx  = '\\n---\\n'.join(h.text[:RAG_MAX_PASSAGE_CHARS] for h in _hits)
+    _ctx  = '\\n---\\n'.join(chunk.text[:RAG_MAX_PASSAGE_CHARS] for chunk, _score in _hits)
     _rag_msgs = build_messages_with_context(
         _test_question, _test_options, _ctx,
         category=None, style=PROMPT_STYLE,
