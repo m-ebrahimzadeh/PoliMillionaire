@@ -276,14 +276,14 @@ def test_goldset_drops_straight_into_evaluate_strategy():
 
 from polimibot.eval.evaluator import evaluate_strategy, _ece
 from polimibot.strategies.base import Strategy, StrategyInput, StrategyOutput
-from polimibot.config import Category
+from polimibot.config import Category, CATEGORIES
 
 
 def _make_gold(correct_index: int, competition_id: int = 2) -> GoldItem:
     return GoldItem(
         question_text="Q?", options=("a", "b", "c", "d"),
         correct_index=correct_index, competition_id=competition_id,
-        level=1, category=Category.SCIENCE,
+        level=1, category=CATEGORIES[competition_id].category,
     )
 
 
