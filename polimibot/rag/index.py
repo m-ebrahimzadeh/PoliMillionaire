@@ -69,6 +69,31 @@ class FAISSIndex:
         self._index.add(embeddings)
         self._chunks.extend(chunks)
 
+    def append(self, chunks: list[Chunk], embeddings: np.ndarray) -> None:
+        """Incrementally add new chunks to an already-loaded index (hot growth).
+
+        Identical to ``add()`` but semantically distinct — ``add()`` is used at
+        build time (from scratch), ``append()`` is used at runtime by
+        ``IndexGrower`` to extend a loaded index without a full rebuild.
+
+        Does NOT update on-disk files; call ``save()`` explicitly after all
+        appends are done (typically at session end).
+
+        Args:
+            chunks: new Chunk objects to add. Their ``source`` must not already
+                be present in the index (callers are responsible for dedup).
+            embeddings: float32 array of shape (len(chunks), dim), L2-normalised.
+        """
+        if not chunks:
+            return
+        if embeddings.shape != (len(chunks), self.dim):
+            raise ValueError(
+                f"Append shape mismatch: expected ({len(chunks)}, {self.dim}), "
+                f"got {embeddings.shape}"
+            )
+        self._index.add(embeddings.astype(np.float32))
+        self._chunks.extend(chunks)
+
     def search(self, query_vec: np.ndarray, k: int = 5) -> list[tuple[Chunk, float]]:
         """Return top-k (chunk, score) pairs.
 
