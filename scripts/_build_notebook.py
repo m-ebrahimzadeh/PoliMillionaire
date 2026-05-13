@@ -278,7 +278,6 @@ ESCALATION_THRESHOLD = None                              # e.g. 0.15 to escalate
 # Retrieval (only used when USE_RAG / USE_ENSEMBLE / USE_TIERED)
 RAG_K                  = 3                               # passages per question
 RAG_INDEX_PATH         = PATHS.cache_dir / 'knowledge'   # build with scripts/build_rag_index.py
-RAG_MIN_SCORE          = None                            # e.g. 0.30 — drop context when top retrieval below this
 RAG_USE_CATEGORY_FILTER = True                           # restrict retrieval to inp.category chunks
 RAG_USE_SCORE_OPTIONS  = True                            # logit-scoring (False = free generation; required for CoT/ELIMINATION)
 RAG_MAX_PASSAGE_CHARS  = 800                             # per-passage truncation
@@ -291,7 +290,13 @@ RERANK_OVERSEARCH      = 5                               # dense pool size = k �
 
 # Hybrid + multi-query (lexical complement + per-option queries, both via RRF)
 RAG_USE_HYBRID         = False                           # dense + BM25 fused per query
-RAG_USE_MULTI_QUERY    = False                           # 1 question + 4 per-option queries
+RAG_USE_MULTI_QUERY    = True                            # 1 question + 4 per-option queries (default on per audit §3)
+
+# Path-aware min_score gates (audit §4): calibrate each threshold on its own
+# score scale — never apply a cosine threshold to an RRF or reranker score.
+RAG_MIN_SCORE          = None                            # dense-only cosine ∈ [-1,1]; e.g. 0.30
+RAG_MIN_SCORE_RRF      = None                            # hybrid RRF ∈ ~0–0.03;      e.g. 0.010
+RAG_MIN_SCORE_RERANK   = None                            # cross-encoder logit;        e.g. -2.0
 
 # Eval
 N_EVAL_QUESTIONS    = None                               # None = all gold items; int = first-N slice
@@ -414,8 +419,27 @@ baseline = BaselineLLMStrategy(
     stop_strings=STOP_STRINGS,
 )
 
+# Shared RAGStrategy kwargs — assemble once so all three call sites stay in sync.
+_rag_kwargs = dict(
+    k=RAG_K,
+    style=PROMPT_STYLE,
+    use_score_options=RAG_USE_SCORE_OPTIONS,
+    use_category_filter=RAG_USE_CATEGORY_FILTER,
+    use_reranker=RAG_USE_RERANKER,
+    use_hybrid=RAG_USE_HYBRID,
+    use_multi_query=RAG_USE_MULTI_QUERY,
+    rerank_oversearch=RERANK_OVERSEARCH,
+    # Path-aware min_score gates (audit §4): each threshold is calibrated
+    # for its own score scale — dense cosine, RRF, or cross-encoder logit.
+    min_score=RAG_MIN_SCORE,
+    min_score_rrf=RAG_MIN_SCORE_RRF,
+    min_score_rerank=RAG_MIN_SCORE_RERANK,
+    max_passage_chars=RAG_MAX_PASSAGE_CHARS,
+    max_total_chars=RAG_MAX_TOTAL_CHARS,
+)
+
 if USE_TIERED:
-    rag_arm    = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, use_reranker=RAG_USE_RERANKER, use_hybrid=RAG_USE_HYBRID, use_multi_query=RAG_USE_MULTI_QUERY, rerank_oversearch=RERANK_OVERSEARCH, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
+    rag_arm    = RAGStrategy(llm, retriever, **_rag_kwargs)
     ensemble   = EnsembleStrategy([baseline, rag_arm], weights=[1.0, 1.2])
     maths_arm  = (
         AgentStrategy(llm, max_iterations=3) if USE_AGENT_FOR_MATHS
@@ -431,14 +455,14 @@ if USE_TIERED:
         escalation_threshold=ESCALATION_THRESHOLD,
     )
 elif USE_ENSEMBLE:
-    rag_arm  = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, use_reranker=RAG_USE_RERANKER, use_hybrid=RAG_USE_HYBRID, use_multi_query=RAG_USE_MULTI_QUERY, rerank_oversearch=RERANK_OVERSEARCH, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
+    rag_arm  = RAGStrategy(llm, retriever, **_rag_kwargs)
     strategy = EnsembleStrategy([baseline, rag_arm], weights=[1.0, 1.2])
 elif USE_AGENT_FOR_MATHS:
     strategy = AgentStrategy(llm, max_iterations=3)
 elif USE_MATHS_TOOL:
     strategy = ToolStrategy([MathsTool()], fallback=baseline)
 elif USE_RAG:
-    strategy = RAGStrategy(llm, retriever, k=RAG_K, style=PROMPT_STYLE, use_score_options=RAG_USE_SCORE_OPTIONS, use_category_filter=RAG_USE_CATEGORY_FILTER, use_reranker=RAG_USE_RERANKER, use_hybrid=RAG_USE_HYBRID, use_multi_query=RAG_USE_MULTI_QUERY, rerank_oversearch=RERANK_OVERSEARCH, min_score=RAG_MIN_SCORE, max_passage_chars=RAG_MAX_PASSAGE_CHARS, max_total_chars=RAG_MAX_TOTAL_CHARS)
+    strategy = RAGStrategy(llm, retriever, **_rag_kwargs)
 else:
     strategy = baseline
 
