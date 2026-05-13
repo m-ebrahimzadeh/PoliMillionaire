@@ -5,10 +5,19 @@ Run build_rag_index.py first if data/cache/knowledge.faiss does not exist.
 
 Usage
 -----
-    python scripts/eval_rag.py --mock          # CPU smoke test
-    python scripts/eval_rag.py                 # real model on Colab GPU
-    python scripts/eval_rag.py --k 5           # retrieve 5 passages instead of 3
-    python scripts/eval_rag.py --categories history science
+    python scripts/eval_rag.py --mock                         # CPU smoke test
+    python scripts/eval_rag.py                                # real model on Colab GPU
+    python scripts/eval_rag.py --k 5                          # retrieve 5 passages instead of 3
+    python scripts/eval_rag.py --categories history science   # filter by category
+
+    # Live-search fallback: real-time Wikipedia when offline score < 0.35
+    python scripts/eval_rag.py --live-fallback
+    python scripts/eval_rag.py --live-fallback --min-score 0.40 --live-timeout 8
+
+Note
+----
+    --live-fallback makes evaluation non-deterministic (network-dependent).
+    Use it to measure the full online pipeline; omit it for reproducible baselines.
 """
 from __future__ import annotations
 
@@ -90,7 +99,20 @@ def main() -> int:
     # ── Strategies ────────────────────────────────────────────────────────────
     style   = PromptStyle(args.style)
     baseline = BaselineLLMStrategy(llm, style=style, use_score_options=True)
-    rag      = RAGStrategy(llm, retriever, k=args.k, style=style)  # type: ignore[arg-type]
+
+    rag_kwargs: dict = dict(k=args.k, style=style)
+    if args.live_fallback:
+        rag_kwargs["use_live_fallback"]   = True
+        rag_kwargs["live_search_timeout"] = args.live_timeout
+        rag_kwargs["live_max_articles"]   = args.live_max_articles
+        if args.min_score is not None:
+            rag_kwargs["min_score"] = args.min_score
+        elif args.live_fallback:
+            # Sensible default: gate at 0.35 so the fallback can ever fire.
+            rag_kwargs["min_score"] = 0.35
+            print("  [live-fallback] min_score not set — defaulting to 0.35\n")
+
+    rag = RAGStrategy(llm, retriever, **rag_kwargs)  # type: ignore[arg-type]
 
     mslug = model_slug(args.model, mock=args.mock)
     base_slug = f"baseline_{'fs' if style == PromptStyle.FEW_SHOT else 'zs'}__{mslug}"
@@ -161,8 +183,12 @@ def _print_comparison(baseline: EvalReport, rag: EvalReport) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser()
-    p.add_argument("--mock",       action="store_true")
+    p = argparse.ArgumentParser(
+        description="Ablation: Baseline LLM vs RAG on the frozen gold set.",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    p.add_argument("--mock",       action="store_true",
+                   help="Use MockLLM and MockRetriever (no GPU, no index required)")
     p.add_argument("--model",      default="Qwen/Qwen2.5-7B-Instruct")
     p.add_argument("--no-4bit",    action="store_true", dest="no_4bit")
     p.add_argument("--k",          type=int, default=3,
@@ -171,6 +197,42 @@ def _parse_args() -> argparse.Namespace:
                    choices=["zero_shot", "few_shot"])
     p.add_argument("--categories", nargs="+",
                    choices=[c.value for c in Category])
+    # ── Live-search fallback ──────────────────────────────────────────────
+    p.add_argument(
+        "--live-fallback",
+        action="store_true",
+        dest="live_fallback",
+        help=(
+            "Enable real-time Wikipedia search as a fallback when offline\n"
+            "retrieval score is below --min-score (default 0.35).\n"
+            "Note: makes evaluation non-deterministic (network-dependent)."
+        ),
+    )
+    p.add_argument(
+        "--min-score",
+        type=float,
+        default=None,
+        dest="min_score",
+        help=(
+            "Drop offline RAG context when top retrieval score < threshold.\n"
+            "With --live-fallback, triggers live Wikipedia query instead.\n"
+            "Default: 0.35 when --live-fallback is set, else no gating."
+        ),
+    )
+    p.add_argument(
+        "--live-timeout",
+        type=float,
+        default=5.0,
+        dest="live_timeout",
+        help="Wall-clock timeout (seconds) for each live Wikipedia query. Default: 5.0",
+    )
+    p.add_argument(
+        "--live-max-articles",
+        type=int,
+        default=2,
+        dest="live_max_articles",
+        help="Maximum Wikipedia articles fetched per live query. Default: 2",
+    )
     return p.parse_args()
 
 
