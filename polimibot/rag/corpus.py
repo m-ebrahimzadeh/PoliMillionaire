@@ -213,17 +213,65 @@ def _seed_keywords(title: str) -> set[str]:
     return {w for w in raw if w not in _SEED_STOP and len(w) > 1}
 
 
+# Maximum attempts and backoff schedule (seconds) for transient Wikipedia
+# API failures. The most common cause is an empty/non-JSON response from the
+# API — rate limiting, a brief network blip, or the Wikimedia CDN returning
+# an HTML error page. Three attempts with exponential back-off cover the vast
+# majority of transient failures without making the build painfully slow.
+_FETCH_MAX_ATTEMPTS = 3
+_FETCH_BACKOFF = (1.0, 2.0, 4.0)  # seconds to sleep before attempt 1, 2, 3
+
+
+def _page_with_retry(title: str, *, verbose: bool):
+    """Call ``wikipedia.page(title)`` with automatic retry on transient errors.
+
+    Retries on any exception that looks transient (network / JSON parse /
+    HTTP 5xx / rate-limit). Hard failures such as ``PageError`` or
+    ``DisambiguationError`` are re-raised immediately so callers can handle
+    them specifically.
+    """
+    import json as _json
+    import wikipedia
+
+    # These are intentional "hard" errors — no point retrying them.
+    _hard = (wikipedia.DisambiguationError, wikipedia.PageError)
+
+    last_exc: Exception | None = None
+    for attempt in range(_FETCH_MAX_ATTEMPTS):
+        if attempt > 0:
+            delay = _FETCH_BACKOFF[min(attempt, len(_FETCH_BACKOFF) - 1)]
+            if verbose:
+                print(f"    retrying '{title}' in {delay:.0f}s (attempt {attempt + 1})…")
+            time.sleep(delay)
+        try:
+            return wikipedia.page(title, auto_suggest=False)
+        except _hard:
+            raise   # propagate immediately — caller handles these
+        except Exception as exc:
+            last_exc = exc
+            # json.JSONDecodeError (empty/bad API response) is the most common
+            # transient error; log at debug level and retry.
+            if verbose and attempt == 0:
+                print(f"    transient error for '{title}': {exc!r} — will retry")
+
+    # All attempts exhausted — re-raise the last exception.
+    raise last_exc  # type: ignore[misc]
+
+
 def _fetch_one(title: str, category: Category, *, verbose: bool) -> Optional[Article]:
     """Fetch a single Wikipedia page. Returns None on hard failure.
 
     On a DisambiguationError, walks the option list (instead of blindly
     picking the first) and returns the first option whose page summary
     contains at least one keyword from the seed title.
+
+    Transient network / JSON-parse errors are retried automatically up to
+    ``_FETCH_MAX_ATTEMPTS`` times before giving up.
     """
     import wikipedia
 
     try:
-        page = wikipedia.page(title, auto_suggest=False)
+        page = _page_with_retry(title, verbose=verbose)
         return Article(title=page.title, text=clean_wikipedia_text(page.content),
                        category=category, url=page.url)
 
@@ -231,7 +279,7 @@ def _fetch_one(title: str, category: Category, *, verbose: bool) -> Optional[Art
         keywords = _seed_keywords(title)
         for option in e.options[:5]:   # cap — disambiguation pages can be huge
             try:
-                page = wikipedia.page(option, auto_suggest=False)
+                page = _page_with_retry(option, verbose=verbose)
             except Exception:
                 continue
             # Use the first paragraph (cheap) as the relevance check; full

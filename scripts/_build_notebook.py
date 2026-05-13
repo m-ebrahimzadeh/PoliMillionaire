@@ -220,6 +220,127 @@ else:
     print('No credentials in env — live games disabled. Offline eval will still work.')
 '''))
 
+cells.append(md("""
+### 0.4 Build / top-up the RAG knowledge index
+
+Run this section **once** before the first RAG experiment — or whenever you want to refresh the Wikipedia corpus. The result is a FAISS index (+ BM25 sidecar) stored under `data/cache/knowledge.*`.
+
+| Knob | Meaning |
+|---|---|
+| `REBUILD_INDEX` | Set `True` to force a full rebuild even if the index already exists |
+| `INDEX_REFETCH` | Set `True` to re-download Wikipedia articles (ignored if `REBUILD_INDEX=False` and index exists) |
+| `INDEX_CATEGORIES` | `None` → all four categories; or e.g. `['history', 'science']` to build a partial index |
+| `INDEX_CHUNK_SIZE` / `INDEX_OVERLAP` | Sentence-aware chunking parameters (default 300/50) |
+| `INDEX_SKIP_BM25` | Set `True` to skip the BM25 sidecar (dense-only build — faster but disables hybrid retrieval) |
+
+Skipped automatically when the index already exists and `REBUILD_INDEX=False` — safe to leave in the run-all path.
+"""))
+
+cells.append(code('''
+# ─── RAG index knobs. ────────────────────────────────────────────────
+REBUILD_INDEX      = False        # True  → rebuild even if index already exists
+INDEX_REFETCH      = False        # True  → re-download Wikipedia (slow, ~5–10 min)
+INDEX_CATEGORIES   = None         # None  → all four; or e.g. ['history', 'science']
+INDEX_CHUNK_SIZE   = 300          # words per chunk (sentence-boundary-aware)
+INDEX_OVERLAP      = 50           # word overlap between adjacent chunks
+INDEX_SKIP_BM25    = False        # True  → skip BM25 sidecar (dense-only, faster)
+# ─────────────────────────────────────────────────────────────────────
+
+_index_faiss = RAG_INDEX_PATH.with_suffix('.faiss')
+_index_exists = _index_faiss.exists()
+
+if _index_exists and not REBUILD_INDEX:
+    print(f'Index already exists: {_index_faiss}')
+    print('Set REBUILD_INDEX=True to force a rebuild.')
+else:
+    import time as _time
+    from polimibot.config import Category as _Category
+    from polimibot.rag.corpus import (
+        fetch_articles, load_raw_corpus, save_raw_corpus, clean_wikipedia_text,
+        CORPUS_VERSION, CLEANUP_VERSION,
+    )
+    from polimibot.rag.chunker import CHUNKER_VERSION, chunk_text as _chunk_text
+    from polimibot.rag.embedder import Embedder as _Embedder, EmbedderSpec as _EmbedderSpec
+    from polimibot.rag.index import FAISSIndex as _FAISSIndex
+    from polimibot.rag.bm25 import BM25Index as _BM25Index
+    from dataclasses import replace as _replace
+
+    _corpus_path = PATHS.cache_dir / 'corpus.jsonl'
+    PATHS.ensure()
+
+    # ── Step 1: corpus ───────────────────────────────────────────────
+    _cats = [_Category(c) for c in INDEX_CATEGORIES] if INDEX_CATEGORIES else None
+
+    if _corpus_path.exists() and not INDEX_REFETCH:
+        print(f'Loading cached corpus from {_corpus_path}…')
+        _articles = load_raw_corpus(_corpus_path)
+        if _cats:
+            _articles = [a for a in _articles if a.category in _cats]
+        _articles = [_replace(a, text=clean_wikipedia_text(a.text)) for a in _articles]
+    else:
+        print('Fetching articles from Wikipedia (this takes several minutes)…')
+        _articles = fetch_articles(categories=_cats, verbose=True)
+        save_raw_corpus(_articles, _corpus_path)
+
+    if not _articles:
+        raise RuntimeError('No articles fetched — check your network connection and INDEX_CATEGORIES.')
+
+    # ── Step 2: chunk ────────────────────────────────────────────────
+    print(f'\\nChunking {len(_articles)} articles (size={INDEX_CHUNK_SIZE}, overlap={INDEX_OVERLAP})…')
+    _all_chunks = []
+    for _art in _articles:
+        _all_chunks.extend(_chunk_text(
+            _art.text, source=_art.title,
+            chunk_size=INDEX_CHUNK_SIZE, overlap=INDEX_OVERLAP,
+            category=_art.category.value,
+        ))
+    print(f'  → {len(_all_chunks)} chunks '
+          f'(avg {len(_all_chunks) // max(len(_articles), 1)} per article)')
+
+    # ── Step 3: embed ────────────────────────────────────────────────
+    print('\\nLoading embedding model (bge-small-en-v1.5)…')
+    _spec = _EmbedderSpec()        # uses default: BAAI/bge-small-en-v1.5
+    _embedder = _Embedder(_spec)
+    print(f'  dim={_embedder.dim}  batch={_spec.batch_size}')
+
+    print('Embedding passages…')
+    _t0 = _time.monotonic()
+    _embeddings = _embedder.encode_passage([c.text for c in _all_chunks])
+    print(f'  → done in {_time.monotonic() - _t0:.1f}s')
+
+    # ── Step 4: FAISS index ──────────────────────────────────────────
+    _idx = _FAISSIndex(dim=_embedder.dim)
+    _idx.add(_all_chunks, _embeddings)
+    _idx.save(RAG_INDEX_PATH, manifest={
+        'embedder_model_name':     _spec.model_name,
+        'embedder_dim':            _embedder.dim,
+        'embedder_query_prefix':   _spec.query_prefix,
+        'embedder_passage_prefix': _spec.passage_prefix,
+        'normalize':               _spec.normalize,
+        'chunk_size':              INDEX_CHUNK_SIZE,
+        'chunk_overlap':           INDEX_OVERLAP,
+        'chunker_version':         CHUNKER_VERSION,
+        'corpus_version':          CORPUS_VERSION,
+        'n_articles':              len(_articles),
+        'text_cleanup_version':    CLEANUP_VERSION,
+        'categories':              sorted({a.category.value for a in _articles}),
+    })
+    print(f'\\n✓  FAISS index saved → {RAG_INDEX_PATH}.faiss')
+    print(f'   {_idx.n_chunks} chunks | dim={_embedder.dim} | model={_spec.model_name}')
+
+    # ── Step 5: BM25 sidecar ─────────────────────────────────────────
+    if not INDEX_SKIP_BM25:
+        print('\\nBuilding BM25 sidecar…')
+        _t0 = _time.monotonic()
+        _bm25 = _BM25Index(_all_chunks)
+        _bm25.save(RAG_INDEX_PATH)
+        print(f'   built in {_time.monotonic() - _t0:.1f}s  →  {RAG_INDEX_PATH}.bm25.jsonl')
+    else:
+        print('BM25 sidecar skipped (INDEX_SKIP_BM25=True).')
+
+    print('\\nIndex build complete. Re-run Section 1.3 to attach the new index to the retriever.')
+'''))
+
 cells.append(obs("Setup observations"))
 
 # ────────────────────────── Section 1 — Configure ──────────────────────────
