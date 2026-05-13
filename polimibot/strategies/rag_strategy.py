@@ -241,16 +241,42 @@ class RAGStrategy(Strategy):
             common_kwargs["hybrid"] = True
 
         if self.use_multi_query:
-            # Run retrieval once per query, RRF-fuse the resulting lists.
-            # The retriever's own internal fusion (hybrid) happens inside
-            # each call; this outer fusion combines across queries.
+            # Correct pipeline for multi-query + optional rerank (audit §5):
+            #   1. Retrieve top-N per query (no cross-encoder — rerank=False).
+            #   2. RRF-fuse the per-query lists (across queries).
+            #   3. If rerank is enabled, run the cross-encoder ONCE over the
+            #      fused pool — not once per query (5× wasteful, narrow pools).
+            # The retriever's own internal fusion (hybrid) still happens
+            # inside each per-query retrieve() call.
             queries = _build_multi_queries(inp)
+
+            # Strip rerank and k from per-query kwargs; k is passed
+            # explicitly as pool_k below and reranking is handled after fusion.
+            per_query_kwargs = {key: v for key, v in common_kwargs.items()
+                                if key not in ("rerank", "rerank_oversearch", "k")}
+
+            rerank_x = (
+                self.rerank_oversearch
+                or self.retriever._DEFAULT_RERANK_OVERSEARCH  # type: ignore[attr-defined]
+            )
+            # Ask each retriever call for enough candidates so the fused
+            # pool is wide enough for a useful rerank pass.
+            pool_k = self.k * rerank_x if self.use_reranker else self.k
             ranked_lists = [
-                self.retriever.retrieve(q, **common_kwargs) for q in queries
+                self.retriever.retrieve(q, k=pool_k, **per_query_kwargs)
+                for q in queries
             ]
-            passages = reciprocal_rank_fusion(ranked_lists, k=self.k)
-            # ``query`` for logging is a comma-joined preview; the full
-            # list is reconstructed at analysis time from question+options.
+            fused = reciprocal_rank_fusion(ranked_lists, k=pool_k)
+
+            if self.use_reranker:
+                # Rerank the fused pool once with the question as the query.
+                passages = self.retriever.rerank_pool(
+                    inp.question, fused, k=self.k,
+                )
+            else:
+                passages = fused[:self.k]
+
+            # ``query`` for logging is a preview of the first queries.
             query = " | ".join(queries[:3]) + (" | …" if len(queries) > 3 else "")
         else:
             query = _build_query(inp)

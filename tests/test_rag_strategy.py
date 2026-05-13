@@ -21,6 +21,9 @@ class MockRetriever:
     strategy flags raise at construction; pass the flags True for tests
     that exercise the integration.
     """
+    # Sentinel to distinguish "never called" from "called with None".
+    _DEFAULT_RERANK_OVERSEARCH = 5   # mirrors Retriever constant
+
     def __init__(
         self,
         passages: list[tuple[Chunk, float]],
@@ -38,6 +41,8 @@ class MockRetriever:
         self.last_hybrid: bool = False
         self.queries_seen: list[str] = []
         self.n_chunks = len(passages)
+        # Tracks calls to rerank_pool (fuse-then-rerank path).
+        self.rerank_pool_calls: list[dict] = []
 
     def retrieve(
         self,
@@ -48,6 +53,7 @@ class MockRetriever:
         rerank: bool = False,
         rerank_oversearch=None,
         hybrid: bool = False,
+        diversify: bool = True,
     ) -> list[tuple[Chunk, float]]:
         self.last_query = query
         self.queries_seen.append(query)
@@ -56,6 +62,17 @@ class MockRetriever:
         self.last_rerank_oversearch = rerank_oversearch
         self.last_hybrid = hybrid
         return self._passages[:k]
+
+    def rerank_pool(
+        self,
+        query: str,
+        pool: list[tuple[Chunk, float]],
+        *,
+        k: int,
+    ) -> list[tuple[Chunk, float]]:
+        """Mock rerank_pool: records the call and returns pool[:k]."""
+        self.rerank_pool_calls.append({"query": query, "pool_size": len(pool), "k": k})
+        return pool[:k]
 
 
 def _inp(gold: str = "B") -> StrategyInput:
@@ -512,15 +529,52 @@ def test_rag_name_includes_mq_tag_when_multi_query():
     assert "mq" in strategy.name
 
 
-def test_rag_multi_query_composes_with_hybrid_and_rerank():
-    """All three knobs together should all reach the retriever."""
+def test_rag_multi_query_composes_with_hybrid_no_rerank():
+    """multi_query + hybrid (no rerank): 5 retrieve() calls, each with hybrid=True."""
+    retriever = MockRetriever(_passages(), has_bm25=True)
+    strategy = RAGStrategy(
+        MockLLM(), retriever, k=2,
+        use_hybrid=True, use_multi_query=True,
+    )
+    strategy.answer(_inp())
+    assert len(retriever.queries_seen) == 5
+    assert retriever.last_hybrid is True
+    # No reranker — rerank_pool must NOT have been called.
+    assert retriever.rerank_pool_calls == []
+
+
+def test_rag_multi_query_rerank_fuses_first_then_reranks_once():
+    """Correct composition order (audit §5): per-query retrieve() calls do NOT
+    use the cross-encoder (rerank=False); the cross-encoder is invoked exactly
+    once via rerank_pool() on the fused pool.
+
+    Old (broken) order: rerank per query (5× cost) then outer RRF discards
+    cross-encoder scores.
+    New (correct) order: retrieve-per-query → RRF-fuse → rerank_pool once.
+    """
     retriever = MockRetriever(_passages(), has_bm25=True, has_reranker=True)
     strategy = RAGStrategy(
         MockLLM(), retriever, k=2,
         use_hybrid=True, use_reranker=True, use_multi_query=True,
     )
     strategy.answer(_inp())
-    # 5 queries × hybrid+rerank per call.
-    assert len(retriever.queries_seen) == 5
+
+    # Per-query calls must NOT have used the cross-encoder.
+    assert retriever.last_rerank is False, (
+        "Per-query retrieve() calls should not rerank — "
+        "that wastes 5× cross-encoder compute and narrows each candidate pool."
+    )
+    # hybrid flag still reaches each retrieve() call.
     assert retriever.last_hybrid is True
-    assert retriever.last_rerank is True
+
+    # rerank_pool() must have been called exactly once on the fused pool.
+    assert len(retriever.rerank_pool_calls) == 1, (
+        "Expected rerank_pool to be called once (fuse-then-rerank), "
+        f"got {len(retriever.rerank_pool_calls)} calls."
+    )
+    call = retriever.rerank_pool_calls[0]
+    # The rerank query is the bare question (most relevant signal for the
+    # cross-encoder — not diluted by all four option strings).
+    assert call["query"].startswith("Who crossed the Rubicon?")
+    # k requested must equal the strategy's top-k.
+    assert call["k"] == 2

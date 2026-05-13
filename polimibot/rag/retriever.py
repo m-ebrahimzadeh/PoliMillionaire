@@ -291,6 +291,29 @@ class Retriever:
             filtered = [(c, s) for c, s in raw if c.category == category]
         return filtered[:k_pool]
 
+    def rerank_pool(
+        self,
+        query: str,
+        pool: list[tuple[Chunk, float]],
+        *,
+        k: int,
+    ) -> list[tuple[Chunk, float]]:
+        """Score an already-assembled pool with the cross-encoder and return top-k.
+
+        Exposed so callers (e.g. RAGStrategy's multi-query path) can fuse
+        across queries first, then rerank the merged pool once — rather than
+        reranking inside each per-query retrieve() call and then discarding
+        those cross-encoder scores in an outer RRF pass.
+
+        Requires a reranker to be attached; raises otherwise.
+        """
+        if self._reranker is None:
+            raise ValueError(
+                "rerank_pool() called but no reranker is attached. "
+                "Construct with Retriever(index, embedder, reranker=...)."
+            )
+        return self._reranker.rerank(query, pool, top_k=k)
+
     @property
     def n_chunks(self) -> int:
         """How many chunks are indexed."""
