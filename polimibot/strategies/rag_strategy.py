@@ -2,9 +2,27 @@
 
 The retrieval query includes both question text and option texts — this
 improves recall on questions where key entities appear only in the options.
+
+Live-search fallback
+────────────────────
+When ``use_live_fallback=True`` and the offline retrieval score is below the
+configured threshold (``gated_by_min_score=True``), the strategy fires a
+real-time Wikipedia API query via ``LiveSearchFallback`` instead of degrading
+to a bare-LLM prompt.  The fetched articles are:
+
+  1. Formatted as context identical to the offline RAG path — the LLM sees
+     the same "Reference material" block regardless of source.
+  2. Buffered in the attached ``IndexGrower`` (if one is provided) so that
+     if the game server later confirms the answer was correct, the articles
+     are appended to the live index for future questions.
+
+The ``IndexGrower`` is an optional dependency — ``RAGStrategy`` works without
+it (no learning), and with it (self-growing index).  The runner wires both
+together; see ``runner.py``.
 """
 from __future__ import annotations
 
+import time
 from typing import Optional, Sequence
 
 from ..models.llm import LLM, AnswerProbabilities
@@ -169,6 +187,11 @@ class RAGStrategy(Strategy):
         direct_max_new_tokens: int = DEFAULT_DIRECT_MAX_NEW_TOKENS,
         cot_max_new_tokens:    int = DEFAULT_COT_MAX_NEW_TOKENS,
         stop_strings: Optional[Sequence[str]] = None,
+        # ── Live-search fallback + self-growing index ──────────────────
+        use_live_fallback: bool = False,
+        live_search_timeout: float = 5.0,
+        live_max_articles: int = 2,
+        index_grower=None,   # Optional[IndexGrower] — avoids circular import
     ) -> None:
         """
         Args:
@@ -213,6 +236,21 @@ class RAGStrategy(Strategy):
             direct_max_new_tokens / cot_max_new_tokens / stop_strings:
                 generation budgets and early-stop strings used when
                 use_score_options=False. Defaults mirror BaselineLLMStrategy.
+            use_live_fallback: when True, fire a real-time Wikipedia API
+                query whenever offline retrieval is gated by min_score.
+                Off by default — zero behavior change for existing code.
+                Requires the ``wikipedia`` package to be installed.
+            live_search_timeout: hard wall-clock limit (seconds) for each
+                live Wikipedia query.  Default: 5 s.
+            live_max_articles: maximum Wikipedia articles to fetch per
+                live query.  Each article's summary becomes a passage.
+                Default: 2.
+            index_grower: optional ``IndexGrower`` instance.  When provided,
+                live-fetched articles are buffered here; the runner calls
+                ``grower.confirm(question_id)`` after a correct answer so
+                the article is permanently added to the offline index.
+                When None, live-fetched context is used for this question
+                only and nothing is learned.
         """
         if style in _COT_STYLES and use_score_options:
             raise ValueError(
@@ -256,15 +294,32 @@ class RAGStrategy(Strategy):
         else:
             self.stop_strings = tuple(stop_strings) if stop_strings else None
 
+        # ── Live-search fallback fields ────────────────────────────────
+        self.use_live_fallback   = use_live_fallback
+        self.live_search_timeout = live_search_timeout
+        self.live_max_articles   = live_max_articles
+        self.index_grower        = index_grower
+
+        # Lazily constructed — only if use_live_fallback=True so the
+        # wikipedia import isn't required for normal offline-only use.
+        self._live_search = None
+        if use_live_fallback:
+            from ..rag.live_search import LiveSearchFallback
+            self._live_search = LiveSearchFallback(
+                timeout_seconds=live_search_timeout,
+                max_articles=live_max_articles,
+            )
+
         gate_tag = f"|min_score={min_score}" if min_score is not None else ""
         path_tag = "" if use_score_options else "|gen"
         cat_tag  = "" if use_category_filter else "|no_cat_filter"
         rer_tag  = "|rerank" if use_reranker else ""
         hyb_tag  = "|hybrid" if use_hybrid else ""
         mq_tag   = "|mq"     if use_multi_query else ""
+        live_tag = "|live"   if use_live_fallback else ""
         self.name = (
             f"rag[{getattr(llm, 'name', 'llm')}"
-            f"|k={k}|{style.value}{path_tag}{cat_tag}{hyb_tag}{mq_tag}{rer_tag}{gate_tag}]"
+            f"|k={k}|{style.value}{path_tag}{cat_tag}{hyb_tag}{mq_tag}{rer_tag}{gate_tag}{live_tag}]"
         )
 
     def warm_up(self) -> None:
@@ -354,16 +409,78 @@ class RAGStrategy(Strategy):
             active_threshold is not None
             and (not passages or top_score < active_threshold)
         )
-        if gated:
+
+        # ── 3. Live-search fallback (fires only when offline is gated) ──────
+        live_fired           = False
+        live_articles_titles: list[str] = []
+        live_latency_seconds: Optional[float] = None
+        live_passages: list[tuple[Chunk, float]] = []
+
+        if gated and self._live_search is not None:
+            _t0 = time.monotonic()
+            # Use the bare question as the live query — cleaner signal than
+            # the multi-query concatenations.
+            live_query = inp.question
+            live_articles = self._live_search.search(
+                live_query,
+                category=inp.category,
+            )
+            live_latency_seconds = round(time.monotonic() - _t0, 3)
+
+            if live_articles:
+                live_fired = True
+                live_articles_titles = [a.title for a in live_articles]
+
+                # Buffer articles in the IndexGrower so the runner can
+                # confirm them after a correct answer.  question_id is
+                # derived from the level to keep it stable across re-attempts.
+                question_id = f"lvl_{inp.level}"
+                if self.index_grower is not None:
+                    for article in live_articles:
+                        buffered = self.index_grower.buffer(article, question_id)
+                        if buffered:
+                            # Assign synthetic score=1.0 — the live article
+                            # is the best available evidence; the score is
+                            # used only for context ordering/gating display.
+                            live_passages.extend((c, 1.0) for c in buffered[:self.k])
+                else:
+                    # No grower — chunk inline for context only.
+                    from ..rag.chunker import chunk_text
+                    for article in live_articles:
+                        chunks = chunk_text(
+                            article.text,
+                            source=article.title,
+                            category=article.category.value if article.category else None,
+                        )
+                        live_passages.extend((c, 1.0) for c in chunks[:self.k])
+
+                live_passages = live_passages[:self.k]
+
+        # ── 4. Build context from offline passages OR live passages ──────────
+        if live_fired and live_passages:
+            # Live search succeeded — use its passages as context.
+            # The format is identical to offline RAG: same _format_context(),
+            # same "Reference material" framing in the prompt.
+            context = _format_context(
+                live_passages,
+                max_passage_chars=self.max_passage_chars,
+                max_total_chars=self.max_total_chars,
+            )
+            effective_passages = live_passages
+        elif gated:
+            # Gated and live search either disabled or found nothing.
             context = ""
+            effective_passages = passages
         else:
+            # Normal offline RAG path.
             context = _format_context(
                 passages,
                 max_passage_chars=self.max_passage_chars,
                 max_total_chars=self.max_total_chars,
             )
+            effective_passages = passages
 
-        # 3. Build RAG-augmented prompt (or degraded plain prompt if gated)
+        # ── 5. Build RAG-augmented prompt (or degraded plain prompt if gated)
         messages = build_messages_with_context(
             inp.question,
             inp.options,
@@ -372,9 +489,7 @@ class RAGStrategy(Strategy):
             style=self.style,
         )
 
-        # 4. Score options via logits — OR generate freely and parse —
-        #    depending on the style. CoT / ELIMINATION constructor
-        #    validation guarantees we're in the right branch.
+        # ── 6. Score options via logits — OR generate freely and parse ───────
         if self.use_score_options:
             chosen_index, confidence, probs, margin, parse_ok = self._answer_via_logits(messages)
             rationale_text = context
@@ -384,13 +499,10 @@ class RAGStrategy(Strategy):
             )
             rationale_text = gen_text if gen_text else context
 
-        # Full retrieval triples are kept in `extras` (and propagate into
-        # the run JSONL through the runner) so that recall@k / MRR can be
-        # recomputed post-hoc from any historical run, without re-running
-        # retrieval. The audit's recall harness reads these.
+        # Full retrieval triples — kept in extras for recall@k analysis.
         passage_triples = [
             {"source": chunk.source, "chunk_id": chunk.chunk_id, "score": round(score, 4)}
-            for chunk, score in passages
+            for chunk, score in effective_passages
         ]
 
         return StrategyOutput(
@@ -401,9 +513,9 @@ class RAGStrategy(Strategy):
             extras={
                 "probs":      probs,
                 "margin":     margin,
-                "n_passages": len(passages),
-                "top_source": passages[0][0].source if passages else None,
-                "top_score":  round(top_score, 4) if passages else None,
+                "n_passages": len(effective_passages),
+                "top_source": effective_passages[0][0].source if effective_passages else None,
+                "top_score":  round(top_score, 4) if effective_passages else None,
                 "gated_by_min_score":  gated,
                 "min_score_threshold": active_threshold,
                 "category_filter":     category_filter,
@@ -414,6 +526,10 @@ class RAGStrategy(Strategy):
                 "passages":            passage_triples,
                 "decoding_path":       "logits" if self.use_score_options else "generate",
                 "parse_ok":            parse_ok,
+                # Live-search extras — always present for uniform log schema.
+                "live_search_fired":    live_fired,
+                "live_search_articles": live_articles_titles,
+                "live_search_latency":  live_latency_seconds,
             },
         )
 

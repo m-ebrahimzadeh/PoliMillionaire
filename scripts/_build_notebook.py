@@ -419,6 +419,16 @@ RAG_MIN_SCORE          = None                            # dense-only cosine ∈
 RAG_MIN_SCORE_RRF      = None                            # hybrid RRF ∈ ~0–0.03;      e.g. 0.010
 RAG_MIN_SCORE_RERANK   = None                            # cross-encoder logit;        e.g. -2.0
 
+# Live-search fallback + self-growing index (fires only when offline RAG is gated)
+# When USE_LIVE_FALLBACK=True and the top offline retrieval score is below the
+# min_score threshold, a real-time Wikipedia API query is fired instead of
+# degrading to a bare-LLM prompt.  Confirmed-correct articles are added to
+# the offline index permanently so future questions benefit.
+USE_LIVE_FALLBACK      = False                           # True  → enable live Wikipedia fallback
+LIVE_SEARCH_TIMEOUT    = 5.0                             # hard wall-clock limit per live query (s)
+LIVE_MAX_ARTICLES      = 2                               # max Wikipedia articles per live query
+LEARN_FROM_CORRECT     = True                            # grow the index from confirmed-correct answers
+
 # Eval
 N_EVAL_QUESTIONS    = None                               # None = all gold items; int = first-N slice
 
@@ -540,6 +550,25 @@ baseline = BaselineLLMStrategy(
     stop_strings=STOP_STRINGS,
 )
 
+# ── IndexGrower (self-growing index) ────────────────────────────────────
+# Built only when USE_LIVE_FALLBACK=True AND a real (non-mock) retriever is
+# available.  The grower buffers live-fetched articles during gameplay; the
+# runner confirms and persists them at session end.  For offline eval it is
+# unused — the grower.confirm() / flush() calls in runner.py are no-ops when
+# grower is None.
+_grower = None
+if USE_LIVE_FALLBACK and need_retriever and not USE_MOCK:
+    from polimibot.rag.index_grower import IndexGrower
+    from polimibot.rag.embedder import Embedder, EmbedderSpec
+    _embedder_for_grower = Embedder(EmbedderSpec())   # same spec as retriever build
+    _grower = IndexGrower(
+        retriever, _embedder_for_grower, RAG_INDEX_PATH,
+        corpus_path=PATHS.cache_dir / 'corpus.jsonl',
+    )
+    print(f'IndexGrower ready — will learn from {_grower.n_learned} confirmed articles so far')
+elif USE_LIVE_FALLBACK:
+    print('IndexGrower: skipped (USE_MOCK=True or no retriever) — live search context-only mode')
+
 # Shared RAGStrategy kwargs — assemble once so all three call sites stay in sync.
 _rag_kwargs = dict(
     k=RAG_K,
@@ -557,6 +586,11 @@ _rag_kwargs = dict(
     min_score_rerank=RAG_MIN_SCORE_RERANK,
     max_passage_chars=RAG_MAX_PASSAGE_CHARS,
     max_total_chars=RAG_MAX_TOTAL_CHARS,
+    # Live-search fallback — fires only when offline retrieval is gated.
+    use_live_fallback=USE_LIVE_FALLBACK,
+    live_search_timeout=LIVE_SEARCH_TIMEOUT,
+    live_max_articles=LIVE_MAX_ARTICLES,
+    index_grower=_grower if LEARN_FROM_CORRECT else None,
 )
 
 if USE_TIERED:
@@ -596,6 +630,9 @@ report_id  = f'{short_tag}__{mslug}__{PROMPT_STYLE.value}'
 
 print(f'Strategy:\\n  {strategy.name}')
 print(f'report_id: {report_id}')
+if USE_LIVE_FALLBACK:
+    print(f'Live-search fallback: ENABLED (timeout={LIVE_SEARCH_TIMEOUT}s, max_articles={LIVE_MAX_ARTICLES})')
+    print(f'Index growing: {"ENABLED (learn from correct answers)" if LEARN_FROM_CORRECT else "DISABLED"}')
 '''))
 
 cells.append(obs("Configuration observations"))

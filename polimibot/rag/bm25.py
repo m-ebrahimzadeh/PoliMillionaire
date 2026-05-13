@@ -241,6 +241,49 @@ class BM25Index:
             },
         )
 
+    # ── Incremental growth ───────────────────────────────────────────────
+
+    def append(self, chunks: Sequence[Chunk]) -> None:
+        """Incrementally add new chunks to the live BM25 index.
+
+        Extends the in-memory structures (postings, IDF, avgdl) so subsequent
+        ``search()`` calls see the new documents. Does NOT touch on-disk files
+        — call ``save()`` explicitly when you want to persist (e.g. at session
+        end via ``IndexGrower.flush()``).
+
+        Dedup responsibility lies with the caller — duplicate sources are not
+        filtered here (they inflate posting lists but don't corrupt scores).
+
+        Args:
+            chunks: new Chunk objects to index. Empty list is a no-op.
+        """
+        if not chunks:
+            return
+
+        start_id = len(self._chunks)
+        new_tokens = [tokenize(c.text) for c in chunks]
+        new_lens = [len(t) for t in new_tokens]
+
+        # Extend core lists.
+        self._chunks.extend(chunks)
+        self._doc_tokens.extend(new_tokens)
+        self._doc_len.extend(new_lens)
+
+        # Recompute avgdl over the whole (grown) corpus.
+        n_docs = len(self._chunks)
+        self._avgdl = sum(self._doc_len) / n_docs if n_docs else 0.0
+
+        # Merge new documents' positional postings into the existing dict.
+        for offset, toks in enumerate(new_tokens):
+            doc_id = start_id + offset
+            for pos, tok in enumerate(toks):
+                if tok not in self._postings:
+                    self._postings[tok] = {}
+                self._postings[tok].setdefault(doc_id, []).append(pos)
+
+        # Rebuild IDF table — document frequencies changed.
+        self._idf = _idf_table(self._postings, n_docs)
+
     # ── Search ───────────────────────────────────────────────────────────
 
     @property

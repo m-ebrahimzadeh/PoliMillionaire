@@ -3,6 +3,8 @@ from .chunker import CHUNKER_VERSION, Chunk, chunk_text
 from .embedder import Embedder, EmbedderSpec
 from .fusion import RRF_K, reciprocal_rank_fusion
 from .index import FAISSIndex
+from .index_grower import IndexGrower
+from .live_search import LiveSearchFallback
 from .reranker import CrossEncoderReranker, RerankerSpec
 from .retriever import Retriever
 
@@ -14,4 +16,6 @@ __all__ = [
     "RRF_K", "reciprocal_rank_fusion",
     "CrossEncoderReranker", "RerankerSpec",
     "Retriever",
+    "LiveSearchFallback",
+    "IndexGrower",
 ]

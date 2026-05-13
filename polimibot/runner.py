@@ -218,6 +218,19 @@ def play_game(
             pacer.wait()
             outcome = game.submit_answer(chosen_idx)
 
+            # --- confirm learning (before log, so n_learned is up-to-date) ---
+            # If the strategy has an IndexGrower attached and the game server
+            # confirmed the answer was correct, promote the buffered live-search
+            # article to the permanent in-memory index.  The question_id key
+            # matches what RAGStrategy.answer() used when calling buffer().
+            _grower = getattr(strategy, "index_grower", None)
+            if _grower is not None:
+                _question_id = f"lvl_{q.level}"
+                if outcome.correct is True:
+                    _grower.confirm(_question_id)
+                else:
+                    _grower.discard(_question_id)
+
             # --- log ---
             n_q += 1
             if outcome.correct is True:
@@ -262,6 +275,17 @@ def play_game(
 
             if outcome.game_over:
                 break
+
+        # --- flush learned index to disk (session end) ---
+        # Persist any live-search articles that were confirmed correct
+        # during this game.  No-op if nothing was learned.
+        _grower = getattr(strategy, "index_grower", None)
+        if _grower is not None:
+            try:
+                _grower.flush()
+            except Exception as _flush_exc:  # noqa: BLE001
+                if verbose:
+                    print(f"  ! IndexGrower.flush() failed: {_flush_exc}")
 
         summary = game.summary()
         log.log_summary(GameSummaryRecord(

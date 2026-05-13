@@ -291,6 +291,33 @@ class Retriever:
             filtered = [(c, s) for c, s in raw if c.category == category]
         return filtered[:k_pool]
 
+    def append_chunks(
+        self,
+        chunks: list[Chunk],
+        embeddings,
+    ) -> None:
+        """Hot-append new chunks to both the FAISS and BM25 indices.
+
+        Called by ``IndexGrower.confirm()`` after a correct answer is confirmed.
+        Updates both the dense and (when present) lexical indices in memory so
+        that subsequent ``retrieve()`` calls in the same session can find the
+        new material.
+
+        Does NOT persist to disk — call ``IndexGrower.flush()`` (or
+        ``FAISSIndex.save`` + ``BM25Index.save`` directly) at session end.
+
+        Args:
+            chunks: new Chunk objects (already deduped by the caller).
+            embeddings: float32 ndarray of shape (len(chunks), dim), produced
+                by the same embedder used to build the index (caller
+                responsibility — no spec check here; IndexGrower enforces it).
+        """
+        if not chunks:
+            return
+        self._index.append(chunks, embeddings)
+        if self._bm25 is not None:
+            self._bm25.append(chunks)
+
     def rerank_pool(
         self,
         query: str,
