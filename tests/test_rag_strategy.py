@@ -203,6 +203,57 @@ def test_format_context_passage_char_cap_per_chunk():
     assert len(body) <= 60
 
 
+def test_format_context_includes_chunk_id_in_header():
+    """Citation discipline: chunk_id must appear in the passage header so
+    the LLM can reference '[Passage 1]' in reasoning."""
+    chunk = Chunk(text="Caesar crossed the Rubicon.", source="Julius Caesar",
+                  chunk_id=7, category=None)
+    ctx = _format_context([(chunk, 0.9)])
+    assert "chunk 7" in ctx
+
+
+def test_format_context_includes_category_when_available():
+    """When category is set, it should appear in the header for disambiguation."""
+    chunk = Chunk(text="Some fact.", source="Article", chunk_id=0, category="history")
+    ctx = _format_context([(chunk, 0.9)])
+    assert "history" in ctx
+
+
+def test_format_context_no_category_suffix_when_none():
+    """When category is None, no extra comma-suffix in the header."""
+    chunk = Chunk(text="Some fact.", source="Article", chunk_id=0, category=None)
+    ctx = _format_context([(chunk, 0.9)])
+    # Header should be "[1] Article (chunk 0)" without trailing comma.
+    header_line = ctx.split("\n")[0]
+    assert not header_line.endswith(",")
+    assert "None" not in header_line
+
+
+def test_format_context_truncates_at_sentence_boundary():
+    """Hard-truncation mid-word is replaced with sentence-boundary truncation."""
+    from polimibot.strategies.rag_strategy import _truncate_to_sentence
+    text = "First sentence. Second sentence. Third sentence."
+    # Budget fits first two sentences (32 chars) but not the third.
+    result = _truncate_to_sentence(text, 35)
+    assert result.endswith(".")
+    assert "Third" not in result
+
+
+def test_truncate_to_sentence_no_truncation_when_fits():
+    from polimibot.strategies.rag_strategy import _truncate_to_sentence
+    text = "Short text."
+    assert _truncate_to_sentence(text, 1000) == text
+
+
+def test_truncate_to_sentence_falls_back_to_word_boundary():
+    """When no sentence-boundary fits, fall back to word boundary."""
+    from polimibot.strategies.rag_strategy import _truncate_to_sentence
+    text = "word1 word2 word3 word4"
+    result = _truncate_to_sentence(text, 12)  # fits "word1 word2"
+    assert not result.endswith(" ")
+    assert "word3" not in result
+
+
 # ── Low-score gate ────────────────────────────────────────────────────────────
 
 def test_rag_min_score_gate_drops_context_below_threshold():
