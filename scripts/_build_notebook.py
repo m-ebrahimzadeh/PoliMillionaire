@@ -286,6 +286,9 @@ Skipped automatically when the index already exists and `REBUILD_INDEX=False` �
 
 cells.append(code('''
 # ─── RAG index knobs. ────────────────────────────────────────────────
+# RAG_INDEX_PATH is also set in Section 1.1; defined here so this cell runs
+# standalone without requiring the Knobs cell to be executed first.
+RAG_INDEX_PATH     = PATHS.cache_dir / 'knowledge'
 REBUILD_INDEX      = False        # True  → rebuild even if index already exists
 INDEX_REFETCH      = False        # True  → re-download Wikipedia (slow, ~5–10 min)
 INDEX_CATEGORIES   = None         # None  → all four; or e.g. ['history', 'science']
