@@ -122,6 +122,8 @@ class RAGStrategy(Strategy):
         use_multi_query: bool = True,
         rerank_oversearch: Optional[int] = None,
         min_score: Optional[float] = None,
+        min_score_rrf: Optional[float] = None,
+        min_score_rerank: Optional[float] = None,
         max_passage_chars: int = DEFAULT_MAX_PASSAGE_CHARS,
         max_total_chars: int = DEFAULT_MAX_TOTAL_CHARS,
         direct_max_new_tokens: int = DEFAULT_DIRECT_MAX_NEW_TOKENS,
@@ -201,6 +203,8 @@ class RAGStrategy(Strategy):
         self.use_multi_query = use_multi_query
         self.rerank_oversearch = rerank_oversearch
         self.min_score = min_score
+        self.min_score_rrf = min_score_rrf
+        self.min_score_rerank = min_score_rerank
         self.max_passage_chars = max_passage_chars
         self.max_total_chars = max_total_chars
         self.direct_max_new_tokens = direct_max_new_tokens
@@ -289,14 +293,26 @@ class RAGStrategy(Strategy):
             query = _build_query(inp)
             passages = self.retriever.retrieve(query, **common_kwargs)
 
-        # 2. Low-score gate. If the top retrieval is below the threshold,
-        #    pass an empty context — build_messages_with_context then
-        #    degrades to the plain (no-RAG) prompt shape, instead of
-        #    feeding the model irrelevant "evidence".
+        # 2. Path-aware low-score gate (audit §4).
+        #
+        # Score units differ by retrieval path:
+        #   dense-only  → cosine ∈ [-1, 1]         use min_score
+        #   hybrid RRF  → RRF ∈ ~0–0.03            use min_score_rrf
+        #   reranker    → cross-encoder logit       use min_score_rerank
+        #
+        # Applying a cosine-calibrated threshold on an RRF or cross-encoder
+        # score is meaningless (gates every question or none). Each path
+        # selects its own threshold; None = never gate on this path.
         top_score = float(passages[0][1]) if passages else 0.0
+        if self.use_reranker:
+            active_threshold = self.min_score_rerank
+        elif self.use_hybrid:
+            active_threshold = self.min_score_rrf
+        else:
+            active_threshold = self.min_score
         gated = (
-            self.min_score is not None
-            and (not passages or top_score < self.min_score)
+            active_threshold is not None
+            and (not passages or top_score < active_threshold)
         )
         if gated:
             context = ""
@@ -349,7 +365,7 @@ class RAGStrategy(Strategy):
                 "top_source": passages[0][0].source if passages else None,
                 "top_score":  round(top_score, 4) if passages else None,
                 "gated_by_min_score":  gated,
-                "min_score_threshold": self.min_score,
+                "min_score_threshold": active_threshold,
                 "category_filter":     category_filter,
                 "reranked":            self.use_reranker,
                 "hybrid":              self.use_hybrid,

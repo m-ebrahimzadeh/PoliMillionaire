@@ -261,6 +261,65 @@ def test_rag_name_includes_min_score_when_set():
     assert "min_score=0.3" in strategy.name
 
 
+def test_rag_path_aware_gate_uses_rrf_threshold_on_hybrid():
+    """On the hybrid path, min_score_rrf is used, not min_score.
+    A low RRF score (<min_score_rrf) should gate; a cosine-range value
+    passed as min_score should NOT gate the hybrid path."""
+    rrf_passages = [
+        (Chunk(text="some text", source="S", chunk_id=0), 0.005),  # low RRF score
+    ]
+    retriever = MockRetriever(rrf_passages, has_bm25=True)
+    # min_score=0.30 should NOT fire on the hybrid (RRF) path.
+    # min_score_rrf=0.01 > 0.005 → should gate.
+    strategy = RAGStrategy(
+        MockLLM(correctness=1.0), retriever, k=1,
+        use_hybrid=True,
+        use_multi_query=False,
+        min_score=0.30,       # dense threshold — must NOT apply here
+        min_score_rrf=0.01,   # RRF threshold — MUST apply here
+    )
+    out = strategy.answer(_inp("A"))
+    assert out.extras["gated_by_min_score"] is True
+    assert out.extras["min_score_threshold"] == pytest.approx(0.01)
+
+
+def test_rag_path_aware_gate_dense_threshold_ignored_on_hybrid():
+    """min_score alone set, no min_score_rrf: hybrid path never gates
+    (even if the dense threshold would gate a cosine score)."""
+    rrf_passages = [
+        (Chunk(text="some text", source="S", chunk_id=0), 0.005),
+    ]
+    retriever = MockRetriever(rrf_passages, has_bm25=True)
+    strategy = RAGStrategy(
+        MockLLM(correctness=1.0), retriever, k=1,
+        use_hybrid=True,
+        use_multi_query=False,
+        min_score=0.30,   # would gate a dense score of 0.005, but not RRF
+    )
+    out = strategy.answer(_inp("A"))
+    # min_score_rrf=None → no gate on hybrid path
+    assert out.extras["gated_by_min_score"] is False
+    assert out.extras["min_score_threshold"] is None
+
+
+def test_rag_path_aware_gate_rerank_threshold():
+    """On the rerank path, min_score_rerank is consulted, not min_score."""
+    passages = [
+        (Chunk(text="some text", source="S", chunk_id=0), -1.5),  # negative CE logit
+    ]
+    retriever = MockRetriever(passages, has_reranker=True)
+    strategy = RAGStrategy(
+        MockLLM(correctness=1.0), retriever, k=1,
+        use_reranker=True,
+        use_multi_query=False,
+        min_score=0.30,           # dense threshold — must NOT apply
+        min_score_rerank=-1.0,    # CE threshold — -1.5 < -1.0 → gates
+    )
+    out = strategy.answer(_inp("A"))
+    assert out.extras["gated_by_min_score"] is True
+    assert out.extras["min_score_threshold"] == pytest.approx(-1.0)
+
+
 def test_rag_extras_carries_full_passage_triples():
     """Run logs need full top-k for recall@k post-hoc analysis."""
     strategy = RAGStrategy(MockLLM(), MockRetriever(_passages()), k=2)
