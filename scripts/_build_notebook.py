@@ -90,14 +90,52 @@ Install the package, import helpers, log in to the game server. Run this section
 > **After editing files in `polimibot/`** (or pulling new commits): _Runtime → Restart session_, then re-run **Section 0** before anything else. Even with `pip install -e .`, classes already imported in this kernel stay cached — restarting is the only reliable way to pick up the new code.
 """))
 
-cells.append(md("### 0.0 Mount Google Drive (Colab only)"))
+cells.append(md("""
+### 0.0 Mount Google Drive (Colab only)
+
+Two modes — controlled by the `clone` flag:
+
+| `clone` | Code source | `data/` location |
+|---------|-------------|-----------------|
+| `True`  | Fresh git clone into `/content/PoliMillionaire/` (fast, not throttled) | Symlinked → Drive so run logs, gold set, and the RAG index survive session restarts |
+| `False` | Work directly from the Drive copy | Native `data/` inside the Drive project folder |
+
+When `clone=True`, a symlink `data/ → <drive_path>/data/` is created once and
+reused on subsequent sessions — no data loss on kernel restart.
+"""))
 
 cells.append(code('''
-# Mount Google Drive and cd into the project folder.
-# Skip this cell when running locally or if already in the project root.
-from google.colab import drive
+# Mount Google Drive and set up the project. Two modes: clone or drive-direct.
+import os
+from google.colab import drive, userdata
+
 drive.mount('/content/drive')
-%cd "/content/drive/MyDrive/Colab Notebooks/Polimillionaire"
+DRIVE_PROJECT = "/content/drive/MyDrive/Colab Notebooks/Polimillionaire"
+
+clone = True  # ← flip to False to work entirely from the Drive copy
+
+if clone:
+    # Clone fresh code from GitHub into fast local filesystem.
+    REPO_URL = f"https://{userdata.get('GITHUB_TOKEN')}@github.com/m-ebrahimzadeh/PoliMillionaire.git"
+    if not os.path.exists('/content/PoliMillionaire'):
+        print("Cloning repo…")
+        !git clone {REPO_URL} /content/PoliMillionaire
+    else:
+        print("Repo already cloned — skipping clone.")
+    %cd /content/PoliMillionaire
+
+    # Symlink data/ → Drive so runs, gold sets, and the RAG index persist
+    # across session restarts. Created once; reused on every subsequent run.
+    import shutil as _shutil
+    os.makedirs(f"{DRIVE_PROJECT}/data", exist_ok=True)
+    if os.path.isdir('data') and not os.path.islink('data'):
+        _shutil.rmtree('data')   # remove the empty placeholder from the fresh clone
+    if not os.path.exists('data'):
+        os.symlink(f"{DRIVE_PROJECT}/data", 'data')
+    print(f'data/ → {os.readlink("data")}  (persistent on Drive)')
+else:
+    %cd "{DRIVE_PROJECT}"
+    print(f'Working directly from Drive: {DRIVE_PROJECT}')
 '''))
 
 cells.append(md("### 0.1 Install"))
