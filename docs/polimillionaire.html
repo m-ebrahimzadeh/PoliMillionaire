@@ -1,0 +1,1186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PoliMillionaire — Complete Documentation</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<style>
+/* ─── Reset ─────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ─── Design Tokens ─────────────────────────────────────────── */
+:root {
+  --bg:         #0a0e1a;
+  --surface:    #111827;
+  --card:       #1a2235;
+  --code-bg:    #0d1117;
+  --border:     #1e293b;
+  --text:       #e2e8f0;
+  --muted:      #94a3b8;
+  --dim:        #64748b;
+  --sidebar-w:  240px;
+  --topbar-h:   56px;
+
+  /* Chapter accent colours */
+  --c-home:     #a78bfa;
+  --c-game:     #34d399;
+  --c-rag:      #f59e0b;
+  --c-strat:    #10b981;
+  --c-prompt:   #ec4899;
+  --c-tools:    #06b6d4;
+  --c-eval:     #f59e0b;
+  --accent:     var(--c-home); /* overridden per chapter */
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  font-size: 15px;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* ─── Top Bar ────────────────────────────────────────────────── */
+.topbar {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: var(--topbar-h);
+  background: rgba(10,14,26,0.97);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center;
+  padding: 0 20px; gap: 12px;
+  z-index: 200;
+}
+.topbar .logo {
+  font-weight: 800; font-size: 1rem;
+  background: linear-gradient(135deg, #a78bfa, #34d399);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  white-space: nowrap;
+}
+.topbar .chapter-tabs {
+  display: flex; gap: 4px; overflow-x: auto; flex: 1;
+  scrollbar-width: none;
+}
+.topbar .chapter-tabs::-webkit-scrollbar { display: none; }
+.tab-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 8px;
+  border: none; cursor: pointer;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.78rem; font-weight: 500;
+  background: transparent; color: var(--muted);
+  transition: all 0.2s; white-space: nowrap;
+}
+.tab-btn:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+.tab-btn.active {
+  background: rgba(255,255,255,0.08);
+  color: var(--text);
+  font-weight: 600;
+}
+.tab-btn .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ─── App Layout ─────────────────────────────────────────────── */
+.app {
+  display: flex;
+  margin-top: var(--topbar-h);
+  min-height: calc(100vh - var(--topbar-h));
+}
+
+/* ─── Sidebar ────────────────────────────────────────────────── */
+.sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  position: sticky;
+  top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto;
+  padding: 20px 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.sidebar-section { margin-bottom: 6px; }
+.sidebar-heading {
+  padding: 4px 18px;
+  font-size: 0.65rem; font-weight: 700;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--dim);
+}
+.sidebar-link {
+  display: block; padding: 7px 18px 7px 26px;
+  font-size: 0.8rem; color: var(--muted);
+  text-decoration: none; border-radius: 0;
+  border-left: 2px solid transparent;
+  transition: all 0.15s;
+  cursor: pointer;
+}
+.sidebar-link:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+.sidebar-link.active { color: var(--accent); border-left-color: var(--accent); background: rgba(255,255,255,0.04); }
+
+/* ─── Main Content ───────────────────────────────────────────── */
+.main { flex: 1; min-width: 0; }
+
+/* ─── Chapter panels ─────────────────────────────────────────── */
+.chapter { display: none; }
+.chapter.active { display: block; }
+
+/* ─── Chapter Hero ───────────────────────────────────────────── */
+.ch-hero {
+  padding: 64px 48px 48px;
+  background: linear-gradient(160deg, #0a0e1a 0%, #111827 100%);
+  border-bottom: 1px solid var(--border);
+  position: relative; overflow: hidden;
+}
+.ch-hero::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse 60% 60% at 80% 30%, rgba(var(--glow), 0.07) 0%, transparent 70%);
+  pointer-events: none;
+}
+.ch-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: rgba(var(--glow), 0.12);
+  border: 1px solid rgba(var(--glow), 0.3);
+  color: var(--accent);
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; padding: 4px 12px;
+  border-radius: 100px; margin-bottom: 14px;
+}
+.ch-hero h1 {
+  font-size: clamp(1.8rem, 4vw, 2.8rem);
+  font-weight: 800; line-height: 1.15;
+  margin-bottom: 14px;
+}
+.ch-hero p { color: var(--muted); max-width: 680px; font-size: 1rem; }
+.ch-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.ch-tag {
+  background: var(--card); border: 1px solid var(--border);
+  color: var(--dim); font-size: 0.7rem; font-weight: 500;
+  padding: 3px 10px; border-radius: 100px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* ─── Content Area ───────────────────────────────────────────── */
+.ch-content { padding: 48px; max-width: 860px; }
+
+/* ─── Sections ───────────────────────────────────────────────── */
+.section { margin-bottom: 72px; }
+.sec-num {
+  font-size: 0.65rem; font-weight: 700; letter-spacing: 0.15em;
+  text-transform: uppercase; color: var(--accent); margin-bottom: 6px;
+  display: flex; align-items: center; gap: 8px;
+}
+.sec-num::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+h2.sec-title { font-size: 1.7rem; font-weight: 700; margin-bottom: 18px; }
+h3.sub { font-size: 1.1rem; font-weight: 600; margin: 30px 0 12px; }
+
+/* ─── Callout Cards ──────────────────────────────────────────── */
+.callout {
+  border-radius: 10px; padding: 18px 20px;
+  margin: 20px 0; border-left: 3px solid;
+}
+.callout::before {
+  display: block; font-size: 0.65rem; font-weight: 700;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.callout.analogy { background: rgba(var(--glow),0.07); border-color: var(--accent); }
+.callout.analogy::before { content: '💡 Analogy'; color: var(--accent); }
+.callout.warn { background: rgba(239,68,68,0.06); border-color: #ef4444; }
+.callout.warn::before { content: '⚠️ Important'; color: #ef4444; }
+.callout.tip { background: rgba(16,185,129,0.06); border-color: #10b981; }
+.callout.tip::before { content: '✅ Key Insight'; color: #10b981; }
+.callout.design { background: rgba(139,92,246,0.06); border-color: #8b5cf6; }
+.callout.design::before { content: '🏗️ Design'; color: #8b5cf6; }
+
+/* ─── Code Blocks ────────────────────────────────────────────── */
+.code-block { border-radius: 10px; overflow: hidden; border: 1px solid var(--border); margin: 18px 0; }
+.code-header {
+  background: var(--surface); padding: 7px 14px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.68rem; color: var(--dim);
+  border-bottom: 1px solid var(--border);
+}
+.code-block pre { margin: 0 !important; padding: 18px !important; background: var(--code-bg) !important; font-size: 0.78rem !important; line-height: 1.6 !important; overflow-x: auto; }
+.code-block code { font-family: 'JetBrains Mono', monospace !important; }
+
+/* ─── Walkthrough ────────────────────────────────────────────── */
+.wt { margin: 18px 0; list-style: none; }
+.wt li {
+  position: relative; padding: 10px 14px 10px 54px;
+  margin: 6px 0; background: var(--surface);
+  border-radius: 8px; border: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.wt li::before {
+  content: attr(data-l);
+  position: absolute; left: 8px; top: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.65rem; font-weight: 600;
+  color: var(--accent);
+  background: rgba(var(--glow),0.12);
+  padding: 2px 6px; border-radius: 4px;
+}
+.wt .why { color: var(--muted); font-style: italic; display: block; margin-top: 3px; font-size: 0.78rem; }
+
+/* ─── Diagrams ───────────────────────────────────────────────── */
+.diagram { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 26px; margin: 20px 0; overflow-x: auto; }
+.diagram .mermaid { display: flex; justify-content: center; }
+
+/* ─── Tables ─────────────────────────────────────────────────── */
+.tbl { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 0.82rem; }
+.tbl th { background: var(--surface); padding: 10px 14px; text-align: left; font-weight: 600; color: var(--accent); border-bottom: 2px solid rgba(var(--glow),0.3); }
+.tbl td { padding: 9px 14px; border-bottom: 1px solid var(--border); color: var(--muted); }
+.tbl tr:hover td { background: rgba(255,255,255,0.02); }
+
+/* ─── Steps ──────────────────────────────────────────────────── */
+.steps { margin: 16px 0; }
+.step { display: flex; gap: 12px; padding: 12px 14px; margin: 6px 0; background: var(--surface); border-radius: 8px; border: 1px solid var(--border); }
+.step-n { min-width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.78rem; background: var(--accent); color: var(--bg); flex-shrink: 0; }
+.step-body { flex: 1; }
+.step-body strong { color: var(--text); }
+.step-body small { display: block; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; color: #38bdf8; margin-top: 3px; }
+
+/* ─── Inlines ────────────────────────────────────────────────── */
+p { margin-bottom: 14px; color: var(--muted); }
+strong { color: var(--text); }
+code:not([class*="language-"]) { font-family: 'JetBrains Mono', monospace; background: rgba(var(--glow),0.1); padding: 1px 6px; border-radius: 4px; font-size: 0.83em; color: var(--accent); }
+
+/* ─── Chapter accent overrides ───────────────────────────────── */
+.chapter[data-ch="home"]   { --accent: var(--c-home);   --glow: 167,139,250; }
+.chapter[data-ch="game"]   { --accent: var(--c-game);   --glow: 52,211,153;  }
+.chapter[data-ch="rag"]    { --accent: var(--c-rag);    --glow: 245,158,11;  }
+.chapter[data-ch="strat"]  { --accent: var(--c-strat);  --glow: 16,185,129;  }
+.chapter[data-ch="prompt"] { --accent: var(--c-prompt); --glow: 236,72,153;  }
+.chapter[data-ch="tools"]  { --accent: var(--c-tools);  --glow: 6,182,212;   }
+.chapter[data-ch="eval"]   { --accent: var(--c-eval);   --glow: 245,158,11;  }
+
+/* ─── Chunk Viz ──────────────────────────────────────────────── */
+.chunk-viz { background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin: 16px 0; font-family: 'JetBrains Mono', monospace; font-size: 0.73rem; line-height: 1.9; }
+.ca { background: rgba(245,158,11,0.18); color: #fcd34d; padding: 1px 3px; border-radius: 3px; }
+.cb { background: rgba(56,189,248,0.18); color: #7dd3fc; padding: 1px 3px; border-radius: 3px; }
+.co { background: rgba(52,211,153,0.18); color: #6ee7b7; padding: 1px 3px; border-radius: 3px; outline: 1px dashed rgba(52,211,153,0.4); }
+
+/* ─── Responsive ─────────────────────────────────────────────── */
+@media (max-width: 800px) {
+  .sidebar { display: none; }
+  .ch-content { padding: 24px 20px; }
+  .ch-hero { padding: 40px 20px 32px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════ TOP BAR -->
+<header class="topbar">
+  <div class="logo">PoliMillionaire Docs</div>
+  <div class="chapter-tabs">
+    <button class="tab-btn active" onclick="showChapter('home')" data-ch="home">
+      <span class="dot" style="background:var(--c-home)"></span> Overview
+    </button>
+    <button class="tab-btn" onclick="showChapter('game')" data-ch="game">
+      <span class="dot" style="background:var(--c-game)"></span> 🎮 Game
+    </button>
+    <button class="tab-btn" onclick="showChapter('rag')" data-ch="rag">
+      <span class="dot" style="background:var(--c-rag)"></span> 📚 RAG
+    </button>
+    <button class="tab-btn" onclick="showChapter('strat')" data-ch="strat">
+      <span class="dot" style="background:var(--c-strat)"></span> 🧠 Strategies
+    </button>
+    <button class="tab-btn" onclick="showChapter('prompt')" data-ch="prompt">
+      <span class="dot" style="background:var(--c-prompt)"></span> 💬 Prompts
+    </button>
+    <button class="tab-btn" onclick="showChapter('tools')" data-ch="tools">
+      <span class="dot" style="background:var(--c-tools)"></span> 🔧 Tools
+    </button>
+    <button class="tab-btn" onclick="showChapter('eval')" data-ch="eval">
+      <span class="dot" style="background:var(--c-eval)"></span> 📊 Evaluation
+    </button>
+  </div>
+</header>
+
+<div class="app">
+
+<!-- ═══════════════════════════════════════════════ SIDEBAR -->
+<nav class="sidebar" id="sidebar">
+  <!-- filled by JS -->
+</nav>
+
+<!-- ═══════════════════════════════════════════════ MAIN -->
+<main class="main">
+
+<!-- ══════════════════════════ CHAPTER: HOME -->
+<div class="chapter active" id="ch-home" data-ch="home">
+<div class="ch-hero" style="--glow:167,139,250">
+  <div class="ch-badge">📖 Full Documentation</div>
+  <h1>PoliMillionaire<br/><span style="color:var(--accent)">Architecture Guide</span></h1>
+  <p>A complete beginner-friendly walkthrough of every component — from the game server API to the self-growing RAG knowledge base. Built for the student who wants to understand not just <em>what</em> the code does, but <em>why</em> it was designed that way.</p>
+  <div class="ch-tags">
+    <span class="ch-tag">Python</span><span class="ch-tag">LLM</span>
+    <span class="ch-tag">RAG</span><span class="ch-tag">FAISS</span>
+    <span class="ch-tag">BM25</span><span class="ch-tag">Strategies</span>
+    <span class="ch-tag">Evaluation</span>
+  </div>
+</div>
+<div class="ch-content">
+
+  <div class="section" id="home-overview">
+    <div class="sec-num">What is this project?</div>
+    <h2 class="sec-title">The Big Picture</h2>
+
+    <p><strong>PoliMillionaire</strong> is an AI bot that plays "Who Wants to Be a Millionaire?" — a quiz show where 15 multiple-choice questions with increasing difficulty stand between you and €1,000,000. The bot connects to a live game server, receives questions across 4 categories (Entertainment, History, Science, Maths), and uses a suite of AI strategies to pick the best answer within a 30-second time limit.</p>
+
+    <div class="diagram">
+      <div class="mermaid">
+graph TD
+    SRV["🖥️ Game Server\n(HTTP API)"] --> GA["🔌 GameAdapter\n(Adapter Layer)"]
+    GA --> RN["⚙️ Runner\n(Game Loop)"]
+    RN --> ST["🧠 Strategy\n(TieredStrategy)"]
+    ST --> BL["📝 Baseline LLM\nLevels 1-5"]
+    ST --> RA["📚 RAG\nLevels 6-10"]
+    ST --> EN["🗳️ Ensemble\nLevels 11-15"]
+    ST --> TO["🔧 Tool+Agent\nMaths"]
+    RA --> FA["FAISS Index"]
+    RA --> BM["BM25 Index"]
+    RA --> WK["🌐 Wikipedia\n(Live Fallback)"]
+    RN --> LG["📋 Logger\n(JSONL)"]
+    RN --> IG["🌱 IndexGrower\n(Self-learning)"]
+
+    style SRV fill:#162d4a,stroke:#38bdf8,color:#e2e8f0
+    style ST fill:#1a2e1a,stroke:#10b981,color:#e2e8f0
+    style IG fill:#1a2e1a,stroke:#34d399,color:#e2e8f0
+      </div>
+    </div>
+
+    <h3 class="sub">How the System Works — In One Paragraph</h3>
+    <p>The bot logs in to the game server, starts a game session, and enters a loop. For each question, it builds a <strong>StrategyInput</strong> (question text, 4 options, difficulty level, category) and hands it to the <strong>TieredStrategy</strong>. Depending on difficulty, the strategy either calls the bare LLM (easy), retrieves relevant Wikipedia passages via RAG (medium), runs a full ensemble (hard), or uses a deterministic calculator (maths). The chosen answer is submitted to the server, which returns correct/wrong. If a live Wikipedia search was used and the answer was correct, that article is permanently added to the knowledge index for future games.</p>
+  </div>
+
+  <div class="section" id="home-chapters">
+    <div class="sec-num">How to read this guide</div>
+    <h2 class="sec-title">Chapter Guide</h2>
+    <table class="tbl">
+      <tr><th>Chapter</th><th>What you'll learn</th><th>Key concepts</th></tr>
+      <tr><td>🎮 <strong>Game</strong></td><td>HTTP client, adapter pattern, game loop, watchdog</td><td>MillionaireClient, GameAdapter, Runner, Pacer</td></tr>
+      <tr><td>📚 <strong>RAG</strong></td><td>How the bot looks up answers in Wikipedia</td><td>FAISS, BM25, RRF, Embeddings, IndexGrower</td></tr>
+      <tr><td>🧠 <strong>Strategies</strong></td><td>Every answering algorithm from random to ensemble</td><td>Strategy pattern, Chain of Responsibility, Tiering</td></tr>
+      <tr><td>💬 <strong>Prompts</strong></td><td>How questions are formatted for the LLM</td><td>PromptStyle, CoT, Few-Shot, parse_answer</td></tr>
+      <tr><td>🔧 <strong>Tools</strong></td><td>Deterministic computation and ReAct agents</td><td>MathsTool, safe_eval, AgentStrategy</td></tr>
+      <tr><td>📊 <strong>Evaluation</strong></td><td>How we measure and prove strategy improvements</td><td>GoldSet, ECE, Recall@k, Leaderboard</td></tr>
+    </table>
+  </div>
+
+</div><!-- /ch-content -->
+</div><!-- /chapter home -->
+
+<!-- ══════════════════════════ CHAPTER: GAME -->
+<div class="chapter" id="ch-game" data-ch="game">
+<div class="ch-hero" style="--glow:52,211,153">
+  <div class="ch-badge">🎮 Chapter 1</div>
+  <h1>Game <span style="color:var(--accent)">Architecture</span></h1>
+  <p>From HTTP API to the game loop — how the bot connects to the server, manages sessions, and safely handles timeouts and errors.</p>
+  <div class="ch-tags">
+    <span class="ch-tag">MillionaireClient</span><span class="ch-tag">GameAdapter</span>
+    <span class="ch-tag">Runner</span><span class="ch-tag">Watchdog</span><span class="ch-tag">Pacer</span>
+  </div>
+</div>
+<div class="ch-content">
+
+  <div class="section" id="game-layers">
+    <div class="sec-num">Section 1</div>
+    <h2 class="sec-title">Three Layers — Why Not Just One?</h2>
+    <div class="callout analogy">
+      <p><strong>Imagine a phone interpreter at a diplomatic summit.</strong> The diplomat (Strategy) speaks only English and doesn't know foreign protocol. The interpreter (Adapter) translates. The phone (HTTP client) handles transmission. Change any layer without touching the others.</p>
+    </div>
+    <table class="tbl">
+      <tr><th>Layer</th><th>Code</th><th>Responsibility</th></tr>
+      <tr><td>1 — HTTP</td><td><code>millionaire_client/</code></td><td>Raw HTTP calls, auth cookies, typed exceptions</td></tr>
+      <tr><td>2 — Adapter</td><td><code>polimibot/game/adapter.py</code></td><td>Translates API types → domain types; fixes server quirks</td></tr>
+      <tr><td>3 — Runner</td><td><code>polimibot/runner.py</code></td><td>Game loop, watchdog, rate limiter, logger, learning loop</td></tr>
+    </table>
+    <div class="callout design">
+      <p><strong>The rule:</strong> Nothing outside <code>adapter.py</code> may import <code>millionaire_client</code>. All 30+ strategies, the evaluator, the logger — none ever touch the HTTP layer directly. If the server API changes, fix only adapter.py.</p>
+    </div>
+  </div>
+
+  <div class="section" id="game-adapter">
+    <div class="sec-num">Section 2</div>
+    <h2 class="sec-title">The Adapter — Type Translation</h2>
+    <div class="code-block">
+      <div class="code-header">polimibot/game/adapter.py — key translations</div>
+      <pre><code class="language-python">def _to_game_question(q) -> Optional[GameQuestion]:
+    """API Question → our frozen DTO."""
+    if q is None: return None
+    return GameQuestion(
+        text=q.text,
+        options=tuple(opt.text for opt in q.options),  # texts only, no IDs
+        level=q.level,
+    )
+
+class GameAdapter:
+    @property
+    def current_question(self) -> Optional[GameQuestion]:
+        q = _to_game_question(self._session.current_question)
+        if q and q.level == 0:
+            # Server bug: level sometimes missing → inject from session
+            q = GameQuestion(text=q.text, options=q.options,
+                           level=self._session.current_level)
+        return q
+
+    def submit_answer(self, option_index: int) -> AnswerOutcome:
+        # Convert 0-based index → server option ID
+        option_id = self._session.current_question.options[option_index].id
+        result = self._session.answer(option_id=option_id)
+        return AnswerOutcome(correct=result.correct, ...)</code></pre>
+    </div>
+    <ul class="wt">
+      <li data-l="texts only">Options become plain strings — strategies never need server-side option IDs.<span class="why">Keeps strategies clean. Server internals don't leak up.</span></li>
+      <li data-l="level=0 bug">Server sometimes omits the level field → defaults to 0 → all questions route to "easy tier." The adapter patches this from the session state.<span class="why">Silent bugs are the worst. One defensive check prevents completely wrong routing.</span></li>
+      <li data-l="option_id">The runner gives the adapter a 0-based index (0,1,2,3). The adapter resolves the actual server ID. Translation in one place only.<span class="why">Open/Closed: the rest of the system never needs to change if the server changes option ID format.</span></li>
+    </ul>
+  </div>
+
+  <div class="section" id="game-loop">
+    <div class="sec-num">Section 3</div>
+    <h2 class="sec-title">The Game Loop</h2>
+    <div class="code-block">
+      <div class="code-header">polimibot/runner.py — play_game() core loop</div>
+      <pre><code class="language-python">while not game.is_over:
+    q = game.current_question
+    # Budget: server time minus 2s safety margin, capped at 25s
+    budget = min(game.time_remaining_seconds - 2.0, 25.0)
+
+    inp = StrategyInput(question=q.text, options=q.options,
+                        level=q.level, category=category,
+                        time_budget_seconds=budget)
+
+    # Run strategy under watchdog (kills on overrun)
+    try:
+        out = _call_with_deadline(strategy, inp, budget)
+    except _DeadlineExceeded:
+        out = None   # timed out → use fallback
+
+    chosen_idx = (out.chosen_index
+                  if out and not out.is_abstain
+                  else fallback_index)   # default: 0 (option A)
+
+    pacer.wait()                         # ≥1.5s between API calls
+    outcome = game.submit_answer(chosen_idx)
+
+    # Learning loop
+    grower = getattr(strategy, "index_grower", None)
+    if grower:
+        if outcome.correct: grower.confirm(f"lvl_{q.level}")
+        else:               grower.discard(f"lvl_{q.level}")
+
+    log.log_question(QuestionRecord(...))</code></pre>
+    </div>
+  </div>
+
+  <div class="section" id="game-watchdog">
+    <div class="sec-num">Section 4</div>
+    <h2 class="sec-title">Watchdog &amp; Pacer</h2>
+    <div class="code-block">
+      <div class="code-header">_call_with_deadline — daemon thread timeout</div>
+      <pre><code class="language-python">def _call_with_deadline(strategy, inp, deadline_seconds):
+    box = {}
+    def target():
+        try: box["out"] = strategy.answer(inp)
+        except BaseException as e: box["err"] = e
+
+    th = threading.Thread(target=target, daemon=True)
+    th.start()
+    th.join(deadline_seconds)   # block for at most this many seconds
+    if th.is_alive():
+        raise _DeadlineExceeded(...)
+    # Thread can't be killed safely (GPU would corrupt) — it runs on
+    # in the background but its result is ignored
+    return box["out"]</code></pre>
+    </div>
+    <div class="callout tip">
+      <p><strong>Why daemon threads?</strong> Python can't safely interrupt a thread running CUDA kernels. We don't kill it — we just stop waiting. Daemon=True ensures the thread is cleaned up when the process exits, preventing zombie GPU processes.</p>
+    </div>
+  </div>
+
+</div><!-- /ch-content -->
+</div><!-- /ch-game -->
+
+<!-- ══════════════════════════ CHAPTER: RAG -->
+<div class="chapter" id="ch-rag" data-ch="rag">
+<div class="ch-hero" style="--glow:245,158,11">
+  <div class="ch-badge">📚 Chapter 2</div>
+  <h1>The <span style="color:var(--accent)">RAG</span> Pipeline</h1>
+  <p>Retrieval-Augmented Generation — how the bot looks up relevant Wikipedia passages before answering, and how it learns from experience.</p>
+  <div class="ch-tags">
+    <span class="ch-tag">FAISS</span><span class="ch-tag">BM25</span><span class="ch-tag">RRF Fusion</span>
+    <span class="ch-tag">Embeddings</span><span class="ch-tag">Cross-Encoder</span><span class="ch-tag">IndexGrower</span>
+  </div>
+</div>
+<div class="ch-content">
+
+  <div class="section" id="rag-what">
+    <div class="sec-num">Section 1</div>
+    <h2 class="sec-title">What is RAG?</h2>
+    <div class="callout analogy">
+      <p><strong>Imagine taking a quiz with an open encyclopedia.</strong> Before answering, you flip to the relevant pages, skim the key paragraphs, then use your brain to pick the answer. RAG does this for the AI: <strong>R</strong>etrieve (find the right pages) + <strong>A</strong>ugment (add them to the prompt) + <strong>G</strong>enerate (LLM answers with evidence).</p>
+    </div>
+    <div class="code-block">
+      <div class="code-header">The difference — what the LLM sees</div>
+      <pre><code class="language-python"># WITHOUT RAG — LLM relies only on memorized training data
+"Question: When did Italy annex Rome?\nA) 1861  B) 1870  C) 1882  D) 1895\nAnswer:"
+
+# WITH RAG — LLM sees retrieved evidence first
+"""Reference material:
+[1] Capture of Rome (chunk 2, history)
+The capture of Rome on September 20, 1870 completed Italian unification...
+
+[2] Italian unification (chunk 4, history)
+The Kingdom of Italy moved its capital to Rome in 1871...
+
+Question: When did Italy annex Rome?
+A) 1861  B) 1870  C) 1882  D) 1895
+Answer:"""   # → LLM sees "1870" twice → P(B) = 0.91</code></pre>
+    </div>
+  </div>
+
+  <div class="section" id="rag-chunking">
+    <div class="sec-num">Section 2</div>
+    <h2 class="sec-title">Chunking — The Art of Splitting</h2>
+    <div class="callout analogy">
+      <p><strong>Like making flashcards from a textbook.</strong> Cut at sentence boundaries, not mid-sentence. A card saying "Germany surrendered on May 7," is useless without "1945." — the date is on the next card.</p>
+    </div>
+    <div class="chunk-viz">
+      <div style="color:#f87171;margin-bottom:8px;">❌ Bad: fixed-size character split</div>
+      Chunk 1: <span class="ca">"...surrendered unconditionally on May 7,"</span><br/>
+      Chunk 2: <span class="cb">"1945. The war in Europe was over..."</span><br/>
+      <div style="color:#34d399;margin:12px 0 6px;">✅ Good: sentence-aware split (your chunker)</div>
+      Chunk 1: <span class="ca">"...surrendered unconditionally on May 7, 1945. The war in Europe was over."</span><br/>
+      Chunk 2: <span class="cb">"Japan continued fighting until August 15, 1945, when Emperor Hirohito..."</span>
+    </div>
+    <p>The last 50 words of Chunk 1 are copied to the start of Chunk 2 as <span class="co">overlap</span> — so a fact at a boundary appears in BOTH chunks.</p>
+  </div>
+
+  <div class="section" id="rag-embeddings">
+    <div class="sec-num">Section 3</div>
+    <h2 class="sec-title">Embeddings — GPS for Meaning</h2>
+    <div class="callout analogy">
+      <p><strong>GPS coordinates, but for meaning.</strong> Texts with similar meaning get similar vector "coordinates." "Who invented the telephone?" and "Who created the phone?" are almost at the same location. "What's the weather?" is on a different continent.</p>
+    </div>
+    <div class="code-block">
+      <div class="code-header">polimibot/rag/embedder.py — asymmetric encoding</div>
+      <pre><code class="language-python">@dataclass(frozen=True)
+class EmbedderSpec:
+    model_name:     str = "BAAI/bge-small-en-v1.5"  # 384-dim, ~130 MB
+    normalize:      bool = True   # L2-norm → dot product = cosine similarity
+    query_prefix:   str = "Represent this sentence for searching relevant passages: "
+    passage_prefix: str = ""      # passages get NO prefix
+
+# Queries and passages are encoded DIFFERENTLY!
+# The prefix rotates query vectors into "question-looking-for-answer" space.
+# Using wrong prefix silently drops scores 5-15%. Manifest system catches mismatch.</code></pre>
+    </div>
+  </div>
+
+  <div class="section" id="rag-search">
+    <div class="sec-num">Section 4</div>
+    <h2 class="sec-title">Search: FAISS + BM25 + RRF</h2>
+    <div class="callout analogy">
+      <p><strong>Two librarians working in parallel.</strong> Librarian A (FAISS) understands <em>meaning</em>: "flying machines" → finds Aviation History. Librarian B (BM25) matches <em>keywords</em>: finds anything containing exact words. Together, they cover each other's blind spots.</p>
+    </div>
+    <table class="tbl">
+      <tr><th>Method</th><th>Strength</th><th>Weakness</th></tr>
+      <tr><td>FAISS (dense)</td><td>Understands synonyms: "phone" = "telephone"</td><td>Misses rare proper nouns, exact strings</td></tr>
+      <tr><td>BM25 (sparse)</td><td>Perfect exact-match for names and rare terms</td><td>Blind to synonyms and paraphrase</td></tr>
+      <tr><td>RRF Fusion</td><td>Consensus winners rank highest</td><td>Adds computation; adds 1 RRF step</td></tr>
+    </table>
+    <div class="code-block">
+      <div class="code-header">Reciprocal Rank Fusion — scale-independent combination</div>
+      <pre><code class="language-python"># RRF(d) = Σ  1 / (k + rank_i(d))     k=60, 1-indexed ranks
+# FAISS scores: [-1,+1]  vs  BM25 scores: [0,30+]  — incompatible scales!
+# RRF ignores scores, uses only RANK POSITIONS → always comparable
+
+# Example: "Physics article" ranked #2 by FAISS, #1 by BM25
+rrf = 1/(60+2) + 1/(60+1) = 0.03252   # HIGH IN BOTH → consensus winner!
+# Even though it was #1 in neither list alone.</code></pre>
+    </div>
+  </div>
+
+  <div class="section" id="rag-gate">
+    <div class="sec-num">Section 5</div>
+    <h2 class="sec-title">Score Gating &amp; Live Search</h2>
+    <div class="callout warn">
+      <p><strong>Bad context is worse than no context.</strong> A passage about "Rome, Georgia (USA)" when the question is about "Rome, Italy" will actively mislead the LLM. The score gate rejects low-quality retrieval before it reaches the prompt.</p>
+    </div>
+    <p>When the offline retrieval score is below the threshold, <strong>LiveSearchFallback</strong> fires a real-time Wikipedia API query, chunks the result on-the-fly, and uses those passages instead. If the answer turns out correct → the article is permanently added to the index (via IndexGrower) for future games.</p>
+    <table class="tbl">
+      <tr><th>Path</th><th>Score range</th><th>Gate threshold</th></tr>
+      <tr><td>Dense (cosine)</td><td>[-1, +1]</td><td>≥ 0.65</td></tr>
+      <tr><td>Hybrid RRF</td><td>[0.01, 0.10]</td><td>≥ 0.055</td></tr>
+      <tr><td>Reranker</td><td>model-dependent</td><td>≥ 0.75</td></tr>
+    </table>
+  </div>
+
+  <div class="section" id="rag-indexgrower">
+    <div class="sec-num">Section 6</div>
+    <h2 class="sec-title">IndexGrower — Self-Learning Knowledge Base</h2>
+    <div class="callout analogy">
+      <p><strong>A student who glues useful pages into their textbook after a successful test answer.</strong> But if the answer was wrong, they don't add those pages — maybe the article was misleading.</p>
+    </div>
+    <div class="code-block">
+      <div class="code-header">polimibot/rag/index_grower.py — 4-phase lifecycle</div>
+      <pre><code class="language-python">grower.buffer(article, question_id)  # Phase 1: Live search fetched an article
+                                     # Chunks available THIS question only
+# After server verdict:
+grower.confirm(question_id)  # Phase 2a: Correct → embed + add to FAISS & BM25 forever
+grower.discard(question_id)  # Phase 2b: Wrong  → silently drop, don't pollute index
+# End of game:
+grower.flush()               # Phase 3: Persist in-memory growth to disk files</code></pre>
+    </div>
+    <div class="callout design">
+      <p><strong>Only the Runner calls confirm/discard</strong> — the strategy doesn't know whether the answer was correct (that comes from the server AFTER submission). The runner is the only component that sees both the strategy output AND the server verdict.</p>
+    </div>
+  </div>
+
+</div><!-- /ch-content -->
+</div><!-- /ch-rag -->
+
+<!-- ══════════════════════════ CHAPTER: STRATEGIES -->
+<div class="chapter" id="ch-strat" data-ch="strat">
+<div class="ch-hero" style="--glow:16,185,129">
+  <div class="ch-badge">🧠 Chapter 3</div>
+  <h1>Strategy <span style="color:var(--accent)">Architecture</span></h1>
+  <p>Every answering algorithm from simplest (random coin-flip) to most complex (tiered ensemble with live search), and how they compose together.</p>
+  <div class="ch-tags">
+    <span class="ch-tag">Strategy Pattern</span><span class="ch-tag">Ensemble</span>
+    <span class="ch-tag">TieredStrategy</span><span class="ch-tag">RAGStrategy</span>
+  </div>
+</div>
+<div class="ch-content">
+
+  <div class="section" id="strat-contract">
+    <div class="sec-num">Section 1</div>
+    <h2 class="sec-title">The Contract — One Interface for All Strategies</h2>
+    <div class="callout analogy">
+      <p><strong>A game show host doesn't care how contestants decide.</strong> Genius, cheat sheet, or coin flip — the interaction is always: host gives question → contestant picks A/B/C/D. The Strategy pattern is that contract. Every algorithm implements the same interface so the runner can swap them without knowing internals.</p>
+    </div>
+    <div class="code-block">
+      <div class="code-header">polimibot/strategies/base.py — the Strategy contract</div>
+      <pre><code class="language-python">@dataclass(frozen=True)
+class StrategyInput:
+    question: str
+    options: tuple[str, ...]          # always 4; index 0..3 = A..D
+    level: int                        # 1..15 difficulty
+    category: Optional[Category] = None
+    time_budget_seconds: float = 25.0
+
+@dataclass(frozen=True)
+class StrategyOutput:
+    chosen_index: int                 # 0..3
+    confidence: float = 0.25          # honest uncertainty
+    is_abstain: bool = False          # True → runner uses fallback
+    extras: dict = field(...)         # probs, margin, passages, etc.
+
+class Strategy(ABC):
+    @abstractmethod
+    def answer(self, inp: StrategyInput) -> StrategyOutput: ...</code></pre>
+    </div>
+  </div>
+
+  <div class="section" id="strat-hierarchy">
+    <div class="sec-num">Section 2</div>
+    <h2 class="sec-title">The Accuracy Hierarchy</h2>
+    <table class="tbl">
+      <tr><th>Strategy</th><th>Accuracy</th><th>When used</th><th>Key feature</th></tr>
+      <tr><td>RandomStrategy</td><td>~25%</td><td>Baseline floor</td><td>Statistical control — every strategy must beat this</td></tr>
+      <tr><td>BaselineLLMStrategy</td><td>~55-65%</td><td>Easy questions, levels 1-5</td><td>Single LLM forward pass; logit scoring or CoT</td></tr>
+      <tr><td>RAGStrategy</td><td>~70-80%</td><td>Medium questions, levels 6-10</td><td>Retrieves Wikipedia passages; multi-query + RRF</td></tr>
+      <tr><td>ToolStrategy</td><td>~75-85% on maths</td><td>Maths (any level)</td><td>Deterministic calculator → 99% confidence when it fires</td></tr>
+      <tr><td>EnsembleStrategy</td><td>~80-90%</td><td>Hard questions, levels 11-15</td><td>Combines probability distributions from multiple strategies</td></tr>
+      <tr><td>TieredStrategy</td><td>~80-90%</td><td>Production (all)</td><td>Routes to cheapest strategy that can handle each question</td></tr>
+    </table>
+  </div>
+
+  <div class="section" id="strat-ensemble">
+    <div class="sec-num">Section 3</div>
+    <h2 class="sec-title">Ensemble — Wisdom of Crowds</h2>
+    <div class="callout analogy">
+      <p><strong>Ask three experts, combine their votes — weighted by confidence.</strong> If the calculator says 99% for option B but the LLM says 50% for B, the ensemble correctly lets the calculator dominate. If all three say B, the combined confidence is very high.</p>
+    </div>
+    <div class="code-block">
+      <div class="code-header">polimibot/strategies/ensemble_strategy.py — weighted fusion</div>
+      <pre><code class="language-python">def _weighted_fusion(self, active):
+    combined = {"A": 0.0, "B": 0.0, "C": 0.0, "D": 0.0}
+    total_w = sum(w for _, w in active)
+    for out, w in active:
+        probs = _extract_probs(out)  # full distribution or soft one-hot
+        norm_w = w / total_w
+        for letter in "ABCD":
+            combined[letter] += norm_w * probs[letter]
+    best = max(combined, key=lambda l: combined[l])
+    return StrategyOutput(chosen_index=ord(best)-ord("A"),
+                          confidence=combined[best])</code></pre>
+    </div>
+  </div>
+
+  <div class="section" id="strat-tiered">
+    <div class="sec-num">Section 4</div>
+    <h2 class="sec-title">TieredStrategy — Smart Cost Routing</h2>
+    <div class="callout analogy">
+      <p><strong>Hospital triage.</strong> Small cut → nurse (cheap, fast). Broken bone → doctor. Heart attack → specialist. Same accuracy as sending everyone to the specialist, but at a fraction of the cost.</p>
+    </div>
+    <div class="diagram">
+      <div class="mermaid">
+graph TD
+    Q["Question\n(level + category)"] --> MATHS{Category\n== MATHS?}
+    MATHS -->|Yes| MO["MathsTool + Agent"]
+    MATHS -->|No| LEVEL{Difficulty?}
+    LEVEL -->|"1-5 (easy)"| BL["BaselineLLM\n~0.5s, ~60% acc"]
+    LEVEL -->|"6-10 (medium)"| RA["RAGStrategy\n~1.2s, ~75% acc"]
+    LEVEL -->|"11-15 (hard)"| EN["Ensemble\n~2.5s, ~85% acc"]
+    BL --> ESC{Margin &lt; threshold?}
+    RA --> ESC
+    ESC -->|Yes| UP["↑ Escalate to\nnext tier"]
+    ESC -->|No| DONE["Submit answer"]
+    UP --> DONE
+    EN --> DONE
+    MO --> DONE
+    style MO fill:#1a1a3a,stroke:#8b5cf6,color:#e2e8f0
+    style EN fill:#1a2e1a,stroke:#ef4444,color:#e2e8f0
+      </div>
+    </div>
+  </div>
+
+</div><!-- /ch-content -->
+</div><!-- /ch-strat -->
+
+<!-- ══════════════════════════ CHAPTER: PROMPTS -->
+<div class="chapter" id="ch-prompt" data-ch="prompt">
+<div class="ch-hero" style="--glow:236,72,153">
+  <div class="ch-badge">💬 Chapter 4</div>
+  <h1>Prompt <span style="color:var(--accent)">Engineering</span></h1>
+  <p>How questions are formatted for the LLM — from zero-shot to chain-of-thought — and how answers are reliably extracted from generated text.</p>
+  <div class="ch-tags">
+    <span class="ch-tag">PromptStyle</span><span class="ch-tag">Few-Shot</span>
+    <span class="ch-tag">Chain-of-Thought</span><span class="ch-tag">parse_answer</span>
+  </div>
+</div>
+<div class="ch-content">
+
+  <div class="section" id="prompt-styles">
+    <div class="sec-num">Section 1</div>
+    <h2 class="sec-title">Five Prompt Styles</h2>
+    <table class="tbl">
+      <tr><th>Style</th><th>What the LLM sees</th><th>How to answer</th><th>Best for</th></tr>
+      <tr><td><code>ZERO_SHOT</code></td><td>Question + options only</td><td>Logit scoring</td><td>Fast, accurate, default</td></tr>
+      <tr><td><code>FEW_SHOT</code></td><td>2 example Q&amp;As + question</td><td>Logit scoring</td><td>Formatting consistency</td></tr>
+      <tr><td><code>ZERO_SHOT_COT</code></td><td>Question + "Think step by step"</td><td>Generate + parse</td><td>Complex reasoning</td></tr>
+      <tr><td><code>FEW_SHOT_COT</code></td><td>Worked examples + question</td><td>Generate + parse</td><td>Consistent reasoning</td></tr>
+      <tr><td><code>ELIMINATION</code></td><td>Per-option analysis scaffold</td><td>Generate + parse</td><td>Uncertain questions</td></tr>
+    </table>
+    <div class="callout warn">
+      <p><strong>CoT styles REQUIRE free generation.</strong> With logit scoring, we read the probability of the FIRST token — which for CoT is "Let me think..." not "B". The code raises a <code>ValueError</code> if you try to combine CoT + logit scoring.</p>
+    </div>
+  </div>
+
+  <div class="section" id="prompt-decoding">
+    <div class="sec-num">Section 2</div>
+    <h2 class="sec-title">Two Decoding Paths</h2>
+    <div class="code-block">
+      <div class="code-header">Logit scoring vs free generation</div>
+      <pre><code class="language-python"># PATH A: Logit scoring (use_score_options=True, default)
+# Prompt ends with "Answer:" — peek at next-token probabilities
+P("A") = 0.03  P("B") = 0.89  P("C") = 0.05  P("D") = 0.03
+# → chosen_index=1 (B), confidence=0.89
+# Cost: ONE forward pass, no text generated
+
+# PATH B: Free generation (use_score_options=False, CoT/Elimination)
+response = llm.generate(messages, max_new_tokens=256, temperature=0.0,
+                        stop_strings=(r"\boxed{A}", r"\boxed{B}", ...))
+# → "Let me think... passage [1] confirms 1870... \boxed{B}"
+idx = parse_answer(response.text)   # regex cascade → 1
+# Cost: many forward passes; confidence is binary (0.5 ok / 0.25 failed)</code></pre>
+    </div>
+  </div>
+
+  <div class="section" id="prompt-parse">
+    <div class="sec-num">Section 3</div>
+    <h2 class="sec-title">parse_answer — Regex Cascade</h2>
+    <div class="callout analogy">
+      <p><strong>Like a post office sorting machine with 6 conveyor belts.</strong> Packages (LLM text) go down the first belt — if it matches "Answer: B" → done. Didn't match → second belt tries "\boxed{B}". Third belt tries "the answer is B". Final belt tries any bare letter. Reliably handles all common output formats.</p>
+    </div>
+    <div class="code-block">
+      <div class="code-header">polimibot/prompts/templates.py — parse_answer cascade</div>
+      <pre><code class="language-python">def parse_answer(text: str) -> Optional[int]:
+    """6-level cascade. Returns 0-based index or None."""
+    # Level 1: boxed format  \boxed{B}
+    # Level 2: Answer: / Answer is B
+    # Level 3: "therefore B" / "choose B"
+    # Level 4: Option B / Choice B
+    # Level 5: (B) isolated in brackets
+    # Level 6: bare letter A/B/C/D as last resort
+    for pattern, extractor in _CASCADE:
+        m = pattern.search(text)
+        if m: return ord(extractor(m).upper()) - ord("A")
+    return None   # couldn't parse → strategy abstains</code></pre>
+    </div>
+  </div>
+
+</div><!-- /ch-content -->
+</div><!-- /ch-prompt -->
+
+<!-- ══════════════════════════ CHAPTER: TOOLS -->
+<div class="chapter" id="ch-tools" data-ch="tools">
+<div class="ch-hero" style="--glow:6,182,212">
+  <div class="ch-badge">🔧 Chapter 5</div>
+  <h1>Tools &amp; <span style="color:var(--accent)">Computation</span></h1>
+  <p>Deterministic arithmetic for maths questions, a sandboxed calculator, and a ReAct agent that calls tools in a reasoning loop.</p>
+  <div class="ch-tags">
+    <span class="ch-tag">MathsTool</span><span class="ch-tag">safe_eval</span>
+    <span class="ch-tag">AST Sandbox</span><span class="ch-tag">ReAct</span><span class="ch-tag">AgentStrategy</span>
+  </div>
+</div>
+<div class="ch-content">
+
+  <div class="section" id="tools-why">
+    <div class="sec-num">Section 1</div>
+    <h2 class="sec-title">Why Tools? — The LLM's Blind Spot</h2>
+    <div class="callout analogy">
+      <p><strong>A brilliant literature professor trying to do your taxes.</strong> They can discuss Dostoevsky for hours but will mess up "What is 15% of $47,200?" LLMs are language machines, not calculators. When you need 2+2=4 (not "approximately 4"), you need a tool.</p>
+    </div>
+    <div class="callout design">
+      <p><strong>Precision over Recall.</strong> The tool only answers when 100% sure. If it can't parse the expression, or the result doesn't match any option → abstain, let the LLM try. A wrong deterministic answer (99% confidence) damages calibration more than a wrong LLM guess.</p>
+    </div>
+  </div>
+
+  <div class="section" id="tools-safe-eval">
+    <div class="sec-num">Section 2</div>
+    <h2 class="sec-title">safe_eval — AST Sandbox</h2>
+    <div class="callout warn">
+      <p><strong>eval() is a security hole.</strong> The LLM's output feeds into this. <code>eval("__import__('os').system('rm -rf /')")</code> executes arbitrary code. The AST sandbox makes this physically impossible — only whitelisted node types pass.</p>
+    </div>
+    <div class="code-block">
+      <div class="code-header">polimibot/tools/calculator.py — whitelist approach</div>
+      <pre><code class="language-python">_BINARY_OPS = { ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod, ast.FloorDiv }
+_ALLOWED = { "sqrt": math.sqrt, "factorial": math.factorial, "log": math.log,
+             "sin": math.sin, "cos": math.cos, "pi": math.pi, "e": math.e, ... }
+
+def _eval_node(node):
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, (int, float)): return node.value
+        raise ValueError()                    # no strings!
+    if isinstance(node, ast.BinOp):
+        if type(node.op) not in _BINARY_OPS: raise ValueError()   # no bitwise!
+        return OP_MAP[type(node.op)](_eval_node(node.left), _eval_node(node.right))
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name): raise ValueError()  # no method()!
+        fn = _ALLOWED.get(node.func.id)
+        if fn is None: raise ValueError()    # not in whitelist!
+        return fn(*[_eval_node(a) for a in node.args])
+    raise ValueError(f"AST node {type(node).__name__} not allowed")  # deny default</code></pre>
+    </div>
+    <ul class="wt">
+      <li data-l="deny default">The final <code>raise ValueError</code> is the security critical line. Every unknown AST node type is rejected. New Python features can't sneak through.<span class="why">Whitelist (allow only safe things) beats blacklist (try to block dangerous things).</span></li>
+      <li data-l="mode=eval"><code>ast.parse(expr, mode='eval')</code> rejects statements like <code>x=5; x+1</code>. Only pure expressions allowed.<span class="why">Prevents variable assignment, imports, loops — anything beyond arithmetic.</span></li>
+    </ul>
+  </div>
+
+  <div class="section" id="tools-react">
+    <div class="sec-num">Section 3</div>
+    <h2 class="sec-title">AgentStrategy — ReAct Loop</h2>
+    <div class="callout analogy">
+      <p><strong>A contestant who whispers to a friend with a calculator.</strong> They read the question → think aloud → say "what's 2^10?" → friend says 1024 → they conclude "option B" and answer. The agent thinks (Reason) and calls tools (Act) in an iterative loop.</p>
+    </div>
+    <div class="code-block">
+      <div class="code-header">AgentStrategy — the 3-branch loop</div>
+      <pre><code class="language-python">for iteration in range(max_iterations + 1):
+    if time.monotonic() >= deadline: break
+
+    resp = llm.generate(messages, max_new_tokens=200, temperature=0.0)
+    text = resp.text.strip()
+    messages.append({"role": "assistant", "content": text})
+
+    # Branch 1: LLM emitted CALL: calc(expr) → execute tool
+    call = _extract_call(text)
+    if call:
+        tool_name, expression = call
+        observation = safe_eval(expression)  # deterministic computation
+        messages.append({"role": "user",
+                          "content": f"Tool result: {observation}\nNow give your final answer."})
+        continue   # loop again; LLM sees the result
+
+    # Branch 2: LLM emitted "Answer: B" → done
+    idx = parse_answer(text)
+    if idx is not None:
+        return StrategyOutput(chosen_index=idx, confidence=0.70)
+
+    # Branch 3: LLM is rambling → nudge it
+    messages.append({"role": "user", "content": "Please write: 'Answer: &lt;letter&gt;'."})</code></pre>
+    </div>
+  </div>
+
+</div><!-- /ch-content -->
+</div><!-- /ch-tools -->
+
+<!-- ══════════════════════════ CHAPTER: EVALUATION -->
+<div class="chapter" id="ch-eval" data-ch="eval">
+<div class="ch-hero" style="--glow:245,158,11">
+  <div class="ch-badge">📊 Chapter 6</div>
+  <h1>Evaluation <span style="color:var(--accent)">System</span></h1>
+  <p>How we measure, compare, and scientifically prove that each strategy improvement actually works — offline, reproducibly, without burning GPU hours.</p>
+  <div class="ch-tags">
+    <span class="ch-tag">GoldSet</span><span class="ch-tag">ECE</span><span class="ch-tag">Recall@k</span>
+    <span class="ch-tag">Calibration</span><span class="ch-tag">Leaderboard</span>
+  </div>
+</div>
+<div class="ch-content">
+
+  <div class="section" id="eval-why">
+    <div class="sec-num">Section 1</div>
+    <h2 class="sec-title">Why Evaluate Offline?</h2>
+    <div class="callout analogy">
+      <p><strong>Like preparing for a quiz show with practice tests.</strong> You collect past questions with known answers (gold set), test every new study method on the same set, and measure objectively. Differences reflect your method — not luck of the draw.</p>
+    </div>
+    <table class="tbl">
+      <tr><th>Problem</th><th>Solution</th></tr>
+      <tr><td>Can't replay live game questions</td><td>Mine past games → frozen <strong>gold set</strong></td></tr>
+      <tr><td>15 questions/game too noisy</td><td>Aggregate 100+ gold items across many games</td></tr>
+      <tr><td>Server downtime blocks development</td><td>Evaluate 100% offline — no network needed</td></tr>
+    </table>
+    <div class="callout warn">
+      <p><strong>The cardinal rule:</strong> Build the gold set ONCE from baseline runs, then FREEZE it. Never re-harvest mid-experiment — that silently grows your test set and invalidates all previous comparisons.</p>
+    </div>
+  </div>
+
+  <div class="section" id="eval-goldset">
+    <div class="sec-num">Section 2</div>
+    <h2 class="sec-title">The Gold Set — Mining Ground Truth</h2>
+    <div class="code-block">
+      <div class="code-header">polimibot/eval/gold_set.py — two recovery methods</div>
+      <pre><code class="language-python">def harvest_gold_set(runs_dir):
+    """Mine run logs for correct answers using two methods."""
+    confirmed = {}
+    wrong_indices = defaultdict(set)
+
+    for fp in runs_dir.glob("*.jsonl"):
+        for rec in load_jsonl(fp):
+            key = f"{cid}|{question_text}"
+            if rec["correct"] is True:
+                # Method 1: Direct — we submitted B and it was correct
+                confirmed[key] = GoldItem(correct_index=idx, ...)
+            elif rec["correct"] is False:
+                # Accumulate wrong answers for elimination
+                wrong_indices[key].add(idx)
+
+    # Method 2: Elimination — if we've seen 3 of 4 options wrong, 4th is gold
+    for key, wrong in wrong_indices.items():
+        if key not in confirmed and len(wrong) == 3:
+            correct_idx = (set(range(4)) - wrong).pop()
+            confirmed[key] = GoldItem(correct_index=correct_idx, ...)</code></pre>
+    </div>
+    <p>The <code>GoldSet</code> class wraps items with a chainable API: <code>.filter_category("maths")</code>, <code>.filter_level(max_level=5)</code>, <code>.take_per_level(3, seed=0)</code>, <code>.split(0.8, seed=42)</code>. Every method returns a NEW GoldSet — never mutates.</p>
+  </div>
+
+  <div class="section" id="eval-metrics">
+    <div class="sec-num">Section 3</div>
+    <h2 class="sec-title">Metrics — What We Measure</h2>
+    <table class="tbl">
+      <tr><th>Metric</th><th>Perfect</th><th>Measures</th></tr>
+      <tr><td><strong>Accuracy</strong></td><td>1.0</td><td>% of questions answered correctly</td></tr>
+      <tr><td><strong>ECE</strong></td><td>0.0</td><td>Confidence calibration — "when I say 90% sure, am I right 90%?"</td></tr>
+      <tr><td><strong>Latency p50/p95</strong></td><td>low</td><td>Response time — must fit within 25s budget</td></tr>
+      <tr><td><strong>Recall@k</strong></td><td>1.0</td><td>% of questions where correct article is in top-k retrieved</td></tr>
+      <tr><td><strong>MRR</strong></td><td>1.0</td><td>Mean Reciprocal Rank — rewards finding the article at rank 1</td></tr>
+    </table>
+    <div class="callout tip">
+      <p><strong>ECE matters for the Ensemble.</strong> EnsembleStrategy weights votes by confidence. If a strategy says "90% sure" but is only right 60% of the time, it incorrectly dominates the ensemble. Good calibration → better fusion decisions.</p>
+    </div>
+  </div>
+
+  <div class="section" id="eval-ablations">
+    <div class="sec-num">Section 4</div>
+    <h2 class="sec-title">Ablation Scripts — Controlled A/B Tests</h2>
+    <div class="callout analogy">
+      <p><strong>Like a scientific experiment: change ONE variable, measure the effect.</strong> Does RAG help? Run eval_rag.py: same LLM, same gold set, Baseline vs RAG — only the strategy differs.</p>
+    </div>
+    <table class="tbl">
+      <tr><th>Script</th><th>Compares</th><th>Gold subset</th></tr>
+      <tr><td><code>eval_rag.py</code></td><td>Baseline vs RAG</td><td>Full gold set</td></tr>
+      <tr><td><code>eval_tools.py</code></td><td>Baseline vs ToolStrategy</td><td>Maths only</td></tr>
+      <tr><td><code>eval_agent.py</code></td><td>Baseline vs Tool vs Agent</td><td>Maths only</td></tr>
+      <tr><td><code>eval_ensemble.py</code></td><td>Baseline vs RAG vs Ensemble</td><td>Hard tier (level ≥ 8)</td></tr>
+      <tr><td><code>eval_tiered.py</code></td><td>All strategies + final Tiered</td><td>Full gold set</td></tr>
+    </table>
+    <div class="code-block">
+      <div class="code-header">All eval scripts follow the same pattern</div>
+      <pre><code class="language-python">llm = LLM.load(...)          # build LLM ONCE (shared — controlled variable)
+baseline = BaselineLLMStrategy(llm, ...)
+rag      = RAGStrategy(llm, retriever, ...)
+
+baseline.warm_up()
+report_base = evaluate_strategy(baseline, gold_set)
+save_report(report_base, name="baseline__qwen", eval_dir=PATHS.eval_dir)
+report_rag = evaluate_strategy(rag, gold_set)
+save_report(report_rag,  name="rag__qwen",      eval_dir=PATHS.eval_dir)
+
+# Leaderboard picks up ALL *.json in eval_dir automatically
+# python -m polimibot.eval.make_leaderboard → leaderboard.csv</code></pre>
+    </div>
+  </div>
+
+</div><!-- /ch-content -->
+</div><!-- /ch-eval -->
+
+</main><!-- /main -->
+</div><!-- /app -->
+
+<!-- ═══════════════════════════════════════════════ JS -->
+<script>
+// Chapter metadata
+const CHAPTERS = {
+  home:   { label: 'Overview',    sections: [
+    { id: 'home-overview', label: 'Big Picture' },
+    { id: 'home-chapters', label: 'Chapter Guide' },
+  ]},
+  game:   { label: 'Game',        sections: [
+    { id: 'game-layers',   label: 'Three Layers' },
+    { id: 'game-adapter',  label: 'The Adapter' },
+    { id: 'game-loop',     label: 'Game Loop' },
+    { id: 'game-watchdog', label: 'Watchdog & Pacer' },
+  ]},
+  rag:    { label: 'RAG',         sections: [
+    { id: 'rag-what',       label: 'What is RAG?' },
+    { id: 'rag-chunking',   label: 'Chunking' },
+    { id: 'rag-embeddings', label: 'Embeddings' },
+    { id: 'rag-search',     label: 'FAISS + BM25 + RRF' },
+    { id: 'rag-gate',       label: 'Score Gate & Live Search' },
+    { id: 'rag-indexgrower',label: 'IndexGrower' },
+  ]},
+  strat:  { label: 'Strategies',  sections: [
+    { id: 'strat-contract',  label: 'The Contract' },
+    { id: 'strat-hierarchy', label: 'Accuracy Hierarchy' },
+    { id: 'strat-ensemble',  label: 'Ensemble Fusion' },
+    { id: 'strat-tiered',    label: 'Tiered Routing' },
+  ]},
+  prompt: { label: 'Prompts',     sections: [
+    { id: 'prompt-styles',   label: 'Five Styles' },
+    { id: 'prompt-decoding', label: 'Decoding Paths' },
+    { id: 'prompt-parse',    label: 'parse_answer' },
+  ]},
+  tools:  { label: 'Tools',       sections: [
+    { id: 'tools-why',      label: "Why Tools?" },
+    { id: 'tools-safe-eval',label: 'safe_eval Sandbox' },
+    { id: 'tools-react',    label: 'AgentStrategy (ReAct)' },
+  ]},
+  eval:   { label: 'Evaluation',  sections: [
+    { id: 'eval-why',       label: 'Why Offline?' },
+    { id: 'eval-goldset',   label: 'Gold Set' },
+    { id: 'eval-metrics',   label: 'Metrics' },
+    { id: 'eval-ablations', label: 'Ablation Scripts' },
+  ]},
+};
+
+let currentCh = 'home';
+
+function showChapter(ch) {
+  // Hide all chapters
+  document.querySelectorAll('.chapter').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+
+  // Show selected
+  document.getElementById('ch-' + ch).classList.add('active');
+  document.querySelector(`.tab-btn[data-ch="${ch}"]`).classList.add('active');
+  currentCh = ch;
+
+  // Update sidebar
+  buildSidebar(ch);
+
+  // Re-render Mermaid for newly visible diagrams
+  if (window.mermaid) {
+    setTimeout(() => {
+      document.querySelectorAll('#ch-' + ch + ' .mermaid:not([data-processed])').forEach(el => {
+        try { mermaid.init(undefined, el); } catch(e) {}
+      });
+    }, 50);
+  }
+
+  // Re-run Prism
+  if (window.Prism) {
+    setTimeout(() => Prism.highlightAllUnder(document.getElementById('ch-' + ch)), 80);
+  }
+
+  window.scrollTo(0, 0);
+}
+
+function buildSidebar(ch) {
+  const sidebar = document.getElementById('sidebar');
+  const data = CHAPTERS[ch];
+  if (!data) return;
+  sidebar.innerHTML = `<div class="sidebar-section">
+    <div class="sidebar-heading">${data.label}</div>
+    ${data.sections.map(s =>
+      `<a class="sidebar-link" onclick="jumpTo('${s.id}')" data-id="${s.id}">${s.label}</a>`
+    ).join('')}
+  </div>`;
+  updateActiveSidebarLink();
+}
+
+function jumpTo(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    const top = el.getBoundingClientRect().top + window.scrollY - 80;
+    window.scrollTo({ top, behavior: 'smooth' });
+  }
+}
+
+function updateActiveSidebarLink() {
+  const links = document.querySelectorAll('.sidebar-link[data-id]');
+  links.forEach(link => {
+    const sec = document.getElementById(link.dataset.id);
+    if (!sec) return;
+    const rect = sec.getBoundingClientRect();
+    if (rect.top <= 100 && rect.bottom > 0) {
+      links.forEach(l => l.classList.remove('active'));
+      link.classList.add('active');
+    }
+  });
+}
+
+window.addEventListener('scroll', updateActiveSidebarLink);
+
+// Init
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'dark',
+  themeVariables: {
+    primaryColor: '#1a2235', primaryTextColor: '#e2e8f0',
+    primaryBorderColor: '#a78bfa', lineColor: '#4b5563',
+    secondaryColor: '#111827', tertiaryColor: '#0a0e1a',
+  }
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  buildSidebar('home');
+  // Init mermaid for home chapter
+  document.querySelectorAll('#ch-home .mermaid').forEach(el => {
+    try { mermaid.init(undefined, el); } catch(e) {}
+  });
+  Prism.highlightAll();
+});
+</script>
+
+</body>
+</html>
