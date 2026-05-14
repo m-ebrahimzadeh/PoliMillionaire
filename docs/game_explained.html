@@ -1,0 +1,1050 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PoliMillionaire — Game Architecture Explained</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<style>
+:root {
+    --bg-primary: #0a0e1a;
+    --bg-secondary: #111827;
+    --bg-card: #1a2235;
+    --bg-code: #0d1117;
+    --accent: #34d399;
+    --accent-light: #6ee7b7;
+    --accent-dim: rgba(52, 211, 153, 0.1);
+    --accent2: #38bdf8;
+    --accent3: #f59e0b;
+    --accent4: #f472b6;
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --border: #1e293b;
+    --border-accent: rgba(52, 211, 153, 0.3);
+    --red: #ef4444;
+    --purple: #8b5cf6;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.7;
+    overflow-x: hidden;
+}
+
+.hero {
+    position: relative;
+    padding: 100px 40px 80px;
+    text-align: center;
+    background: linear-gradient(135deg, #0a0e1a 0%, #061a12 50%, #0a1628 100%);
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+}
+.hero::before {
+    content: '';
+    position: absolute;
+    top: -50%; left: -50%;
+    width: 200%; height: 200%;
+    background: radial-gradient(ellipse at center, rgba(52,211,153,0.05) 0%, transparent 50%);
+    animation: pulse 8s infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 0.5; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.05); }
+}
+.hero h1 {
+    font-size: 3.2rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--accent-light), var(--accent), #059669);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 16px;
+    position: relative;
+}
+.hero .subtitle {
+    font-size: 1.2rem;
+    color: var(--text-secondary);
+    max-width: 680px;
+    margin: 0 auto 28px;
+    position: relative;
+}
+.hero-tags {
+    display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;
+    position: relative;
+}
+.tag {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.72rem; font-weight: 500;
+    padding: 4px 12px; border-radius: 100px;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.nav {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(10, 14, 26, 0.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 40px; overflow-x: auto;
+}
+.nav-inner {
+    display: flex; gap: 6px;
+    max-width: 1200px; margin: 0 auto;
+    flex-wrap: wrap; justify-content: center;
+}
+.nav a {
+    color: var(--text-secondary); text-decoration: none;
+    font-size: 0.78rem; font-weight: 500;
+    padding: 5px 12px; border-radius: 6px;
+    transition: all 0.2s; white-space: nowrap;
+}
+.nav a:hover { color: var(--accent-light); background: var(--accent-dim); }
+
+.container { max-width: 920px; margin: 0 auto; padding: 60px 40px; }
+
+.section { margin-bottom: 80px; }
+.section-number {
+    font-size: 0.72rem; font-weight: 700;
+    letter-spacing: 2px; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 8px;
+}
+.section h2 { font-size: 1.9rem; font-weight: 700; margin-bottom: 20px; }
+.section h3 { font-size: 1.2rem; font-weight: 600; margin: 32px 0 14px; }
+
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px; padding: 26px; margin: 20px 0;
+}
+.card.analogy {
+    border-left: 4px solid var(--accent);
+    background: linear-gradient(135deg, var(--accent-dim), transparent);
+}
+.card.analogy::before {
+    content: '💡 Real-World Analogy';
+    display: block; font-size: 0.75rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 12px;
+}
+.card.warning {
+    border-left: 4px solid var(--red);
+    background: rgba(239, 68, 68, 0.05);
+}
+.card.warning::before {
+    content: '⚠️ Important';
+    display: block; font-size: 0.75rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--red); margin-bottom: 12px;
+}
+.card.design {
+    border-left: 4px solid var(--purple);
+    background: rgba(139, 92, 246, 0.05);
+}
+.card.design::before {
+    content: '🏗️ Design Decision';
+    display: block; font-size: 0.75rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--purple); margin-bottom: 12px;
+}
+.card.tip {
+    border-left: 4px solid var(--accent3);
+    background: rgba(245, 158, 11, 0.05);
+}
+.card.tip::before {
+    content: '✅ Key Insight';
+    display: block; font-size: 0.75rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--accent3); margin-bottom: 12px;
+}
+
+.code-block {
+    position: relative; margin: 20px 0;
+    border-radius: 10px; overflow: hidden;
+    border: 1px solid var(--border);
+}
+.code-block .filename {
+    background: var(--bg-secondary); padding: 8px 16px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem; color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+}
+.code-block pre {
+    margin: 0 !important; padding: 20px !important;
+    background: var(--bg-code) !important;
+    font-size: 0.8rem !important; line-height: 1.6 !important;
+    overflow-x: auto;
+}
+.code-block code { font-family: 'JetBrains Mono', monospace !important; }
+
+.walkthrough { margin: 20px 0; padding: 0; list-style: none; }
+.walkthrough li {
+    position: relative; padding: 12px 16px 12px 56px;
+    margin: 8px 0; background: var(--bg-secondary);
+    border-radius: 8px; border: 1px solid var(--border); font-size: 0.88rem;
+}
+.walkthrough li::before {
+    content: attr(data-line);
+    position: absolute; left: 10px; top: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.68rem; font-weight: 600;
+    color: var(--accent); background: var(--accent-dim);
+    padding: 2px 7px; border-radius: 4px;
+}
+.walkthrough .purpose {
+    color: var(--text-secondary); font-style: italic;
+    display: block; margin-top: 4px; font-size: 0.8rem;
+}
+
+.mermaid-wrapper {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 28px; margin: 24px 0; overflow-x: auto;
+}
+.mermaid { display: flex; justify-content: center; }
+
+.comparison-table { width: 100%; border-collapse: collapse; margin: 24px 0; font-size: 0.83rem; }
+.comparison-table th {
+    background: var(--bg-secondary); padding: 11px 14px;
+    text-align: left; font-weight: 600; color: var(--accent);
+    border-bottom: 2px solid var(--border-accent);
+}
+.comparison-table td {
+    padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text-secondary);
+}
+.comparison-table tr:hover td { background: rgba(52, 211, 153, 0.03); }
+
+/* Model cards */
+.model-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 14px; margin: 24px 0;
+}
+.model-card {
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px;
+    transition: border-color 0.2s;
+}
+.model-card:hover { border-color: var(--accent); }
+.model-card .model-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem; font-weight: 600;
+    color: var(--accent2); margin-bottom: 6px;
+}
+.model-card .model-desc { font-size: 0.8rem; color: var(--text-secondary); }
+
+/* Layer diagram */
+.layer-stack {
+    display: flex; flex-direction: column; gap: 0; margin: 24px 0;
+}
+.layer {
+    padding: 16px 20px;
+    display: flex; align-items: center; gap: 14px;
+    border: 1px solid var(--border);
+}
+.layer:first-child { border-radius: 10px 10px 0 0; }
+.layer:last-child { border-radius: 0 0 10px 10px; border-top: none; }
+.layer + .layer { border-top: none; }
+.layer-num {
+    width: 28px; height: 28px; min-width: 28px;
+    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 0.75rem; font-weight: 700;
+}
+.layer-content { flex: 1; }
+.layer-content strong { color: var(--text-primary); }
+.layer-content .layer-detail { font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px; }
+.layer.l1 { background: rgba(56,189,248,0.05); }
+.layer.l1 .layer-num { background: rgba(56,189,248,0.2); color: var(--accent2); }
+.layer.l2 { background: rgba(245,158,11,0.05); }
+.layer.l2 .layer-num { background: rgba(245,158,11,0.2); color: var(--accent3); }
+.layer.l3 { background: rgba(52,211,153,0.05); }
+.layer.l3 .layer-num { background: rgba(52,211,153,0.2); color: var(--accent); }
+.layer.l4 { background: rgba(139,92,246,0.05); }
+.layer.l4 .layer-num { background: rgba(139,92,246,0.2); color: var(--purple); }
+
+/* Pyramid */
+.pyramid {
+    display: flex; flex-direction: column-reverse;
+    align-items: center; gap: 4px; margin: 24px auto; max-width: 380px;
+}
+.pyramid-row {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 16px;
+    font-size: 0.8rem; font-family: 'JetBrains Mono', monospace;
+}
+.pyramid-row.top { border-color: var(--accent3); background: rgba(245,158,11,0.08); }
+.pyramid-row.milestone { border-color: var(--accent2); background: rgba(56,189,248,0.08); }
+.pyramid-row .level-label { color: var(--text-muted); }
+.pyramid-row .amount { color: var(--accent3); font-weight: 600; }
+
+@media (max-width: 768px) {
+    .hero { padding: 60px 20px 50px; }
+    .hero h1 { font-size: 2.2rem; }
+    .container { padding: 40px 20px; }
+    .section h2 { font-size: 1.5rem; }
+}
+
+p { margin-bottom: 16px; color: var(--text-secondary); }
+strong { color: var(--text-primary); }
+code:not([class*="language-"]) {
+    font-family: 'JetBrains Mono', monospace;
+    background: rgba(52, 211, 153, 0.1);
+    padding: 2px 6px; border-radius: 4px;
+    font-size: 0.83em; color: var(--accent-light);
+}
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<div class="hero">
+    <h1>Game Architecture</h1>
+    <p class="subtitle">How PoliMillionaire connects to the game server, manages sessions, and runs the complete question-answer loop — from HTTP API to strategy output</p>
+    <div class="hero-tags">
+        <span class="tag">MillionaireClient</span>
+        <span class="tag">GameAdapter</span>
+        <span class="tag">GameSession</span>
+        <span class="tag">Runner</span>
+        <span class="tag">Watchdog</span>
+        <span class="tag">Pacer</span>
+        <span class="tag">Auth Cookie</span>
+    </div>
+</div>
+
+<!-- Navigation -->
+<nav class="nav">
+    <div class="nav-inner">
+        <a href="#s1">1. The Game Show</a>
+        <a href="#s2">2. Architecture Layers</a>
+        <a href="#s3">3. HTTP Client</a>
+        <a href="#s4">4. Data Models</a>
+        <a href="#s5">5. Adapter Pattern</a>
+        <a href="#s6">6. The Game Loop</a>
+        <a href="#s7">7. Watchdog & Pacer</a>
+        <a href="#s8">8. Full Game Trace</a>
+    </div>
+</nav>
+
+<div class="container">
+
+<!-- ═══════════════════ SECTION 1: The Game Show ═══════════════════ -->
+<section class="section" id="s1">
+    <div class="section-number">Section 01</div>
+    <h2>The Game Show — What Are We Playing?</h2>
+
+    <div class="card analogy">
+        <p><strong>PoliMillionaire is "Who Wants to Be a Millionaire?" — but the contestant is an AI bot.</strong> The server asks questions. The bot has 30 seconds to answer. Correct → advance to next level and earn more money. Wrong → game over (but keep a "safe amount" from milestone levels). Reach level 15 → maximum prize.</p>
+    </div>
+
+    <h3>The Money Pyramid</h3>
+    <p>Each level corresponds to a prize amount. Getting a question wrong drops you back to the last "milestone" (safe amount). The pyramid structure creates increasing stakes:</p>
+
+    <div class="pyramid">
+        <div class="pyramid-row">
+            <span class="level-label">Level 1</span>
+            <span class="amount">€100</span>
+        </div>
+        <div class="pyramid-row">
+            <span class="level-label">Level 2</span>
+            <span class="amount">€200</span>
+        </div>
+        <div class="pyramid-row milestone">
+            <span class="level-label">Level 5 ⭐ safe</span>
+            <span class="amount">€1,000</span>
+        </div>
+        <div class="pyramid-row">
+            <span class="level-label">Level 6</span>
+            <span class="amount">€2,000</span>
+        </div>
+        <div class="pyramid-row milestone">
+            <span class="level-label">Level 10 ⭐ safe</span>
+            <span class="amount">€32,000</span>
+        </div>
+        <div class="pyramid-row">
+            <span class="level-label">Level 11-14</span>
+            <span class="amount">€64K–€500K</span>
+        </div>
+        <div class="pyramid-row top">
+            <span class="level-label">Level 15 🏆</span>
+            <span class="amount">€1,000,000</span>
+        </div>
+    </div>
+
+    <h3>The Four Competitions</h3>
+
+    <table class="comparison-table">
+        <tr><th>ID</th><th>Name</th><th>Category</th><th>Strategy note</th></tr>
+        <tr><td>0</td><td>Entertainment</td><td>ENTERTAINMENT</td><td>Pop culture, movies, music — LLM's strong suit</td></tr>
+        <tr><td>1</td><td>Ancient History and Politics</td><td>HISTORY</td><td>RAG excels — obscure historical facts</td></tr>
+        <tr><td>2</td><td>Science and Nature</td><td>SCIENCE</td><td>Mix of common facts and specific details</td></tr>
+        <tr><td>3</td><td>Maths</td><td>MATHS</td><td>MathsTool + AgentStrategy for computation</td></tr>
+    </table>
+
+    <div class="card tip">
+        <p><strong>Why category matters:</strong> The TieredStrategy routes Maths questions to MathsTool regardless of level. History and Science questions benefit most from RAG (Wikipedia coverage is strong). The category is embedded in every <code>StrategyInput</code> so strategies can specialize their behavior.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════ SECTION 2: Architecture Layers ═══════════════════ -->
+<section class="section" id="s2">
+    <div class="section-number">Section 02</div>
+    <h2>Architecture Layers — Why Three Separate Layers?</h2>
+
+    <div class="card analogy">
+        <p><strong>Imagine a phone interpreter at a diplomatic summit.</strong> The diplomat (Strategy) speaks only English and doesn't know foreign protocol. The interpreter (Adapter) translates between English and the foreign language. The phone (API Client) handles the actual transmission. Separating these three concerns means you can change any one without touching the others: swap the phone, change the interpreter, or replace the diplomat independently.</p>
+    </div>
+
+    <div class="layer-stack">
+        <div class="layer l4">
+            <div class="layer-num">4</div>
+            <div class="layer-content">
+                <strong>Strategy Layer</strong>
+                <div class="layer-detail">polimibot/strategies/ — RAGStrategy, TieredStrategy, EnsembleStrategy, etc.<br/>Speaks only in StrategyInput/Output. Knows nothing about HTTP or game sessions.</div>
+            </div>
+        </div>
+        <div class="layer l3">
+            <div class="layer-num">3</div>
+            <div class="layer-content">
+                <strong>Runner (polimibot/runner.py)</strong>
+                <div class="layer-detail">play_game() — orchestrates the game loop: adapter + strategy + watchdog + logger + IndexGrower.<br/>The spine that connects everything.</div>
+            </div>
+        </div>
+        <div class="layer l2">
+            <div class="layer-num">2</div>
+            <div class="layer-content">
+                <strong>Adapter Layer (polimibot/game/)</strong>
+                <div class="layer-detail">GameAdapter + domain types (GameQuestion, AnswerOutcome, SessionRecord).<br/>The anti-corruption layer: translates between API types and polimibot domain types.</div>
+            </div>
+        </div>
+        <div class="layer l1">
+            <div class="layer-num">1</div>
+            <div class="layer-content">
+                <strong>API Client (millionaire_client/)</strong>
+                <div class="layer-detail">MillionaireClient, BaseClient, GameSession, AuthModule, CompetitionsModule.<br/>Pure HTTP communication with the game server. No game logic.</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card design">
+        <p><strong>The Adapter Pattern enforces a strict boundary.</strong> The rule: "Anywhere outside <code>adapter.py</code> importing <code>millionaire_client</code> is a code smell." This means all 30+ strategies, the evaluator, the logging system — none of them ever touch the API client directly. Benefits: (1) you can test strategies with mock game adapters; (2) if the API changes, you fix only one file; (3) strategies are clean and focused.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════ SECTION 3: HTTP Client ═══════════════════ -->
+<section class="section" id="s3">
+    <div class="section-number">Section 03</div>
+    <h2>The HTTP Client — Talking to the Server</h2>
+
+    <div class="card analogy">
+        <p><strong>Think of it like a bank teller system.</strong> You (the application) give orders to the teller (MillionaireClient). The teller handles all the paperwork: authentication tokens, request formatting, error translation, and response parsing. You never deal with raw HTTP — just clean Python method calls.</p>
+    </div>
+
+    <h3>Authentication: Cookie-Based Sessions</h3>
+
+    <div class="code-block">
+        <div class="filename">millionaire_client/auth.py + base.py — login flow</div>
+        <pre><code class="language-python">class AuthModule:
+    def login(self, username: str, password: str) -> User:
+        # POST /api/auth/login  → server sets "polimillionaire_auth" cookie
+        response = self._client.post(
+            "/api/auth/login",
+            data={"username": username, "password": password},
+            auth_required=False   # login itself doesn't need prior auth
+        )
+        # The session cookie is now stored in requests.Session() automatically
+        return User.from_dict(response["user"])
+
+class BaseClient:
+    @property
+    def is_authenticated(self) -> bool:
+        # Just checks if the cookie exists in the session
+        return "polimillionaire_auth" in self._session.cookies</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Cookie"><code>requests.Session()</code> automatically stores and sends cookies with every subsequent request — just like a browser session. Login once, all future requests carry the auth cookie automatically.<span class="purpose">No need to manually add auth headers to every request. The session handles it transparently.</span></li>
+        <li data-line="auth_required=False">The login endpoint itself doesn't need prior authentication (you can't log in if you need to be logged in first). All other endpoints default to <code>auth_required=True</code>.<span class="purpose">Guards against accidentally calling protected endpoints without logging in first.</span></li>
+    </ul>
+
+    <h3>Error Handling</h3>
+
+    <div class="code-block">
+        <div class="filename">millionaire_client/base.py — response handling</div>
+        <pre><code class="language-python">def _handle_response(self, response: requests.Response) -> dict:
+    """Translate HTTP status codes → typed Python exceptions."""
+    if response.status_code in (200, 201, 204):
+        return response.json() if response.text else {}
+    
+    message = data.get("message", f"HTTP {response.status_code}")
+    
+    if response.status_code == 401:  raise AuthenticationError(message)
+    if response.status_code == 404:  raise NotFoundError(message)
+    if response.status_code == 400:  raise ValidationError(message)
+    if response.status_code == 429:  raise RateLimitError(message)
+    if response.status_code >= 500:  raise ServerError(message)
+    raise MillionaireError(message)</code></pre>
+    </div>
+
+    <div class="card tip">
+        <p><strong>Typed exceptions mean specific error handling.</strong> Instead of catching a generic <code>requests.HTTPError</code> and inspecting status codes everywhere, callers can <code>except AuthenticationError</code> or <code>except RateLimitError</code> specifically. The runner catches all exceptions broadly to prevent a game-crashing bug.</p>
+    </div>
+
+    <h3>The Competition → Category Mapping</h3>
+    <p>The game server knows nothing about "categories" — it just has competitions with IDs 0-3. The bot maps them:</p>
+
+    <div class="code-block">
+        <div class="filename">polimibot/config.py — CATEGORIES mapping</div>
+        <pre><code class="language-python">CATEGORIES: dict[int, CompetitionInfo] = {
+    0: CompetitionInfo(0, Category.ENTERTAINMENT, "Entertainment"),
+    1: CompetitionInfo(1, Category.HISTORY,       "Ancient History and Politics"),
+    2: CompetitionInfo(2, Category.SCIENCE,       "Science and Nature"),
+    3: CompetitionInfo(3, Category.MATHS,         "Maths"),
+}
+
+# In the runner:
+def _category_for(competition_id: int) -> Optional[Category]:
+    info = CATEGORIES.get(competition_id)
+    return info.category if info else None</code></pre>
+    </div>
+</section>
+
+<!-- ═══════════════════ SECTION 4: Data Models ═══════════════════ -->
+<section class="section" id="s4">
+    <div class="section-number">Section 04</div>
+    <h2>Data Models — The Shape of Game Data</h2>
+
+    <div class="card analogy">
+        <p><strong>Think of these as official government forms.</strong> Every piece of information that passes between the server and the bot has a defined shape: exactly these fields, these types. No surprises. The models convert raw JSON dictionaries into typed Python objects so you get autocomplete and type safety throughout the codebase.</p>
+    </div>
+
+    <h3>The Model Hierarchy</h3>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+classDiagram
+    class GameState {
+        session_id: int
+        competition: Competition
+        status: GameStatus
+        earned_amount: float
+        current_level: int
+        question: Question?
+        question_deadline: datetime?
+        money_pyramid: MoneyLevel[]
+        +in_progress: bool
+        +is_game_over: bool
+        +time_remaining: float?
+    }
+    
+    class Question {
+        id: int
+        text: str
+        options: Option[]
+        level: int
+        +get_option_by_id()
+        +get_option_by_text()
+    }
+    
+    class Option {
+        id: int
+        text: str
+    }
+    
+    class Competition {
+        id: int
+        name: str
+        max_levels: int
+        is_infinite: bool
+    }
+    
+    class AnswerResult {
+        correct: bool?
+        game_over: bool
+        earned_amount: float
+        timed_out: bool
+        question: Question?
+    }
+    
+    class MoneyLevel {
+        level: int
+        amount: float
+    }
+
+    GameState --> Competition
+    GameState --> Question
+    GameState --> MoneyLevel
+    Question --> Option
+        </div>
+    </div>
+
+    <h3>The Key Models Explained</h3>
+
+    <div class="model-grid">
+        <div class="model-card">
+            <div class="model-name">GameState</div>
+            <div class="model-desc">Complete snapshot of a game in progress: current level, earned amount, active question, time remaining, money pyramid.</div>
+        </div>
+        <div class="model-card">
+            <div class="model-name">Question</div>
+            <div class="model-desc">One quiz question: text + 4 options (each with an ID and text). The option ID is needed for submitting answers.</div>
+        </div>
+        <div class="model-card">
+            <div class="model-name">AnswerResult</div>
+            <div class="model-desc">Server's response after submitting: correct/wrong/None, game_over, new earned_amount, next question if continuing.</div>
+        </div>
+        <div class="model-card">
+            <div class="model-name">GameStatus</div>
+            <div class="model-desc">Enum: IN_PROGRESS, COMPLETED (won), FAILED (wrong answer), TIMEOUT (30s expired).</div>
+        </div>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">millionaire_client/models.py — key fields explained</div>
+        <pre><code class="language-python">@dataclass
+class AnswerResult:
+    correct: Optional[bool] = None
+    # None = server doesn't reveal (unusual)
+    # True = correct answer, continue
+    # False = wrong answer, game over
+
+    game_over: bool = False     # True on both wrong answer AND final level
+    earned_amount: float = 0    # Total prize accumulated so far
+    timed_out: bool = False     # True if 30s deadline was exceeded
+    
+    reached_level: Optional[int] = None   # The level you "secured"
+    current_level: Optional[int] = None   # Level of the just-answered question
+    
+    question: Optional[Question] = None   # Next question (if game continues)
+    money_pyramid: List[MoneyLevel] = ... # Updated prize pyramid</code></pre>
+    </div>
+
+    <div class="card warning">
+        <p><strong>The Level 0 Bug:</strong> The server sometimes omits the <code>level</code> field in the per-question payload, causing <code>Question.from_dict</code> to default it to 0. The <code>GameAdapter</code> detects this and injects the session's <code>current_level</code> as the correct value. Without this fix, every question would silently route to the "easy tier" (levels 1-5) in TieredStrategy.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════ SECTION 5: Adapter Pattern ═══════════════════ -->
+<section class="section" id="s5">
+    <div class="section-number">Section 05</div>
+    <h2>The Adapter Pattern — Anti-Corruption Layer</h2>
+
+    <div class="card analogy">
+        <p><strong>Imagine a power adapter when traveling internationally.</strong> Your laptop (the strategy) has its own plug shape. The foreign socket (API client) has a different shape. The adapter converts between them without changing either side. If the server API changes (different socket), you only replace the adapter — your laptop is unchanged.</p>
+    </div>
+
+    <p>The <code>GameAdapter</code> does three things:</p>
+    <ol style="margin: 12px 0 16px 24px; color: var(--text-secondary); font-size: 0.88rem; line-height: 2;">
+        <li>Translates API types (<code>millionaire_client.Question</code>) → domain types (<code>GameQuestion</code>)</li>
+        <li>Exposes a clean interface for the runner (no HTTP knowledge needed)</li>
+        <li>Fixes known server quirks (the level=0 bug)</li>
+    </ol>
+
+    <div class="code-block">
+        <div class="filename">polimibot/game/adapter.py — the translation layer</div>
+        <pre><code class="language-python">def _to_game_question(q: Optional[ApiQuestion]) -> Optional[GameQuestion]:
+    """API question → our frozen DTO. None passes through (game over)."""
+    if q is None:
+        return None
+    return GameQuestion(
+        text=q.text,
+        options=tuple(opt.text for opt in q.options),  # extract text only
+        level=q.level,
+    )
+
+class GameAdapter:
+    """Thin wrapper over MillionaireClient. One adapter == one game."""
+
+    def __init__(self, client: MillionaireClient, competition_id: int) -> None:
+        self._session = client.game.start(competition_id=competition_id)
+        # ...
+
+    @property
+    def current_question(self) -> Optional[GameQuestion]:
+        q = _to_game_question(self._session.current_question)
+        if q is None:
+            return None
+        if q.level == 0:
+            # Server quirk: level sometimes omitted → injected from session
+            q = GameQuestion(text=q.text, options=q.options,
+                           level=self._session.current_level)
+        return q
+
+    def submit_answer(self, option_index: int) -> AnswerOutcome:
+        """Submit by 0-indexed option. Returns a typed outcome."""
+        options = self._session.current_question.options
+        option_id = options[option_index].id   # convert index → server ID
+        result = self._session.answer(option_id=option_id)
+        return AnswerOutcome(
+            correct=result.correct,
+            timed_out=result.timed_out,
+            game_over=result.game_over,
+            earned_amount=result.earned_amount,
+            ...
+        )</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="text only"><code>tuple(opt.text for opt in q.options)</code> — the strategy only needs the text of each option, not the server-side option ID. Options are stored as plain strings.<span class="purpose">Strategies work with clean domain objects. They never need to know about option IDs.</span></li>
+        <li data-line="option_index → ID">The runner submits <code>option_index</code> (0, 1, 2, or 3). The adapter looks up <code>options[option_index].id</code> and sends that to the server.<span class="purpose">The rest of the system uses 0-based indices. The server uses integer IDs. Translation happens here, once.</span></li>
+        <li data-line="AnswerOutcome">The return type is <code>AnswerOutcome</code> (our domain type), not <code>AnswerResult</code> (the API type). The runner never touches <code>AnswerResult</code>.<span class="purpose">If the server adds new fields to AnswerResult, only the adapter needs updating — the runner is unaffected.</span></li>
+    </ul>
+
+    <h3>Domain Types vs API Types</h3>
+
+    <table class="comparison-table">
+        <tr><th>API type (millionaire_client)</th><th>Domain type (polimibot/game)</th><th>What was simplified</th></tr>
+        <tr><td><code>Question + list[Option]</code></td><td><code>GameQuestion</code></td><td>Options are now plain strings (no IDs). Level=0 bug fixed.</td></tr>
+        <tr><td><code>AnswerResult</code></td><td><code>AnswerOutcome</code></td><td>Only the fields the runner cares about. No money_pyramid redundancy.</td></tr>
+        <tr><td><code>GameState</code></td><td>n/a (not exposed)</td><td>Runner only sees individual questions and outcomes, not raw state.</td></tr>
+        <tr><td><code>Session + Competition</code></td><td><code>SessionRecord</code></td><td>End-of-game summary with only the fields needed for logging.</td></tr>
+    </table>
+</section>
+
+<!-- ═══════════════════ SECTION 6: The Game Loop ═══════════════════ -->
+<section class="section" id="s6">
+    <div class="section-number">Section 06</div>
+    <h2>The Game Loop — Runner Orchestrates Everything</h2>
+
+    <div class="card analogy">
+        <p><strong>The runner is the show producer behind the scenes.</strong> The host (server) sends questions. The contestant (strategy) answers. The producer (runner) coordinates everything: starts the show, starts the clock, cuts the contestant off if they run over time, logs everything, enforces the rate limit so the server isn't hammered, and wraps up at the end.</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/runner.py — play_game() simplified</div>
+        <pre><code class="language-python">def play_game(client, competition_id, strategy, *,
+              logger=None, fallback_index=0, verbose=True) -> GameResult:
+    """Play one full game. The spine of the system."""
+
+    # 1. Setup
+    category = _category_for(competition_id)   # MATHS, HISTORY, etc.
+    game = GameAdapter(client, competition_id)  # start the game session
+    pacer = _Pacer(min_delay=1.5)               # rate limiter
+    log = logger or RunLogger(...)               # JSONL file logger
+
+    while not game.is_over:
+        q = game.current_question
+        if q is None:
+            break
+
+        # 2. Calculate time budget
+        time_left = game.time_remaining_seconds  # from server deadline
+        budget = min(time_left - 2.0, RUNTIME.hard_cutoff_seconds)
+
+        # 3. Build StrategyInput (what the strategy sees)
+        inp = StrategyInput(
+            question=q.text,
+            options=q.options,
+            level=q.level,
+            category=category,
+            time_budget_seconds=budget,
+        )
+
+        # 4. Run strategy under watchdog (time-limited thread)
+        try:
+            out = _call_with_deadline(strategy, inp, budget)
+        except _DeadlineExceeded:
+            out = None    # timed out → use fallback
+
+        # 5. Determine chosen index (abstain/timeout → fallback)
+        chosen_idx = (out.chosen_index
+                      if out and not out.is_abstain
+                      else fallback_index)
+
+        # 6. Submit (rate-limited)
+        pacer.wait()
+        outcome = game.submit_answer(chosen_idx)
+
+        # 7. Learning loop (IndexGrower)
+        grower = getattr(strategy, "index_grower", None)
+        if grower:
+            q_id = f"lvl_{q.level}"
+            if outcome.correct:  grower.confirm(q_id)
+            else:                grower.discard(q_id)
+
+        # 8. Log everything
+        log.log_question(QuestionRecord(...))
+
+        if outcome.game_over:
+            break
+
+    # 9. End of game: flush learning, save summary
+    if grower:
+        grower.flush()
+    log.log_summary(GameSummaryRecord(...))
+
+    return GameResult(accuracy=n_correct/n_total, ...)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="category">The category is looked up once before the loop — it's the same for every question in a competition. This routing hint flows all the way into the strategy's retrieval filter.<span class="purpose">Avoids repeated dictionary lookups; category is passed on every StrategyInput.</span></li>
+        <li data-line="budget">Time budget = min(server time remaining - 2s, hard cutoff). The 2-second margin accounts for network latency on submission. The hard cutoff (25s) is our own safety cap.<span class="purpose">If the server says 28s remaining, we give the strategy 26s. The extra 2s ensures the answer always arrives before the server deadline.</span></li>
+        <li data-line="abstain"><code>out.is_abstain</code> — if the strategy couldn't produce a confident answer (parse failure, all tools abstained), it sets this flag. The runner then submits <code>fallback_index=0</code> (option A by default).<span class="purpose">Honest abstention prevents strategies from silently defaulting to "A" without the caller knowing. The fallback is explicit and controllable.</span></li>
+        <li data-line="pacer.wait()">Rate-limiter enforces 1.5 seconds between API calls. The game server is a proof-of-concept system — rapid-fire requests could overload it.<span class="purpose">Politeness: be a good API citizen.</span></li>
+        <li data-line="Learning">After EVERY question: confirm correct answers (adds to index permanently), discard wrong ones (prevents pollution). Only then log.<span class="purpose">The learning loop must run AFTER the server confirms correctness but BEFORE the log, so the log reflects the final learned state.</span></li>
+    </ul>
+</section>
+
+<!-- ═══════════════════ SECTION 7: Watchdog & Pacer ═══════════════════ -->
+<section class="section" id="s7">
+    <div class="section-number">Section 07</div>
+    <h2>Watchdog & Pacer — Time Safety Mechanisms</h2>
+
+    <div class="card analogy">
+        <p><strong>The Watchdog is a kitchen timer that can't be ignored.</strong> You set it for 25 seconds. When it rings, the chef (strategy) MUST stop, whether the dish is ready or not. The Pacer is the pause between dishes — you don't serve the next course immediately after the last one; you give the diner (server) a moment to breathe.</p>
+    </div>
+
+    <h3>The Watchdog — Deadline Enforcement</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/runner.py — _call_with_deadline()</div>
+        <pre><code class="language-python">def _call_with_deadline(
+    strategy: Strategy, inp: StrategyInput, deadline_seconds: float
+) -> StrategyOutput:
+    """Run strategy in a daemon thread. Raise _DeadlineExceeded on overrun."""
+    box: dict = {}
+
+    def target():
+        try:
+            box["out"] = strategy.answer(inp)
+        except BaseException as exc:
+            box["err"] = exc
+
+    # Run in a daemon thread so it's killed when the main process exits
+    th = threading.Thread(target=target, daemon=True)
+    th.start()
+    th.join(deadline_seconds)   # wait at most deadline_seconds
+
+    if th.is_alive():
+        # Thread still running → DEADLINE EXCEEDED
+        raise _DeadlineExceeded(f"strategy exceeded {deadline_seconds:.1f}s")
+        # Note: the thread continues running in background (can't kill it safely)
+        # but its result is ignored — we've already moved on
+
+    if "err" in box:
+        raise box["err"]   # re-raise any strategy exception
+    return box["out"]</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Thread">The strategy runs in a daemon thread. Python can't safely interrupt a thread mid-CUDA-call (that would corrupt GPU state), so we don't kill it — we just stop waiting for it.<span class="purpose">The thread continues in the background (burning some GPU) but its result is irrelevant — we've already submitted the fallback answer.</span></li>
+        <li data-line="th.join(deadline)"><code>th.join(deadline_seconds)</code> blocks the main thread for at most that many seconds. If the thread finishes before the deadline → returns immediately. If not → continues past the join (thread still alive).<span class="purpose">This is the only safe way to impose a time limit on a Python thread that may be doing GPU computation.</span></li>
+        <li data-line="Daemon">Daemon threads are automatically killed when the main process exits. If the main program crashes or exits, the background thread doesn't keep the process alive.<span class="purpose">No zombie processes from hung GPU calls.</span></li>
+    </ul>
+
+    <h3>The Pacer — Rate Limiter</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/runner.py — _Pacer</div>
+        <pre><code class="language-python">class _Pacer:
+    """Ensures at least `min_delay` seconds between waits()."""
+
+    def __init__(self, min_delay: float) -> None:
+        self._min_delay = min_delay   # 1.5 seconds by default
+        self._last = 0.0              # timestamp of last call
+
+    def wait(self) -> None:
+        elapsed = time.monotonic() - self._last
+        if 0 < elapsed < self._min_delay:
+            time.sleep(self._min_delay - elapsed)   # sleep the remaining gap
+        self._last = time.monotonic()
+
+# In the game loop:
+pacer.wait()                        # called before EVERY submit
+outcome = game.submit_answer(idx)   # then submit</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="monotonic"><code>time.monotonic()</code> is used instead of <code>time.time()</code>. Monotonic time never goes backward (unlike wall-clock time which can be adjusted by NTP). This prevents the rare bug where a time.time() adjustment makes the elapsed time negative, causing a negative sleep.<span class="purpose">Correctness: even if the system clock is adjusted, rate limiting still works correctly.</span></li>
+        <li data-line="gap">The pacer only sleeps for the remaining gap. If the LLM already took 2.3 seconds (longer than the 1.5s minimum), no sleep is needed — we can submit immediately.<span class="purpose">Never adds unnecessary delay. Respects the minimum while not wasting time.</span></li>
+    </ul>
+</section>
+
+<!-- ═══════════════════ SECTION 8: Full Game Trace ═══════════════════ -->
+<section class="section" id="s8">
+    <div class="section-number">Section 08</div>
+    <h2>Full Game Trace — Watching the System in Action</h2>
+
+    <p>Let's trace one complete game session, showing how every component participates:</p>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+sequenceDiagram
+    participant NB as Notebook
+    participant R as Runner
+    participant GA as GameAdapter
+    participant MC as MillionaireClient
+    participant SRV as Game Server
+    participant ST as Strategy (TieredStrategy)
+    participant LOG as Logger (JSONL)
+
+    NB->>MC: client.login("bot_user", "password")
+    MC->>SRV: POST /api/auth/login
+    SRV-->>MC: 200 OK + auth cookie
+    
+    NB->>R: play_game(client, competition_id=1, strategy)
+    R->>GA: GameAdapter(client, competition_id=1)
+    GA->>MC: client.game.start(competition_id=1)
+    MC->>SRV: POST /api/game/start
+    SRV-->>MC: GameState {session_id=42, level=1, question=...}
+    
+    loop For each question (up to 15)
+        R->>GA: game.current_question
+        GA-->>R: GameQuestion("What year...", options=(...), level=7)
+        
+        Note over R: budget = min(time_remaining-2, 25)
+        R->>ST: strategy.answer(StrategyInput)
+        Note over ST: TieredStrategy routes to RAGStrategy (level 7)
+        ST-->>R: StrategyOutput(chosen_index=1, confidence=0.89)
+        
+        R->>R: pacer.wait() (1.5s min between calls)
+        R->>GA: game.submit_answer(chosen_index=1)
+        GA->>MC: session.answer(option_id=43)
+        MC->>SRV: POST /api/game/42/answer {"optionId": 43}
+        SRV-->>MC: AnswerResult {correct=true, earned=32000, next_question=...}
+        GA-->>R: AnswerOutcome(correct=True, earned_amount=32000)
+        
+        R->>ST: index_grower.confirm("lvl_7")
+        Note over ST: Live-fetched Wikipedia article → permanent index
+        
+        R->>LOG: log.log_question(QuestionRecord(...))
+    end
+    
+    R->>ST: index_grower.flush()
+    Note over ST: Persist learned articles to disk
+    R->>LOG: log.log_summary(GameSummaryRecord(...))
+    R-->>NB: GameResult(accuracy=0.87, earned=500000)
+        </div>
+    </div>
+
+    <h3>What Happens on a Timeout?</h3>
+
+    <div class="code-block">
+        <div class="filename">Timeout flow in the runner</div>
+        <pre><code class="language-python"># The strategy takes too long (e.g., LLM CUDA compilation stalls)
+try:
+    out = _call_with_deadline(strategy, inp, budget=23.0)
+    # Strategy thread is still running at 23.0 seconds...
+except _DeadlineExceeded:
+    out = None
+    print("! strategy timed out; submitting fallback index=0")
+
+# out is None → use fallback
+chosen_idx = fallback_index   # = 0 (option A)
+
+# Pacer still runs — rate limit is respected even on timeout
+pacer.wait()
+outcome = game.submit_answer(chosen_idx)
+
+# Log the timeout
+log.log_question(QuestionRecord(
+    timed_out=True,
+    chosen_index=0,
+    ...
+))
+
+# If the answer happened to be A (20% chance) → outcome.correct=True
+# If not → outcome.correct=False, strategy loses this question
+# Either way, the game continues to the next question</code></pre>
+    </div>
+
+    <h3>What Happens on a Strategy Error?</h3>
+
+    <div class="code-block">
+        <div class="filename">Exception handling in the runner</div>
+        <pre><code class="language-python">try:
+    out = _call_with_deadline(strategy, inp, budget)
+except _DeadlineExceeded:
+    out = None    # timed out
+except Exception as exc:
+    out = None    # strategy crashed
+    print(f"! strategy raised {type(exc).__name__}: {exc}")
+
+# In BOTH cases: out=None → submit fallback, continue the game
+# The game never crashes because of a strategy bug</code></pre>
+    </div>
+
+    <div class="card design">
+        <p><strong>The runner is the safety net.</strong> No strategy bug can crash a live game. Timeouts, exceptions, parse failures, CUDA errors — all are caught by the runner and handled gracefully by submitting the fallback answer. The game continues. All errors are logged. This is intentional: the cost of a wrong answer (fallback) is much lower than crashing mid-game and losing all accumulated prize money.</p>
+    </div>
+
+    <h3>The Complete Component Map</h3>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    subgraph "millionaire_client/ (HTTP Layer)"
+        BC["BaseClient\nHTTP session + cookies"]
+        AU["AuthModule\nlogin / logout"]
+        GM["GameModule\nstart game"]
+        GS["GameSession\nanswer questions"]
+        CM["CompetitionsModule\nlist competitions"]
+        LB["LeaderboardModule\nrankings"]
+    end
+    
+    subgraph "polimibot/game/ (Adapter Layer)"
+        GA["GameAdapter\nTranslates API ↔ domain"]
+        GT["GameQuestion\nAnswerOutcome\nSessionRecord"]
+    end
+    
+    subgraph "polimibot/ (Application Layer)"
+        RN["runner.py\nplay_game()"]
+        WD["_call_with_deadline\nWatchdog thread"]
+        PC["_Pacer\nRate limiter"]
+        LOG["RunLogger\nJSONL logging"]
+        CFG["config.py\nCATEGORIES mapping"]
+    end
+    
+    subgraph "Strategy Layer"
+        ST["Any Strategy\n(Tiered/RAG/Ensemble...)"]
+    end
+    
+    BC --> AU
+    BC --> GM
+    BC --> GS
+    BC --> CM
+    BC --> LB
+    
+    GM --> GS
+    GS --> GA
+    GA --> GT
+    
+    GT --> RN
+    CFG --> RN
+    RN --> WD
+    RN --> PC
+    RN --> LOG
+    WD --> ST
+    
+    style GA fill:#1a3a2a,stroke:#34d399,color:#e2e8f0
+    style RN fill:#1a2e3a,stroke:#38bdf8,color:#e2e8f0
+    style ST fill:#2a1a3a,stroke:#8b5cf6,color:#e2e8f0
+        </div>
+    </div>
+</section>
+
+</div>
+
+<script>
+mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+        primaryColor: '#1a2235',
+        primaryTextColor: '#e2e8f0',
+        primaryBorderColor: '#34d399',
+        lineColor: '#4b5563',
+        secondaryColor: '#111827',
+        tertiaryColor: '#0a0e1a',
+    }
+});
+</script>
+
+</body>
+</html>
