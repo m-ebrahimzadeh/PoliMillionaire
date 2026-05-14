@@ -1,0 +1,1124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PoliMillionaire — Tools & Computation Explained</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<style>
+:root {
+    --bg-primary: #0a0e1a;
+    --bg-secondary: #111827;
+    --bg-card: #1a2235;
+    --bg-code: #0d1117;
+    --accent: #06b6d4;
+    --accent-light: #22d3ee;
+    --accent-dim: rgba(6, 182, 212, 0.1);
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --border: #1e293b;
+    --border-accent: rgba(6, 182, 212, 0.3);
+    --green: #10b981;
+    --amber: #f59e0b;
+    --purple: #8b5cf6;
+    --red: #ef4444;
+    --blue: #3b82f6;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.7;
+    overflow-x: hidden;
+}
+
+.hero {
+    position: relative;
+    padding: 100px 40px 80px;
+    text-align: center;
+    background: linear-gradient(135deg, var(--bg-primary) 0%, #051520 50%, #0a1628 100%);
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+}
+.hero::before {
+    content: '';
+    position: absolute;
+    top: -50%; left: -50%;
+    width: 200%; height: 200%;
+    background: radial-gradient(ellipse at center, rgba(6,182,212,0.04) 0%, transparent 50%);
+    animation: pulse 8s infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 0.5; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.05); }
+}
+.hero h1 {
+    font-size: 3.2rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--accent-light), var(--accent), #0891b2);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 16px;
+    position: relative;
+}
+.hero .subtitle {
+    font-size: 1.25rem;
+    color: var(--text-secondary);
+    max-width: 700px;
+    margin: 0 auto;
+    position: relative;
+}
+
+.nav {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(10, 14, 26, 0.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 40px;
+    overflow-x: auto;
+}
+.nav-inner {
+    display: flex; gap: 8px;
+    max-width: 1200px; margin: 0 auto;
+    flex-wrap: wrap; justify-content: center;
+}
+.nav a {
+    color: var(--text-secondary); text-decoration: none;
+    font-size: 0.82rem; font-weight: 500;
+    padding: 6px 14px; border-radius: 6px;
+    transition: all 0.2s; white-space: nowrap;
+}
+.nav a:hover { color: var(--accent-light); background: var(--accent-dim); }
+
+.container { max-width: 960px; margin: 0 auto; padding: 60px 40px; }
+
+.section { margin-bottom: 80px; }
+.section-number {
+    font-size: 0.75rem; font-weight: 700;
+    letter-spacing: 2px; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 8px;
+}
+.section h2 { font-size: 2rem; font-weight: 700; margin-bottom: 24px; }
+.section h3 { font-size: 1.3rem; font-weight: 600; margin: 32px 0 16px; }
+
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px; padding: 28px; margin: 20px 0;
+}
+.card.analogy {
+    border-left: 4px solid var(--accent);
+    background: linear-gradient(135deg, var(--accent-dim), transparent);
+}
+.card.analogy::before {
+    content: '💡 Analogy';
+    display: block; font-size: 0.8rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 12px;
+}
+.card.security {
+    border-left: 4px solid var(--red);
+    background: rgba(239, 68, 68, 0.05);
+}
+.card.security::before {
+    content: '🔒 Security';
+    display: block; font-size: 0.8rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--red); margin-bottom: 12px;
+}
+.card.design {
+    border-left: 4px solid var(--purple);
+    background: rgba(139, 92, 246, 0.05);
+}
+.card.design::before {
+    content: '🏗️ Design Decision';
+    display: block; font-size: 0.8rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--purple); margin-bottom: 12px;
+}
+.card.tip {
+    border-left: 4px solid var(--green);
+    background: rgba(16, 185, 129, 0.05);
+}
+.card.tip::before {
+    content: '✅ Key Point';
+    display: block; font-size: 0.8rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--green); margin-bottom: 12px;
+}
+
+.code-block {
+    position: relative; margin: 20px 0;
+    border-radius: 10px; overflow: hidden;
+    border: 1px solid var(--border);
+}
+.code-block .filename {
+    background: var(--bg-secondary); padding: 8px 16px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem; color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+}
+.code-block pre {
+    margin: 0 !important; padding: 20px !important;
+    background: var(--bg-code) !important;
+    font-size: 0.82rem !important; line-height: 1.6 !important;
+    overflow-x: auto;
+}
+.code-block code { font-family: 'JetBrains Mono', monospace !important; }
+
+.walkthrough { margin: 20px 0; padding: 0; list-style: none; }
+.walkthrough li {
+    position: relative; padding: 12px 16px 12px 60px;
+    margin: 8px 0; background: var(--bg-secondary);
+    border-radius: 8px; border: 1px solid var(--border); font-size: 0.9rem;
+}
+.walkthrough li::before {
+    content: attr(data-line);
+    position: absolute; left: 12px; top: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem; font-weight: 600;
+    color: var(--accent); background: var(--accent-dim);
+    padding: 2px 8px; border-radius: 4px;
+}
+.walkthrough .purpose {
+    color: var(--text-secondary); font-style: italic;
+    display: block; margin-top: 4px; font-size: 0.82rem;
+}
+
+.mermaid-wrapper {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 30px; margin: 24px 0; overflow-x: auto;
+}
+.mermaid { display: flex; justify-content: center; }
+
+.comparison-table { width: 100%; border-collapse: collapse; margin: 24px 0; font-size: 0.85rem; }
+.comparison-table th {
+    background: var(--bg-secondary); padding: 12px 16px;
+    text-align: left; font-weight: 600; color: var(--accent);
+    border-bottom: 2px solid var(--border-accent);
+}
+.comparison-table td {
+    padding: 10px 16px; border-bottom: 1px solid var(--border); color: var(--text-secondary);
+}
+.comparison-table tr:hover td { background: rgba(6, 182, 212, 0.03); }
+
+.pipeline-step {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px; margin: 8px 0;
+    background: var(--bg-secondary); border-radius: 8px;
+    border: 1px solid var(--border);
+}
+.pipeline-step .step-num {
+    min-width: 32px; height: 32px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--accent-dim); border-radius: 50%;
+    font-weight: 700; font-size: 0.85rem; color: var(--accent);
+}
+.pipeline-step .step-content { flex: 1; }
+.pipeline-step .step-content strong { color: var(--text-primary); }
+.pipeline-step .step-example {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem; color: var(--accent-light);
+    margin-top: 4px;
+}
+
+@media (max-width: 768px) {
+    .hero { padding: 60px 20px 50px; }
+    .hero h1 { font-size: 2.2rem; }
+    .container { padding: 40px 20px; }
+    .section h2 { font-size: 1.5rem; }
+}
+
+p { margin-bottom: 16px; color: var(--text-secondary); }
+strong { color: var(--text-primary); }
+code:not([class*="language-"]) {
+    font-family: 'JetBrains Mono', monospace;
+    background: rgba(6, 182, 212, 0.1);
+    padding: 2px 6px; border-radius: 4px;
+    font-size: 0.85em; color: var(--accent-light);
+}
+</style>
+</head>
+<body>
+
+<div class="hero">
+    <h1>Tools & Computation</h1>
+    <p class="subtitle">How PoliMillionaire uses deterministic computation, safe evaluation, and ReAct-style agents to solve problems that LLMs struggle with</p>
+</div>
+
+<nav class="nav">
+    <div class="nav-inner">
+        <a href="#s1">1. Why Tools?</a>
+        <a href="#s2">2. Tool Interface</a>
+        <a href="#s3">3. Safe Evaluator</a>
+        <a href="#s4">4. MathsTool</a>
+        <a href="#s5">5. ToolStrategy</a>
+        <a href="#s6">6. AgentStrategy</a>
+        <a href="#s7">7. Security</a>
+        <a href="#s8">8. Big Picture</a>
+    </div>
+</nav>
+
+<div class="container">
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 1: Why Tools? -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s1">
+    <div class="section-number">Section 1</div>
+    <h2>Why Tools? — The LLM's Blind Spot</h2>
+
+    <div class="card analogy">
+        <p><strong>Imagine a brilliant literature professor trying to do your taxes.</strong> They can discuss Dostoevsky for hours but will mess up "What is 15% of $47,200?" every time. Not because they're dumb — their training wasn't designed for precise arithmetic. LLMs have the same problem: they're language machines, not calculators. When you need 2+2=4 (not "approximately 4"), you need a <em>tool</em>.</p>
+    </div>
+
+    <p>LLMs fail on arithmetic because:</p>
+
+    <table class="comparison-table">
+        <tr><th>Problem</th><th>Why LLMs fail</th><th>Tool solution</th></tr>
+        <tr><td>Multi-digit multiplication</td><td>Tokens aren't numbers — "347" is processed as characters</td><td>Python computes <code>347 * 29</code> exactly</td></tr>
+        <tr><td>Percentages</td><td>LLMs sometimes hallucinate intermediate steps</td><td><code>15/100 * 200 = 30.0</code> — always correct</td></tr>
+        <tr><td>Factorials / combinatorics</td><td>Training data has limited examples above small n</td><td><code>math.factorial(12) = 479001600</code></td></tr>
+        <tr><td>Precision matters</td><td>LLM might say "about 30" when answer is exactly 30</td><td>Deterministic: exact float/int output</td></tr>
+    </table>
+
+    <div class="card design">
+        <p><strong>Design philosophy: Precision over Recall.</strong> The tool only answers when it's 100% sure. If it can't parse the question into an expression, or the result doesn't match any option → it abstains and lets the LLM try. A wrong deterministic answer is worse than a wrong LLM guess (same outcome, but damages calibration because it was reported with 99% confidence).</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 2: Tool Interface -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s2">
+    <div class="section-number">Section 2</div>
+    <h2>The Tool Interface — Two Methods, That's It</h2>
+
+    <div class="card analogy">
+        <p><strong>Think of each tool as a specialist doctor in an ER.</strong> The triage nurse (ToolStrategy) shows each patient's chart to each specialist in order. The specialist glances at it and says either "This is my case, I'll handle it" (<code>can_handle → True, use → StrategyOutput</code>) or "Not my specialty, pass" (<code>can_handle → False</code> or <code>use → None</code>). The patient moves to the next specialist or to the general practitioner (fallback LLM).</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/tools/base.py — The entire Tool contract</div>
+        <pre><code class="language-python">class Tool(ABC):
+    """A tool either answers confidently or abstains (returns None).
+
+    Abstaining is correct behavior — it lets the next handler try.
+    Never return a guess; only return when confidence is high.
+    """
+    name: str = "tool"
+
+    @abstractmethod
+    def can_handle(self, inp: StrategyInput) -> bool:
+        """Fast guard based on metadata (category, level, etc.).
+        No computation here — this must be instant."""
+
+    @abstractmethod
+    def use(self, inp: StrategyInput) -> Optional[StrategyOutput]:
+        """Attempt to answer. Return None to abstain and pass control downstream."""</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="can_handle"><code>can_handle()</code> is a <strong>fast gate</strong> — it checks metadata only (category, level). No parsing, no computation. It must run in microseconds because it's called for EVERY question.<span class="purpose">Don't waste time running a calculator on "Who wrote Hamlet?" — category check eliminates it instantly.</span></li>
+        <li data-line="use"><code>use()</code> does the actual work. It returns <code>None</code> to abstain (couldn't solve) or a <code>StrategyOutput</code> with the answer. <strong>Never guesses</strong> — only returns when certain.<span class="purpose">The abstention contract is what makes the chain work. Each tool honestly reports its limitations.</span></li>
+        <li data-line="Optional">The return type is <code>Optional[StrategyOutput]</code> — None is a first-class result meaning "I tried and couldn't do it."<span class="purpose">This separates "I can't handle this type of question" (can_handle=False) from "I can handle this type but this specific question is too complex" (use() returns None).</span></li>
+    </ul>
+
+    <div class="card tip">
+        <p><strong>Two levels of filtering:</strong> <code>can_handle</code> filters by question TYPE (fast, zero-cost). <code>use</code> filters by question CONTENT (may involve parsing). This two-stage design prevents expensive parsing on questions that obviously aren't relevant.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 3: The Safe Evaluator -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s3">
+    <div class="section-number">Section 3</div>
+    <h2>The Safe Evaluator — A Sandboxed Calculator</h2>
+
+    <div class="card analogy">
+        <p><strong>Imagine building a calculator for a children's classroom.</strong> You want them to compute <code>2+2</code> and <code>sqrt(16)</code>, but you absolutely do NOT want them to type <code>import os; os.system("format C:")</code>. The safe evaluator is that childproof calculator — it only allows whitelisted math operations and blocks everything else at the AST (Abstract Syntax Tree) level.</p>
+    </div>
+
+    <h3>Why Not Just Use <code>eval()</code>?</h3>
+
+    <div class="card security">
+        <p><strong>Python's <code>eval()</code> is a remote code execution vulnerability.</strong> The LLM's output feeds into this evaluator. If you use <code>eval()</code>, a prompt injection or malformed output like <code>__import__('os').system('rm -rf /')</code> would execute arbitrary system commands. The AST sandbox makes this physically impossible — disallowed node types are rejected before any code runs.</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/tools/calculator.py — safe_eval()</div>
+        <pre><code class="language-python">"""Safe arithmetic evaluator using Python's AST — no exec(), no subprocess."""
+
+# Whitelisted binary operators ONLY
+_BINARY_OPS = {
+    ast.Add: op.add,   ast.Sub: op.sub,
+    ast.Mult: op.mul,  ast.Div: op.truediv,
+    ast.Mod: op.mod,   ast.Pow: op.pow,
+    ast.FloorDiv: op.floordiv,
+}
+
+_UNARY_OPS = {
+    ast.USub: op.neg,  ast.UAdd: op.pos,
+}
+
+# Whitelisted names and functions — expand carefully
+_ALLOWED = {
+    "abs": abs, "round": round, "min": min, "max": max,
+    "sqrt": math.sqrt, "factorial": math.factorial,
+    "log": math.log, "log2": math.log2, "log10": math.log10,
+    "sin": math.sin, "cos": math.cos, "tan": math.tan,
+    "gcd": math.gcd, "comb": math.comb, "perm": math.perm,
+    "pi": math.pi, "e": math.e,
+}
+
+
+def safe_eval(expression: str) -> int | float:
+    """Evaluate a numeric Python expression in a restricted AST sandbox.
+
+    >>> safe_eval("15 / 100 * 200")
+    30.0
+    >>> safe_eval("factorial(5)")
+    120
+    """
+    tree = ast.parse(expression.strip(), mode="eval")
+    return _eval_node(tree.body)</code></pre>
+    </div>
+
+    <h3>The AST Walker</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/tools/calculator.py — _eval_node()</div>
+        <pre><code class="language-python">def _eval_node(node: ast.AST) -> Any:
+    # Numbers: 42, 3.14
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, (int, float)):
+            return node.value
+        raise ValueError(f"Non-numeric constant: {node.value!r}")
+
+    # Binary ops: 2 + 3, 10 ** 2
+    if isinstance(node, ast.BinOp):
+        fn = _BINARY_OPS.get(type(node.op))
+        if fn is None:
+            raise ValueError(f"Operator {type(node.op).__name__} not allowed")
+        return fn(_eval_node(node.left), _eval_node(node.right))
+
+    # Unary ops: -5, +3
+    if isinstance(node, ast.UnaryOp):
+        fn = _UNARY_OPS.get(type(node.op))
+        if fn is None:
+            raise ValueError(f"Unary {type(node.op).__name__} not allowed")
+        return fn(_eval_node(node.operand))
+
+    # Function calls: sqrt(16), factorial(5)
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name):
+            raise ValueError("Only simple function names allowed")
+        fn = _ALLOWED.get(node.func.id)
+        if fn is None:
+            raise ValueError(f"Function '{node.func.id}' not in whitelist")
+        return fn(*[_eval_node(a) for a in node.args])
+
+    # Named constants: pi, e
+    if isinstance(node, ast.Name):
+        if node.id in _ALLOWED:
+            return _ALLOWED[node.id]
+        raise ValueError(f"Name '{node.id}' not in whitelist")
+
+    # ANYTHING ELSE → REJECTED
+    raise ValueError(f"AST node {type(node).__name__} not allowed")</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Parse"><code>ast.parse(expression, mode="eval")</code> converts the string into a tree structure WITHOUT executing anything. This is the safety key — we inspect the tree, not run the code.<span class="purpose">Parsing ≠ executing. We can analyze what the expression WOULD do without actually doing it.</span></li>
+        <li data-line="Constant">Only <code>int</code> and <code>float</code> literals pass. Strings, booleans, None → rejected. No <code>"hello"</code>, no <code>True</code>, no <code>None</code>.<span class="purpose">A calculator shouldn't process strings. Only numbers in, numbers out.</span></li>
+        <li data-line="BinOp">Only 7 operators allowed: +, -, *, /, %, **, //. No bitwise (&, |, ^), no shifts (<<, >>), no comparisons (<, >).<span class="purpose">Minimal surface area. Only what's needed for arithmetic.</span></li>
+        <li data-line="Call">Function calls must be simple names (no method calls like <code>obj.method()</code>). Only whitelisted functions execute.<span class="purpose">Prevents <code>__import__('os').system('...')</code> — method chaining and attribute access are blocked at the AST level.</span></li>
+        <li data-line="Fallthrough">Any AST node type not explicitly handled → <code>ValueError</code>. This is the crucial default: <strong>deny by default</strong>, allow only what's explicitly safe.<span class="purpose">New Python features or obscure syntax can't sneak through. Unknown = blocked.</span></li>
+    </ul>
+
+    <h3>What's Allowed vs Blocked</h3>
+
+    <table class="comparison-table">
+        <tr><th>Expression</th><th>Result</th><th>Why</th></tr>
+        <tr><td><code>15 / 100 * 200</code></td><td>✅ 30.0</td><td>Basic arithmetic — whitelisted ops</td></tr>
+        <tr><td><code>factorial(5)</code></td><td>✅ 120</td><td>Whitelisted function</td></tr>
+        <tr><td><code>sqrt(144) + pi</code></td><td>✅ 15.14159...</td><td>Both in whitelist</td></tr>
+        <tr><td><code>2 ** 10</code></td><td>✅ 1024</td><td>Power operator allowed</td></tr>
+        <tr><td><code>comb(10, 3)</code></td><td>✅ 120</td><td>Combinatorics in whitelist</td></tr>
+        <tr><td><code>__import__('os')</code></td><td>❌ ValueError</td><td>ast.Call with non-Name func blocked</td></tr>
+        <tr><td><code>open('/etc/passwd')</code></td><td>❌ ValueError</td><td>'open' not in _ALLOWED whitelist</td></tr>
+        <tr><td><code>x = 5; x + 1</code></td><td>❌ SyntaxError</td><td>mode="eval" rejects statements</td></tr>
+        <tr><td><code>[x for x in range(10)]</code></td><td>❌ ValueError</td><td>ast.ListComp not handled → fallthrough</td></tr>
+    </table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 4: MathsTool -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s4">
+    <div class="section-number">Section 4</div>
+    <h2>MathsTool — From English to Numbers</h2>
+
+    <div class="card analogy">
+        <p><strong>Think of MathsTool as a bilingual translator + calculator.</strong> The question arrives in English ("What is 15% of 400?"). The translator converts it to math ("15/100*400"). The calculator evaluates it (= 60.0). Then the matcher checks: "Is 60 one of the options? Yes — it's option C!" The key insight: each step can fail, and failure means graceful abstention, not a wrong answer.</p>
+    </div>
+
+    <h3>The 5-Step Pipeline</h3>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph LR
+    Q["'What is 15%<br/>of 400?'"] --> NORM["Normalize<br/>'15/100*400'"]
+    NORM --> EXTRACT["Extract<br/>expression"]
+    EXTRACT --> EVAL["safe_eval<br/>= 60.0"]
+    EVAL --> MATCH["Match vs<br/>options"]
+    MATCH --> ANS["Answer: C<br/>conf=0.99"]
+    
+    NORM -.->|"can't normalize"| ABS1["Abstain (None)"]
+    EXTRACT -.->|"can't extract"| ABS2["Abstain (None)"]
+    EVAL -.->|"math error"| ABS3["Abstain (None)"]
+    MATCH -.->|"no match"| ABS4["Abstain (None)"]
+    
+    style ANS fill:#10b981,color:#fff
+    style ABS1 fill:#ef4444,color:#fff
+    style ABS2 fill:#ef4444,color:#fff
+    style ABS3 fill:#ef4444,color:#fff
+    style ABS4 fill:#ef4444,color:#fff
+        </div>
+    </div>
+
+    <h3>Step 1: Text Normalization</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/tools/maths_tool.py — Normalization patterns</div>
+        <pre><code class="language-python"># Applied in order. Patterns are conservative: only match when unambiguous.
+_NORMALIZATIONS = [
+    # "15% of 200" → "15/100*200"
+    (re.compile(r'(\d+(?:\.\d+)?)\s*%\s+of\s+(\d+(?:\.\d+)?)', re.I), r'\1/100*\2'),
+
+    # "15 percent of 200" → "15/100*200"
+    (re.compile(r'(\d+(?:\.\d+)?)\s*percent\s+of\s+(\d+(?:\.\d+)?)', re.I), r'\1/100*\2'),
+
+    # "2 to the power of 8" → "2**8"
+    (re.compile(r'(\d+)\s+to\s+the\s+power\s+of\s+(\d+)', re.I), r'\1**\2'),
+
+    # "square root of 144" → "sqrt(144)"
+    (re.compile(r'square\s+root\s+of\s+(\d+(?:\.\d+)?)', re.I), r'sqrt(\1)'),
+
+    # Named forms
+    (re.compile(r'\bsquared\b', re.I), '**2'),
+    (re.compile(r'\bcubed\b', re.I), '**3'),
+    (re.compile(r'\btimes\b', re.I), '*'),
+    (re.compile(r'\bdivided\s+by\b', re.I), '/'),
+    (re.compile(r'\bplus\b', re.I), '+'),
+    (re.compile(r'\bminus\b', re.I), '-'),
+
+    # Unicode symbols
+    (re.compile(r'×'), '*'),
+    (re.compile(r'÷'), '/'),
+]</code></pre>
+    </div>
+
+    <div class="pipeline-step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+            <strong>Normalize:</strong> Convert English math to Python arithmetic
+            <div class="step-example">"What is 15% of 400?" → "What is 15/100*400?"</div>
+        </div>
+    </div>
+    <div class="pipeline-step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+            <strong>Extract:</strong> Find the compute-prefix and isolate the expression
+            <div class="step-example">"What is 15/100*400?" → "15/100*400"</div>
+        </div>
+    </div>
+    <div class="pipeline-step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+            <strong>Evaluate:</strong> Run through safe_eval AST sandbox
+            <div class="step-example">"15/100*400" → 60.0</div>
+        </div>
+    </div>
+    <div class="pipeline-step">
+        <div class="step-num">4</div>
+        <div class="step-content">
+            <strong>Match:</strong> Compare result against numeric option values
+            <div class="step-example">Options: ["30", "60", "90", "120"] → index 1 matches 60.0</div>
+        </div>
+    </div>
+    <div class="pipeline-step">
+        <div class="step-num">5</div>
+        <div class="step-content">
+            <strong>Return:</strong> StrategyOutput with 99% confidence (or None = abstain)
+            <div class="step-example">StrategyOutput(chosen_index=1, confidence=0.99)</div>
+        </div>
+    </div>
+
+    <h3>Step 2: Expression Extraction</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/tools/maths_tool.py — _extract_expression()</div>
+        <pre><code class="language-python"># Pattern that signals "a computable expression follows"
+_COMPUTE_PREFIX = re.compile(
+    r'(?:what\s+is|calculate|compute|find\s+the\s+value\s+of|evaluate|simplify)'
+    r'\s+(.+)',
+    re.IGNORECASE,
+)
+
+def _extract_expression(question: str) -> Optional[str]:
+    """Normalize and extract an arithmetic expression. Returns None if ambiguous."""
+    q = _normalize(question)
+    m = _COMPUTE_PREFIX.search(q)
+    if not m:
+        return None          # no "what is" / "calculate" → abstain
+    fragment = m.group(1).strip().rstrip('?').strip()
+    # Remove trailing prose ("...where x = 5")
+    fragment = re.split(r'\bwhere\b|\bif\b|\bgiven\b', fragment)[0].strip()
+    # Drop non-arithmetic characters
+    cleaned = _KEEP.sub(' ', fragment).strip()
+    return cleaned if cleaned else None</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Prefix">Only questions starting with "What is", "Calculate", "Compute", "Evaluate", "Simplify" are attempted. "Who invented calculus?" → no match → abstain.<span class="purpose">Conservative: don't try to parse non-computable questions. Better to miss a few than to get one wrong.</span></li>
+        <li data-line="Trailing">Strips trailing conditions like "where x = 5" or "if n = 10" — these are variable definitions that would need a different parser.<span class="purpose">Keep it simple: only handle self-contained arithmetic expressions.</span></li>
+        <li data-line="None">Returns <code>None</code> at every failure point. The caller (MathsTool.use()) treats None as "abstain."<span class="purpose">Every step has an exit to safety. Ambiguity → don't guess.</span></li>
+    </ul>
+
+    <h3>Step 4: Option Matching</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/tools/maths_tool.py — _match_options()</div>
+        <pre><code class="language-python">def _parse_option_value(text: str) -> Optional[float]:
+    """Parse an option string as a float. "€1,000" → 1000.0, "30 kg" → 30.0"""
+    cleaned = re.sub(r'[€$£,]', '', text)          # strip currency/commas
+    cleaned = re.split(r'\s+[a-zA-Z]', cleaned)[0]  # "30 meters" → "30"
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _match_options(result: float, options: tuple[str, ...]) -> Optional[int]:
+    """Return index of matching option, or None."""
+    parsed = [_parse_option_value(opt) for opt in options]
+
+    # Require at least 3 of 4 options to be numeric
+    numeric_count = sum(1 for v in parsed if v is not None)
+    if numeric_count < 3:
+        return None   # not a numeric-options question
+
+    # Float-safe comparison with relative tolerance
+    tol = max(1e-9, abs(result) * 1e-9)
+    for i, v in enumerate(parsed):
+        if v is not None and abs(v - result) <= tol:
+            return i
+    return None   # computed value doesn't match any option</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Parse options">Options like "€1,000", "30 kg", "$4.50" are cleaned to pure numbers. Currency symbols, commas, and trailing units are stripped.<span class="purpose">Quiz options come in many formats. The parser handles the common ones without being fragile.</span></li>
+        <li data-line="3 of 4">Requires at least 3 of 4 options to be numeric. This prevents false matches on questions like "Which scientist...?" where one option happens to contain a number.<span class="purpose">Safety heuristic: if most options aren't numbers, this isn't a numeric question.</span></li>
+        <li data-line="Tolerance">Uses relative tolerance (<code>1e-9</code>) for float comparison. <code>0.1 + 0.2 == 0.3</code> is false in floating-point, but <code>abs(0.30000000000000004 - 0.3) <= 1e-9</code> is true.<span class="purpose">Floating-point arithmetic has precision issues. Tolerance prevents false negatives from rounding.</span></li>
+    </ul>
+
+    <h3>The Complete MathsTool</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/tools/maths_tool.py — MathsTool class</div>
+        <pre><code class="language-python">class MathsTool(Tool):
+    """Deterministic arithmetic solver. Only answers when it can prove the answer.
+
+    Coverage: ~30–50% of maths questions (those with computable answers
+    and numeric options). The rest fall through to the LLM.
+    """
+    name = "maths_tool"
+
+    def can_handle(self, inp: StrategyInput) -> bool:
+        return inp.category == Category.MATHS   # instant check
+
+    def use(self, inp: StrategyInput) -> Optional[StrategyOutput]:
+        expr = _extract_expression(inp.question)
+        if expr is None:
+            return None          # can't parse → abstain
+
+        try:
+            result = safe_eval(expr)
+        except Exception:
+            return None          # math error → abstain
+
+        if not isinstance(result, (int, float)) or not math.isfinite(result):
+            return None          # NaN/Inf → abstain
+
+        idx = _match_options(float(result), inp.options)
+        if idx is None:
+            return None          # doesn't match any option → abstain
+
+        return StrategyOutput(
+            chosen_index=idx,
+            confidence=0.99,     # deterministic = near-certain
+            rationale=f"MathsTool: {expr} = {result}",
+            extras={"tool": "maths_tool", "expr": expr, "result": result},
+        )</code></pre>
+    </div>
+
+    <div class="card tip">
+        <p><strong>Count the exit points:</strong> There are 4 places where the tool returns <code>None</code> (abstains). Only ONE path leads to an answer. This is intentional — the tool has a narrow corridor of success and a wide highway of graceful failure. When it DOES answer, you can trust it.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 5: ToolStrategy -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s5">
+    <div class="section-number">Section 5</div>
+    <h2>ToolStrategy — Chain of Responsibility</h2>
+
+    <div class="card analogy">
+        <p><strong>Like a customer service escalation chain.</strong> Tier 1 (tool) tries to solve the problem. If they can't → escalate to Tier 2 (next tool). If nobody can → escalate to the manager (fallback LLM). The beauty: adding a new Tier 1.5 specialist requires ZERO changes to existing tiers — just insert them into the chain.</p>
+    </div>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    Q["Question:<br/>'What is 15% of 400?'<br/>Category: MATHS"] --> CH{"MathsTool<br/>can_handle?"}
+    CH -->|"category == MATHS<br/>→ Yes"| USE["MathsTool.use()"]
+    USE -->|"Result: 60<br/>Matches option B"| DONE["✅ Answer: B<br/>confidence: 0.99"]
+    USE -->|"None (can't solve)"| FB["Fallback:<br/>RAGStrategy or<br/>BaselineLLM"]
+    CH -->|"No (wrong category)"| FB
+    FB --> DONE2["Answer from LLM<br/>confidence: ~0.5-0.8"]
+    
+    style DONE fill:#10b981,color:#fff
+    style FB fill:#3b82f6,color:#fff
+        </div>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/tool_strategy.py</div>
+        <pre><code class="language-python">class ToolStrategy(Strategy):
+    """Try registered tools in order; fall back to an LLM strategy.
+
+    This is the Chain of Responsibility pattern:
+    - "What" to try: the tool list (ordered by priority)
+    - "How" to answer if tools don't help: the fallback strategy
+    """
+
+    def __init__(self, tools: list[Tool], fallback: Strategy) -> None:
+        self.tools = tools
+        self.fallback = fallback
+        tool_names = "+".join(t.name for t in tools)
+        self.name = f"tool[{tool_names}|fallback={fallback.name}]"
+
+    def warm_up(self) -> None:
+        """Warm up the fallback LLM (tools are instant-start)."""
+        self.fallback.warm_up()
+
+    def shutdown(self) -> None:
+        self.fallback.shutdown()
+
+    def answer(self, inp: StrategyInput) -> StrategyOutput:
+        for tool in self.tools:
+            if tool.can_handle(inp):      # fast gate
+                out = tool.use(inp)       # attempt
+                if out is not None:
+                    return out            # tool answered — done!
+        # All tools abstained (or none could handle this input)
+        return self.fallback.answer(inp)  # LLM takes over</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Order"><code>for tool in self.tools</code> — tools tried in insertion order. Put the most confident/fastest tool first. If MathsTool can answer, skip everything else.<span class="purpose">Priority chain: cheapest answer wins. No need to call the LLM if a tool already knows.</span></li>
+        <li data-line="Two gates">First <code>can_handle</code> (free), then <code>use</code> (may involve parsing). If <code>can_handle</code> is False, <code>use()</code> is never called.<span class="purpose">Avoid wasted computation: don't even try to parse a history question as math.</span></li>
+        <li data-line="Fallback">The fallback is itself a Strategy — could be BaselineLLM, RAGStrategy, or even another ToolStrategy. Arbitrary nesting.<span class="purpose">Composability: ToolStrategy(tools=[MathsTool()], fallback=RAGStrategy(...)) combines retrieval + computation.</span></li>
+    </ul>
+
+    <h3>Typical Usage</h3>
+
+    <div class="code-block">
+        <div class="filename">Building a ToolStrategy</div>
+        <pre><code class="language-python"># Simple: MathsTool with LLM fallback
+baseline = BaselineLLMStrategy(llm, style=PromptStyle.ZERO_SHOT)
+tool_strat = ToolStrategy(
+    tools=[MathsTool()],
+    fallback=baseline,
+)
+
+# Advanced: MathsTool with RAG fallback
+rag = RAGStrategy(llm, retriever, k=3, use_hybrid=True)
+tool_rag = ToolStrategy(
+    tools=[MathsTool()],
+    fallback=rag,
+)
+
+# Multi-tool (future): try calculator first, then web search tool, then LLM
+# multi = ToolStrategy(
+#     tools=[MathsTool(), WikiSearchTool(), DateTool()],
+#     fallback=rag,
+# )</code></pre>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 6: AgentStrategy -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s6">
+    <div class="section-number">Section 6</div>
+    <h2>AgentStrategy — The Thinking Loop (ReAct)</h2>
+
+    <div class="card analogy">
+        <p><strong>Imagine a contestant on a game show who can whisper to a friend with a calculator.</strong> They read the question, think aloud ("Hmm, I need to find 2^10..."), whisper "What's 2 to the power of 10?" to their friend, get back "1024", think more ("So the answer is 1024, which matches option B"), and say their final answer. The AgentStrategy is this think→act→observe→conclude loop, automated.</p>
+    </div>
+
+    <h3>The ReAct Protocol</h3>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+sequenceDiagram
+    participant R as Runner
+    participant A as AgentStrategy
+    participant L as LLM
+    participant C as Calculator (safe_eval)
+
+    R->>A: answer("What is 2^10?")
+    Note over A: Start loop (max 3 iterations)
+    
+    A->>L: System: "You have calc tool"<br/>User: "What is 2^10? Options: ..."
+    L-->>A: "I need to compute 2^10.<br/>CALL: calc(2**10)"
+    
+    Note over A: Detected CALL pattern!
+    A->>C: safe_eval("2**10")
+    C-->>A: "1024"
+    
+    A->>L: "Tool result: 1024<br/>Now give your final answer."
+    L-->>A: "The answer is 1024.<br/>Answer: B"
+    
+    Note over A: Detected "Answer: B"!
+    A->>R: StrategyOutput(chosen_index=1, confidence=0.70)
+        </div>
+    </div>
+
+    <h3>The System Prompt</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/agent_strategy.py — System message</div>
+        <pre><code class="language-python">_AGENT_SYSTEM = """\
+You are a careful quiz contestant. You have one tool:
+
+  CALL: calc(<expression>)
+  Evaluates a Python arithmetic expression and returns the numeric result.
+  Example: CALL: calc(15/100 * 400)
+
+Rules:
+  1. Think step by step in at most 3 sentences.
+  2. If computation is needed, emit EXACTLY one line: CALL: calc(<expression>)
+     Then STOP — you will receive the result.
+  3. When you know the final answer, write EXACTLY: Answer: <letter>
+     where <letter> is one of A, B, C, D.
+  4. Never guess a number — use the tool if unsure.
+"""</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Protocol">The system prompt defines a strict text protocol: <code>CALL: calc(...)</code> for tool use, <code>Answer: X</code> for the final answer. No JSON, no function-calling API — just text patterns.<span class="purpose">Works with any LLM that can follow text instructions. No model-specific function-calling features needed.</span></li>
+        <li data-line="STOP">"Then STOP" tells the model to stop generating after the CALL line. This is reinforced by <code>max_new_tokens=200</code> — tight budget prevents rambling.<span class="purpose">If the model kept generating after CALL, it would hallucinate the answer without waiting for the real result.</span></li>
+        <li data-line="Never guess">"Never guess a number — use the tool if unsure" — this instruction biases the model toward using the tool for any arithmetic rather than trying to compute in its head.<span class="purpose">Encourage tool use: the whole point is to offload computation to the deterministic calculator.</span></li>
+    </ul>
+
+    <h3>The Core Loop</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/agent_strategy.py — answer()</div>
+        <pre><code class="language-python">def answer(self, inp: StrategyInput) -> StrategyOutput:
+    deadline = time.monotonic() + inp.time_budget_seconds - 1.0  # 1s safety margin
+    messages = self._initial_messages(inp)
+    trace = []
+
+    for iteration in range(self.max_iterations + 1):
+        if time.monotonic() >= deadline:
+            break                               # out of time!
+
+        resp = self.llm.generate(messages, max_new_tokens=200, temperature=0.0)
+        text = resp.text.strip()
+        trace.append(f"[step {iteration}] {text}")
+        messages.append({"role": "assistant", "content": text})
+
+        # ── Branch 1: Tool call detected ──────────────────────────
+        call = _extract_call(text)
+        if call and time.monotonic() < deadline:
+            tool_name, expression = call
+            if tool_name == "calc":
+                observation = _run_calc(expression)  # safe_eval
+            else:
+                observation = f"Unknown tool '{tool_name}'"
+            # Inject result as a user message
+            messages.append({
+                "role": "user",
+                "content": f"Tool result: {observation}\nNow give your final answer."
+            })
+            continue   # next iteration: model sees the result
+
+        # ── Branch 2: Final answer detected ───────────────────────
+        idx = parse_answer(text)
+        if idx is not None:
+            return StrategyOutput(chosen_index=idx, confidence=0.70)
+
+        # ── Branch 3: Neither — nudge the model ──────────────────
+        messages.append({
+            "role": "user",
+            "content": "Please write your final answer: 'Answer: <letter>'."
+        })
+
+    # ── Exhausted: salvage from trace ─────────────────────────────
+    for step_text in reversed(trace):
+        idx = parse_answer(step_text)
+        if idx is not None:
+            return StrategyOutput(chosen_index=idx, confidence=0.40)
+
+    return StrategyOutput(chosen_index=0, is_abstain=True)  # give up</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Deadline">Hard deadline with 1-second safety margin. The game server times out at 30s — exceeding it = automatic wrong answer.<span class="purpose">Time-awareness: the agent won't spin forever. Safety margin accounts for network latency on submission.</span></li>
+        <li data-line="Branch 1">If the LLM emits <code>CALL: calc(...)</code>, execute it via safe_eval and inject the result as a new user message. Then loop again so the model can see the result.<span class="purpose">The model "observes" the tool's output as if another person told them the answer. Multi-turn simulation.</span></li>
+        <li data-line="Branch 2">If the LLM emits <code>Answer: B</code>, we're done. Parse it and return immediately.<span class="purpose">Success path: the model reasoned (possibly with tool help) and committed to an answer.</span></li>
+        <li data-line="Branch 3">If the output is neither a tool call nor a final answer (model is rambling), we nudge it: "Please write your final answer." One more chance.<span class="purpose">LLMs sometimes produce unfocused text. The nudge re-focuses them on the required output format.</span></li>
+        <li data-line="Salvage">If all iterations are exhausted, scan the trace backwards for any answer. Maybe the model said "Answer: C" in step 1 but then continued generating.<span class="purpose">Graceful degradation: extract whatever signal is available, even from imperfect outputs.</span></li>
+    </ul>
+
+    <h3>Tool Call Detection — Balanced Parentheses</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/agent_strategy.py — _extract_call()</div>
+        <pre><code class="language-python">def _extract_call(text: str) -> Optional[tuple[str, str]]:
+    """Find 'CALL: tool_name(expr)' with nested parens handled correctly.
+
+    Returns (tool_name, expression) or None.
+    Balanced-paren scan ensures 'calc(factorial(5))' extracts correctly.
+    """
+    m = re.search(r"CALL\s*:\s*(\w+)\s*\(", text, re.IGNORECASE)
+    if not m:
+        return None
+    tool_name = m.group(1).lower()
+    start = m.end()      # index of first char INSIDE the outer '('
+    depth = 1
+    for i, ch in enumerate(text[start:]):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return tool_name, text[start : start + i]
+    return None   # unbalanced — malformed call</code></pre>
+    </div>
+
+    <div class="card design">
+        <p><strong>Why manual paren scanning instead of regex?</strong> Consider <code>CALL: calc(factorial(5) + sqrt(16))</code>. A regex like <code>\((.+?)\)</code> matches greedily to the first <code>)</code> → captures only <code>factorial(5</code> (broken!). A regex like <code>\((.+)\)</code> is greedy and might capture too much if there's text after the call. The manual depth-counting algorithm correctly finds the matching outer parenthesis regardless of nesting depth.</p>
+    </div>
+
+    <table class="comparison-table">
+        <tr><th>Input text</th><th>Extracted expression</th><th>How</th></tr>
+        <tr><td><code>CALL: calc(2+3)</code></td><td><code>2+3</code></td><td>Simple — depth goes 1→0 at first <code>)</code></td></tr>
+        <tr><td><code>CALL: calc(factorial(5))</code></td><td><code>factorial(5)</code></td><td>Depth: 1→2→1→0. Inner <code>)</code> doesn't trigger exit</td></tr>
+        <tr><td><code>CALL: calc(sqrt(abs(-16)))</code></td><td><code>sqrt(abs(-16))</code></td><td>Depth: 1→2→3→2→1→0</td></tr>
+        <tr><td><code>CALL: calc(2+3) is my answer</code></td><td><code>2+3</code></td><td>Trailing text ignored — stops at matching <code>)</code></td></tr>
+    </table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 7: Security Design -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s7">
+    <div class="section-number">Section 7</div>
+    <h2>Security Design — Defense in Depth</h2>
+
+    <div class="card analogy">
+        <p><strong>Think of this as airport security with multiple checkpoints.</strong> Even if a passenger (LLM output) gets through one check, there are more layers behind it. The AST parser is the X-ray machine (inspects structure). The whitelist is the no-fly list (blocks known bad actors). The deny-by-default fallthrough is the armed guard at the gate (stops anything that slipped through).</p>
+    </div>
+
+    <h3>The Threat Model</h3>
+
+    <p>The LLM's output is <strong>untrusted input</strong>. It could contain:</p>
+
+    <table class="comparison-table">
+        <tr><th>Threat</th><th>Example</th><th>Defense</th></tr>
+        <tr><td>Code injection</td><td><code>__import__('os').system('rm -rf /')</code></td><td>ast.Call requires Name node; attribute access blocked</td></tr>
+        <tr><td>Data exfiltration</td><td><code>open('/etc/passwd').read()</code></td><td><code>open</code> not in _ALLOWED whitelist</td></tr>
+        <tr><td>Infinite loop</td><td><code>while True: pass</code></td><td><code>mode="eval"</code> rejects statements (only expressions)</td></tr>
+        <tr><td>Memory bomb</td><td><code>10**10**10</code></td><td>Python raises OverflowError → caught by except</td></tr>
+        <tr><td>Unknown syntax</td><td><code>[x for x in range(10**9)]</code></td><td>ast.ListComp not handled → ValueError fallthrough</td></tr>
+        <tr><td>Prompt injection</td><td>LLM outputs malicious "CALL: calc(...)"</td><td>Even if it does, safe_eval blocks everything dangerous</td></tr>
+    </table>
+
+    <h3>The Defense Layers</h3>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    INPUT["LLM Output<br/>(untrusted)"] --> L1["Layer 1: _extract_call<br/>Regex + paren scan<br/>Only passes well-formed CALL: syntax"]
+    L1 --> L2["Layer 2: ast.parse(mode='eval')<br/>Rejects statements<br/>Only pure expressions allowed"]
+    L2 --> L3["Layer 3: _eval_node whitelist<br/>Only numeric constants<br/>Only 7 binary ops<br/>Only 2 unary ops<br/>Only ~15 functions"]
+    L3 --> L4["Layer 4: Deny-by-default fallthrough<br/>Unknown AST node → ValueError"]
+    L4 --> L5["Layer 5: Exception handler<br/>Any error → tool abstains (None)"]
+    L5 --> SAFE["Safe numeric result<br/>(int or float only)"]
+    
+    style L1 fill:#06b6d4,color:#fff
+    style L2 fill:#3b82f6,color:#fff
+    style L3 fill:#8b5cf6,color:#fff
+    style L4 fill:#ef4444,color:#fff
+    style L5 fill:#10b981,color:#fff
+        </div>
+    </div>
+
+    <div class="card security">
+        <p><strong>Key principle: deny by default.</strong> The whitelist is finite and small (~15 functions, 7 operators). The Python standard library has thousands of functions. Rather than trying to blacklist dangerous ones (you'll miss some), we whitelist only the safe ones. Everything else is rejected automatically by the fallthrough in <code>_eval_node</code>.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 8: The Big Picture -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s8">
+    <div class="section-number">The Big Picture</div>
+    <h2>How Tools Fit Into the System</h2>
+
+    <p>Tools serve two roles in the architecture: as a <strong>pre-LLM shortcut</strong> (ToolStrategy) and as an <strong>LLM assistant</strong> (AgentStrategy). Here's how they compare:</p>
+
+    <table class="comparison-table">
+        <tr><th>Aspect</th><th>ToolStrategy</th><th>AgentStrategy</th></tr>
+        <tr><td><strong>Who decides to use the tool?</strong></td><td>The code (category check)</td><td>The LLM (emits CALL: pattern)</td></tr>
+        <tr><td><strong>LLM involvement</strong></td><td>Only if tool abstains (fallback)</td><td>Always — LLM reasons AND calls tools</td></tr>
+        <tr><td><strong>Speed</strong></td><td>⚡ Instant when tool answers</td><td>🐢 Multiple LLM turns</td></tr>
+        <tr><td><strong>Coverage</strong></td><td>Narrow (30-50% of maths)</td><td>Broader (LLM can reason about what to compute)</td></tr>
+        <tr><td><strong>Accuracy when it answers</strong></td><td>~99% (deterministic)</td><td>~70% (LLM reasoning + computation)</td></tr>
+        <tr><td><strong>Latency</strong></td><td>Microseconds (tool) or ~1s (fallback)</td><td>2-8s (multiple LLM turns)</td></tr>
+        <tr><td><strong>Best for</strong></td><td>"What is 15% of 400?" (clearly computable)</td><td>"A train travels at 60mph for 2.5 hours..." (needs reasoning)</td></tr>
+    </table>
+
+    <h3>Architecture Diagram</h3>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    subgraph "ToolStrategy Path (Pre-LLM)"
+        Q1["Question"] --> CAN{"MathsTool<br/>can_handle?"}
+        CAN -->|Yes| USE["MathsTool.use()"]
+        USE -->|"Answer"| DONE1["✅ Done<br/>conf=0.99<br/>~0ms"]
+        USE -->|"None"| FALL["Fallback LLM<br/>conf=0.5-0.8<br/>~1s"]
+        CAN -->|No| FALL
+    end
+    
+    subgraph "AgentStrategy Path (LLM-Directed)"
+        Q2["Question"] --> LLM1["LLM thinks:<br/>'I need to calculate...'"]
+        LLM1 --> CALL["CALL: calc(expr)"]
+        CALL --> SAFE["safe_eval(expr)"]
+        SAFE --> OBS["Inject result"]
+        OBS --> LLM2["LLM concludes:<br/>'Answer: B'"]
+        LLM2 --> DONE2["✅ Done<br/>conf=0.70<br/>~3-8s"]
+    end
+    
+    subgraph "Shared Infrastructure"
+        SAFE2["safe_eval() — AST sandbox"]
+        WL["Whitelist: +, -, *, /, **, sqrt, factorial, ..."]
+    end
+    
+    USE --> SAFE2
+    SAFE --> SAFE2
+    SAFE2 --> WL
+    
+    style DONE1 fill:#10b981,color:#fff
+    style DONE2 fill:#10b981,color:#fff
+    style SAFE2 fill:#06b6d4,color:#fff
+        </div>
+    </div>
+
+    <h3>When to Use Which</h3>
+
+    <div class="card tip">
+        <p><strong>The TieredStrategy combines both:</strong> All maths questions first go through ToolStrategy (instant, deterministic). If the tool abstains (question too complex to parse), it falls back to AgentStrategy (LLM reasons step-by-step with tool access). This gives you the best of both worlds: instant answers when possible, reasoned answers when necessary.</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">Optimal composition for maths questions</div>
+        <pre><code class="language-python"># The tool answers ~40% of maths questions instantly (99% accuracy)
+# The agent handles the rest with reasoning + computation (~70% accuracy)
+# Together: better than either alone
+
+maths_tool = MathsTool()
+agent = AgentStrategy(llm, max_iterations=3)
+
+# ToolStrategy tries MathsTool first, falls back to Agent
+maths_solver = ToolStrategy(
+    tools=[maths_tool],
+    fallback=agent,
+)
+
+# In the TieredStrategy:
+tiered = TieredStrategy(
+    easy=baseline,
+    medium=rag,
+    hard=ensemble,
+    maths_override=maths_solver,  # ALL maths goes here regardless of level
+)</code></pre>
+    </div>
+
+    <h3>Adding New Tools (Extensibility)</h3>
+
+    <p>The architecture is designed for easy extension. To add a new tool:</p>
+
+    <div class="code-block">
+        <div class="filename">Example: Adding a hypothetical DateTool</div>
+        <pre><code class="language-python">class DateTool(Tool):
+    """Compute date differences, day-of-week, etc."""
+    name = "date_tool"
+
+    def can_handle(self, inp: StrategyInput) -> bool:
+        # Only try on questions mentioning dates/years
+        return any(word in inp.question.lower()
+                   for word in ["year", "date", "century", "born", "died"])
+
+    def use(self, inp: StrategyInput) -> Optional[StrategyOutput]:
+        # ... date computation logic ...
+        # Return None if can't solve
+        # Return StrategyOutput if confident
+
+# Plug it in — zero changes to existing code:
+multi_tool = ToolStrategy(
+    tools=[MathsTool(), DateTool()],   # tried in order
+    fallback=rag,
+)</code></pre>
+    </div>
+
+    <div class="card design">
+        <p><strong>Open-Closed Principle in action:</strong> The ToolStrategy is open for extension (add new tools to the list) but closed for modification (never need to edit ToolStrategy, MathsTool, or any existing code). Each tool is a self-contained unit that plugs into the chain independently.</p>
+    </div>
+</section>
+
+</div>
+
+<script>
+mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+        primaryColor: '#1a2235',
+        primaryTextColor: '#e2e8f0',
+        primaryBorderColor: '#06b6d4',
+        lineColor: '#4b5563',
+        secondaryColor: '#111827',
+        tertiaryColor: '#0a0e1a',
+    }
+});
+</script>
+
+</body>
+</html>

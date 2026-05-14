@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PoliMillionaire — Evaluation System Explained</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<style>
+:root {
+    --bg-primary: #0a0e1a;
+    --bg-secondary: #111827;
+    --bg-card: #1a2235;
+    --bg-code: #0d1117;
+    --accent: #f59e0b;
+    --accent-light: #fbbf24;
+    --accent-dim: rgba(245, 158, 11, 0.1);
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --border: #1e293b;
+    --border-accent: rgba(245, 158, 11, 0.3);
+    --green: #10b981;
+    --blue: #3b82f6;
+    --purple: #8b5cf6;
+    --red: #ef4444;
+    --cyan: #06b6d4;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.7;
+    overflow-x: hidden;
+}
+
+.hero {
+    position: relative;
+    padding: 100px 40px 80px;
+    text-align: center;
+    background: linear-gradient(135deg, var(--bg-primary) 0%, #1a1005 50%, #0a1628 100%);
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+}
+.hero::before {
+    content: '';
+    position: absolute;
+    top: -50%; left: -50%;
+    width: 200%; height: 200%;
+    background: radial-gradient(ellipse at center, rgba(245,158,11,0.04) 0%, transparent 50%);
+    animation: pulse 8s infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 0.5; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.05); }
+}
+.hero h1 {
+    font-size: 3.2rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--accent-light), var(--accent), #d97706);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 16px;
+    position: relative;
+}
+.hero .subtitle {
+    font-size: 1.25rem;
+    color: var(--text-secondary);
+    max-width: 700px;
+    margin: 0 auto;
+    position: relative;
+}
+
+.nav {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(10, 14, 26, 0.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 40px;
+    overflow-x: auto;
+}
+.nav-inner {
+    display: flex; gap: 8px;
+    max-width: 1200px; margin: 0 auto;
+    flex-wrap: wrap; justify-content: center;
+}
+.nav a {
+    color: var(--text-secondary); text-decoration: none;
+    font-size: 0.82rem; font-weight: 500;
+    padding: 6px 14px; border-radius: 6px;
+    transition: all 0.2s; white-space: nowrap;
+}
+.nav a:hover { color: var(--accent-light); background: var(--accent-dim); }
+
+.container { max-width: 960px; margin: 0 auto; padding: 60px 40px; }
+
+.section { margin-bottom: 80px; }
+.section-number {
+    font-size: 0.75rem; font-weight: 700;
+    letter-spacing: 2px; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 8px;
+}
+.section h2 { font-size: 2rem; font-weight: 700; margin-bottom: 24px; }
+.section h3 { font-size: 1.3rem; font-weight: 600; margin: 32px 0 16px; }
+
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px; padding: 28px; margin: 20px 0;
+}
+.card.analogy {
+    border-left: 4px solid var(--accent);
+    background: linear-gradient(135deg, var(--accent-dim), transparent);
+}
+.card.analogy::before {
+    content: '💡 Analogy';
+    display: block; font-size: 0.8rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 12px;
+}
+.card.warning {
+    border-left: 4px solid var(--red);
+    background: rgba(239, 68, 68, 0.05);
+}
+.card.warning::before {
+    content: '⚠️ Key Insight';
+    display: block; font-size: 0.8rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--red); margin-bottom: 12px;
+}
+.card.tip {
+    border-left: 4px solid var(--green);
+    background: rgba(16, 185, 129, 0.05);
+}
+.card.tip::before {
+    content: '✅ Best Practice';
+    display: block; font-size: 0.8rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: var(--green); margin-bottom: 12px;
+}
+
+.code-block {
+    position: relative; margin: 20px 0;
+    border-radius: 10px; overflow: hidden;
+    border: 1px solid var(--border);
+}
+.code-block .filename {
+    background: var(--bg-secondary); padding: 8px 16px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem; color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+}
+.code-block pre {
+    margin: 0 !important; padding: 20px !important;
+    background: var(--bg-code) !important;
+    font-size: 0.82rem !important; line-height: 1.6 !important;
+    overflow-x: auto;
+}
+.code-block code { font-family: 'JetBrains Mono', monospace !important; }
+
+.walkthrough { margin: 20px 0; padding: 0; list-style: none; }
+.walkthrough li {
+    position: relative; padding: 12px 16px 12px 60px;
+    margin: 8px 0; background: var(--bg-secondary);
+    border-radius: 8px; border: 1px solid var(--border); font-size: 0.9rem;
+}
+.walkthrough li::before {
+    content: attr(data-line);
+    position: absolute; left: 12px; top: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem; font-weight: 600;
+    color: var(--accent); background: var(--accent-dim);
+    padding: 2px 8px; border-radius: 4px;
+}
+.walkthrough .purpose {
+    color: var(--text-secondary); font-style: italic;
+    display: block; margin-top: 4px; font-size: 0.82rem;
+}
+
+.mermaid-wrapper {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 30px; margin: 24px 0; overflow-x: auto;
+}
+.mermaid { display: flex; justify-content: center; }
+
+.comparison-table { width: 100%; border-collapse: collapse; margin: 24px 0; font-size: 0.85rem; }
+.comparison-table th {
+    background: var(--bg-secondary); padding: 12px 16px;
+    text-align: left; font-weight: 600; color: var(--accent);
+    border-bottom: 2px solid var(--border-accent);
+}
+.comparison-table td {
+    padding: 10px 16px; border-bottom: 1px solid var(--border); color: var(--text-secondary);
+}
+.comparison-table tr:hover td { background: rgba(245, 158, 11, 0.03); }
+
+.metric-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px; margin: 24px 0;
+}
+.metric-card {
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; text-align: center;
+}
+.metric-card .value {
+    font-size: 1.8rem; font-weight: 700; color: var(--accent);
+}
+.metric-card .label {
+    font-size: 0.8rem; color: var(--text-muted);
+    margin-top: 4px; text-transform: uppercase; letter-spacing: 1px;
+}
+
+@media (max-width: 768px) {
+    .hero { padding: 60px 20px 50px; }
+    .hero h1 { font-size: 2.2rem; }
+    .container { padding: 40px 20px; }
+    .section h2 { font-size: 1.5rem; }
+}
+
+p { margin-bottom: 16px; color: var(--text-secondary); }
+strong { color: var(--text-primary); }
+code:not([class*="language-"]) {
+    font-family: 'JetBrains Mono', monospace;
+    background: rgba(245, 158, 11, 0.1);
+    padding: 2px 6px; border-radius: 4px;
+    font-size: 0.85em; color: var(--accent-light);
+}
+</style>
+</head>
+<body>
+
+<div class="hero">
+    <h1>Evaluation System</h1>
+    <p class="subtitle">How PoliMillionaire measures, compares, and proves that each strategy actually works — from gold-set mining to leaderboard generation</p>
+</div>
+
+<nav class="nav">
+    <div class="nav-inner">
+        <a href="#s1">1. Why Evaluate?</a>
+        <a href="#s2">2. Gold Set</a>
+        <a href="#s3">3. Evaluator</a>
+        <a href="#s4">4. Calibration</a>
+        <a href="#s5">5. Retrieval Eval</a>
+        <a href="#s6">6. Ablation Scripts</a>
+        <a href="#s7">7. Leaderboard</a>
+        <a href="#s8">8. Logging</a>
+        <a href="#s9">9. Big Picture</a>
+    </div>
+</nav>
+
+<div class="container">
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 1: Why Evaluate Offline? -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s1">
+    <div class="section-number">Section 1</div>
+    <h2>Why Evaluate Offline?</h2>
+
+    <div class="card analogy">
+        <p><strong>Imagine you're training for a quiz show.</strong> You wouldn't change your study method after each live game — the sample size is too small and the questions are random. Instead, you'd collect past questions with known answers (a "practice test"), then test every new study method on the same practice test. That way, differences in scores reflect your method, not luck of the draw. This is exactly what offline evaluation does.</p>
+    </div>
+
+    <p>The PoliMillionaire game server reveals whether an answer is correct only <em>after</em> you submit it. You can't re-ask the same question. This creates three problems:</p>
+
+    <table class="comparison-table">
+        <tr><th>Problem</th><th>Why it's bad</th><th>Solution</th></tr>
+        <tr><td>Can't replay questions</td><td>Can't compare strategies on the same questions</td><td>Mine past games → frozen <strong>gold set</strong></td></tr>
+        <tr><td>Small sample per game</td><td>15 questions per game is too noisy for statistics</td><td>Aggregate hundreds of gold items</td></tr>
+        <tr><td>Network dependency</td><td>Server downtime blocks development</td><td>Evaluate 100% offline against gold set</td></tr>
+    </table>
+
+    <div class="card tip">
+        <p><strong>The cardinal rule:</strong> Build your gold set ONCE from baseline runs, then FREEZE it. Never re-harvest mid-experiment — that would silently grow your test set and invalidate all previous comparisons.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 2: The Gold Set -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s2">
+    <div class="section-number">Section 2</div>
+    <h2>The Gold Set — Your Frozen Test Bank</h2>
+
+    <div class="card analogy">
+        <p><strong>Think of the gold set as a medical study's patient records.</strong> You play games (treat patients), record outcomes (which answers were correct), and after enough data, you freeze that dataset. Every future treatment (strategy) is tested on the same patient cohort — so any improvement is real, not sampling noise.</p>
+    </div>
+
+    <h3>How Gold Items Are Mined</h3>
+
+    <p>The system recovers correct answers from run logs in two ways:</p>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    LOGS["Run logs (JSONL files)<br/>data/runs/*.jsonl"] --> MINE[harvest_gold_set]
+    
+    MINE --> DIRECT["Method 1: Direct<br/>chosen_index where correct=True"]
+    MINE --> ELIM["Method 2: Elimination<br/>If 3 of 4 options seen wrong<br/>→ 4th must be correct"]
+    
+    DIRECT --> DEDUP["Deduplicate by<br/>(competition_id, question_text)"]
+    ELIM --> DEDUP
+    
+    DEDUP --> GOLD["Gold Set<br/>list[GoldItem]"]
+    GOLD --> SAVE["gold_set.jsonl<br/>(frozen — never re-harvest)"]
+    
+    style DIRECT fill:#10b981,color:#fff
+    style ELIM fill:#f59e0b,color:#000
+    style GOLD fill:#3b82f6,color:#fff
+        </div>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/gold_set.py — GoldItem + harvest</div>
+        <pre><code class="language-python">@dataclass(frozen=True)
+class GoldItem:
+    """One question with a confirmed correct answer."""
+    question_text: str
+    options: tuple[str, ...]     # always 4, original order
+    correct_index: int           # 0=A, 1=B, 2=C, 3=D
+    competition_id: int
+    level: int
+    category: Optional[Category] = None
+    source_run: str = ""         # first run file that confirmed this
+
+
+def harvest_gold_set(runs_dir: Path) -> list[GoldItem]:
+    """Mine all *.jsonl run files → GoldItems."""
+    confirmed = {}   # key → GoldItem (direct confirmation)
+    wrong_indices = {}  # key → set of wrong indices
+
+    for fp in sorted(runs_dir.glob("*.jsonl")):
+        for rec in load_jsonl(fp):
+            key = f"{cid}|{text}"
+            if is_correct is True and key not in confirmed:
+                confirmed[key] = GoldItem(...)   # Direct hit!
+            elif is_correct is False:
+                wrong_indices[key].add(idx)      # Elimination evidence
+
+    # Elimination pass: 3 wrong → 4th is gold
+    for key, wrong in wrong_indices.items():
+        if key not in confirmed and len(wrong) == 3:
+            remaining = set(range(4)) - wrong    # only one left!
+            confirmed[key] = GoldItem(correct_index=remaining.pop())
+
+    return list(confirmed.values())</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Direct">If we submitted answer B and the server said "correct" → we know B is the right answer. One confirmation is enough.<span class="purpose">Most gold items come from direct correct answers during baseline runs.</span></li>
+        <li data-line="Elimination">If we've seen A wrong, B wrong, and C wrong across different games → D must be correct (process of elimination). We never need to have gotten it right ourselves!<span class="purpose">Recovers gold labels from repeated failures — every wrong answer is useful data.</span></li>
+        <li data-line="Dedup">Same question can appear in multiple games. We deduplicate by <code>(competition_id, question_text)</code> — first confirmation wins.<span class="purpose">No double-counting. Each question appears exactly once in the gold set.</span></li>
+    </ul>
+
+    <h3>The GoldSet Class — Chainable Views</h3>
+
+    <p>The <code>GoldSet</code> class wraps a list of GoldItems with a chainable API for filtering, sampling, and splitting:</p>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/gold_set.py — GoldSet chainable API</div>
+        <pre><code class="language-python">class GoldSet:
+    """Chainable view over a list[GoldItem]. Never mutates — always returns new."""
+
+    # Load
+    full = GoldSet.load(PATHS.eval_dir / 'gold_set.jsonl')
+
+    # Filter (each returns a NEW GoldSet)
+    maths = full.filter_category(Category.MATHS)
+    easy  = full.filter_level(max_level=5)
+    hard  = full.filter_level(min_level=11)
+
+    # Sample (reproducible)
+    pilot = full.take_per_level(3, seed=0)   # 3 per level → ~45 items
+    small = full.sample(50, seed=42)
+
+    # Split (train/test)
+    train, test = full.split(0.8, seed=42)
+
+    # Set operations
+    held_out = full - test                   # difference
+    merged   = set_a + set_b                 # union
+
+    # Introspection
+    full.print_stats()                       # category × level matrix
+    full.counts_by_category()                # {'maths': 30, 'history': 45, ...}
+
+    # Use directly in evaluation (iterable + has __len__)
+    report = evaluate_strategy(strategy, pilot)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Immutable">Every filter/sample returns a NEW GoldSet — the original is never mutated. You can branch freely without corruption.<span class="purpose">Prevents accidental data leakage between experiments.</span></li>
+        <li data-line="Seeded">All random operations take a <code>seed</code> parameter. Same seed → same subset, guaranteed.<span class="purpose">Reproducibility: re-running an experiment produces identical results.</span></li>
+        <li data-line="Iterable"><code>GoldSet</code> is iterable and has <code>__len__</code>, so it drops directly into <code>evaluate_strategy()</code> — no conversion needed.<span class="purpose">Clean API: one class serves as both a data manipulation tool and a direct evaluator input.</span></li>
+    </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 3: The Evaluator -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s3">
+    <div class="section-number">Section 3</div>
+    <h2>The Evaluator — Replaying Questions Offline</h2>
+
+    <div class="card analogy">
+        <p><strong>Think of it as a driving simulator.</strong> Instead of putting a new driver on real roads (live games with consequences), you replay recorded traffic scenarios in a controlled environment. The driver (strategy) doesn't know it's a simulation — it receives the same inputs and makes the same decisions. You measure their performance without risk.</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/evaluator.py — evaluate_strategy()</div>
+        <pre><code class="language-python">def evaluate_strategy(
+    strategy: Strategy,
+    gold_set: list[GoldItem],
+    *,
+    verbose: bool = True,
+) -> EvalReport:
+    """Replay gold_set through strategy offline. No live API calls."""
+    samples = []
+
+    for i, item in enumerate(gold_set):
+        # Build the same StrategyInput the runner would build
+        inp = StrategyInput(
+            question=item.question_text,
+            options=item.options,
+            level=item.level,
+            category=item.category,
+            competition_id=item.competition_id,
+        )
+        # Time the strategy
+        t0 = time.monotonic()
+        out = strategy.answer(inp)
+        elapsed = time.monotonic() - t0
+
+        # Compare against ground truth
+        correct = (out.chosen_index == item.correct_index)
+        samples.append(EvalSample(
+            correct=correct,
+            confidence=out.confidence,
+            elapsed_seconds=elapsed,
+            ...
+        ))
+
+    return _build_report(strategy.name, samples)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Same input">The evaluator builds the exact same <code>StrategyInput</code> the runner would build during a live game. The strategy can't tell the difference.<span class="purpose">Fair comparison: strategies are measured under identical conditions.</span></li>
+        <li data-line="Timing"><code>time.monotonic()</code> captures wall-clock latency per question — used to compute p50/p95 percentiles in the report.<span class="purpose">Latency matters in production: the server has a 30-second timeout per question.</span></li>
+        <li data-line="Ground truth"><code>out.chosen_index == item.correct_index</code> — binary correct/wrong. No partial credit.<span class="purpose">Simple, unambiguous metric. Either you got it right or you didn't.</span></li>
+    </ul>
+
+    <h3>The EvalReport</h3>
+
+    <div class="metric-grid">
+        <div class="metric-card">
+            <div class="value">Accuracy</div>
+            <div class="label">% correct answers</div>
+        </div>
+        <div class="metric-card">
+            <div class="value">ECE</div>
+            <div class="label">Calibration Error</div>
+        </div>
+        <div class="metric-card">
+            <div class="value">p50 / p95</div>
+            <div class="label">Latency (seconds)</div>
+        </div>
+        <div class="metric-card">
+            <div class="value">Per-Category</div>
+            <div class="label">Accuracy breakdown</div>
+        </div>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/evaluator.py — EvalReport</div>
+        <pre><code class="language-python">@dataclass
+class EvalReport:
+    """Aggregate metrics from one evaluate_strategy() run."""
+    strategy_name: str
+    n_total: int
+    accuracy: float           # simple % correct
+    ece: float                # Expected Calibration Error
+    by_category: dict[str, CategoryStats]  # per-category breakdown
+    latency_p50: float        # median response time
+    latency_p95: float        # worst-case tail latency
+    latency_mean: float
+    samples: list[EvalSample] # individual question outcomes
+
+    def print_summary(self) -> None:
+        """Human-readable report to stdout."""
+        # Strategy : rag[qwen|k=3|zero_shot|hybrid|mq]
+        # N        : 142
+        # Accuracy : 78.2%
+        # ECE      : 0.0834  (lower = better calibrated)
+        # Latency  : p50=1.23s  p95=4.56s
+        #
+        # Per-category:
+        #   entertainment    acc=82.1%  ece=0.0712  n=39
+        #   history          acc=74.3%  ece=0.0923  n=35
+        #   science          acc=80.0%  ece=0.0645  n=40
+        #   maths            acc=75.0%  ece=0.1102  n=28
+
+    def save(self, path: Path) -> None:
+        """Write report as JSON (samples excluded — too large)."""</code></pre>
+    </div>
+
+    <div class="card warning">
+        <p><strong>Why exclude samples from saved JSON?</strong> Each sample contains the full question text, all options, and metadata. With 200+ gold items × multiple strategies, the JSON files would balloon. The summary metrics (accuracy, ECE, latency) are what the leaderboard needs. Raw samples are kept in-memory for post-hoc error analysis during the same session.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 4: Calibration & ECE -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s4">
+    <div class="section-number">Section 4</div>
+    <h2>Calibration — "Am I as Sure as I Think?"</h2>
+
+    <div class="card analogy">
+        <p><strong>Imagine a weather forecaster.</strong> When they say "90% chance of rain," it should actually rain 9 out of 10 times they make that prediction. If it only rains 6 out of 10 times → they're <strong>overconfident</strong>. If it rains all 10 times → they're <strong>underconfident</strong>. A perfectly calibrated forecaster's stated probability matches reality. The same applies to our bot's confidence scores.</p>
+    </div>
+
+    <h3>Expected Calibration Error (ECE)</h3>
+
+    <p>ECE measures how well the bot's confidence aligns with its actual accuracy:</p>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    PREDS["All predictions with<br/>confidence + correct/wrong"] --> BIN["Group into 10 bins<br/>by confidence level"]
+    
+    BIN --> B1["Bin 1: conf 0-10%<br/>avg_conf=7%, actual_acc=5%<br/>gap = 2%"]
+    BIN --> B5["Bin 5: conf 40-50%<br/>avg_conf=45%, actual_acc=42%<br/>gap = 3%"]
+    BIN --> B9["Bin 9: conf 80-90%<br/>avg_conf=85%, actual_acc=70%<br/>gap = 15% ⚠️"]
+    
+    B1 --> ECE["ECE = weighted average<br/>of all gaps<br/>(lower = better)"]
+    B5 --> ECE
+    B9 --> ECE
+    
+    style B9 fill:#ef4444,color:#fff
+    style ECE fill:#f59e0b,color:#000
+        </div>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/calibration.py</div>
+        <pre><code class="language-python">def compute_calibration(confidences, corrects, n_bins=10) -> CalibrationResult:
+    """Bin predictions by confidence; compare mean confidence to accuracy per bin."""
+    bins = np.linspace(0.0, 1.0, n_bins + 1)   # [0, 0.1, 0.2, ..., 1.0]
+    conf_arr = np.asarray(confidences, dtype=float)
+    corr_arr = np.asarray(corrects, dtype=float)
+
+    bin_confs, bin_accs, bin_counts = [], [], []
+    for lo, hi in zip(bins[:-1], bins[1:]):
+        mask = (conf_arr >= lo) & (conf_arr < hi)
+        n = mask.sum()
+        if n == 0:
+            bin_confs.append((lo + hi) / 2)
+            bin_accs.append(0.0)
+        else:
+            bin_confs.append(conf_arr[mask].mean())   # what we SAID
+            bin_accs.append(corr_arr[mask].mean())    # what actually HAPPENED
+
+    # ECE = weighted average of |accuracy - confidence| per bin
+    ece = sum(cnt * abs(acc - conf)
+              for cnt, acc, conf in zip(bin_counts, bin_accs, bin_confs)) / total
+
+    return CalibrationResult(ece=ece, bin_confidences=..., bin_accuracies=...)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Bins">Predictions are grouped into 10 equal-width confidence buckets: [0-10%), [10-20%), ..., [90-100%].<span class="purpose">Groups similar-confidence predictions together so we can check if their actual accuracy matches.</span></li>
+        <li data-line="Compare">For each bin: <code>avg_confidence</code> is what the bot CLAIMED, <code>avg_accuracy</code> is what ACTUALLY happened. The gap is the calibration error for that bin.<span class="purpose">A gap of 0 means perfect calibration. A large positive gap means overconfidence.</span></li>
+        <li data-line="Weight">ECE is the weighted average of gaps across all bins (weighted by bin count). A single overconfident prediction on an easy question doesn't dominate the score.<span class="purpose">Summarizes calibration quality in a single number: 0 = perfect, 0.5 = terrible.</span></li>
+    </ul>
+
+    <h3>Reliability Diagram</h3>
+
+    <div class="code-block">
+        <div class="filename">scripts/plot_calibration.py</div>
+        <pre><code class="language-python"># Usage:
+#   python scripts/plot_calibration.py data/runs/run_xxx.jsonl
+
+def plot_calibration(result, title, output_path=None):
+    """Render a reliability diagram (bar chart vs identity line)."""
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.plot([0, 1], [0, 1], "k--", label="Perfect calibration")  # diagonal
+    ax.bar(result.bin_confidences, result.bin_accuracies,
+           width=0.08, alpha=0.7, label="Model")
+    ax.set_xlabel("Mean confidence")
+    ax.set_ylabel("Empirical accuracy")
+    ax.set_title(f"{title}\nECE = {result.ece:.4f}")</code></pre>
+    </div>
+
+    <div class="card tip">
+        <p><strong>Why calibration matters for the ensemble:</strong> The EnsembleStrategy weights votes by confidence. If a strategy says "90% sure" but is only right 60% of the time, it will dominate the ensemble when it shouldn't. Good calibration = the ensemble makes better fusion decisions.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 5: Retrieval Evaluation -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s5">
+    <div class="section-number">Section 5</div>
+    <h2>Retrieval Evaluation — Does the Right Article Show Up?</h2>
+
+    <div class="card analogy">
+        <p><strong>Imagine a librarian helping you study.</strong> You ask "Who crossed the Rubicon?" and the librarian brings you 3 books. The retrieval evaluation asks: "Was the Julius Caesar book in those 3?" If it was in position 1 → perfect recall@1. If it was in position 3 → still recall@3 success, but rank matters. If it wasn't in the top 3 at all → retrieval failure, even if the LLM might have known the answer anyway.</p>
+    </div>
+
+    <h3>The Labeling Workflow</h3>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    GS[Gold Set] --> TEMPLATE["build_labeling_template()<br/>auto-suggests candidate titles"]
+    TEMPLATE --> JSONL["retrieval_gold.jsonl<br/>(gold_article_title = null)"]
+    JSONL --> HUMAN["Human labels each item:<br/>gold_article_title = 'Julius Caesar'"]
+    HUMAN --> LABELED["Labeled JSONL"]
+    LABELED --> EVAL["evaluate_retrieval()<br/>Compute recall@k, MRR"]
+    EVAL --> REPORT["RetrievalReport<br/>recall@1, recall@3, recall@5, MRR"]
+    
+    style HUMAN fill:#8b5cf6,color:#fff
+    style REPORT fill:#f59e0b,color:#000
+        </div>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/retrieval.py — evaluate_retrieval()</div>
+        <pre><code class="language-python">def evaluate_retrieval(retriever, items, *, ks=(1, 3, 5, 10),
+                       query_fn=_default_query, use_category_filter=True,
+                       use_reranker=False, use_hybrid=False) -> RetrievalReport:
+    """Compute recall@k and MRR for retriever against labeled items."""
+    for item in items:
+        if not item.is_labeled:
+            continue  # skip unlabeled items
+
+        query = query_fn(item)
+        hits = retriever.retrieve(query, k=max(ks), category=...)
+
+        # Unique titles in rank order (dedup multiple chunks from same article)
+        unique_titles = [chunk.source for chunk, score in hits if not seen]
+
+        # Did the gold article appear in the ranked list?
+        found_at = None
+        for rank, title in enumerate(unique_titles, start=1):
+            if title == item.gold_article_title:
+                found_at = rank
+                break
+
+    # Compute metrics
+    recall_at = {k: (found_in_top_k / n_labeled) for k in ks}
+    mrr = mean(1/rank for each found item)
+
+    return RetrievalReport(recall_at=recall_at, mrr=mrr, by_category=...)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Labeled">Only items where a human has filled in <code>gold_article_title</code> contribute to recall scores. Unlabeled items are counted but skipped.<span class="purpose">Can't measure recall without ground-truth labels. Partial labeling is fine — the harness handles it gracefully.</span></li>
+        <li data-line="query_fn">The <code>query_fn</code> parameter lets you test different query recipes (question-only, question+options, HyDE) on the same labeled set without re-labeling.<span class="purpose">Ablation-friendly: change one variable (the query), keep everything else fixed.</span></li>
+        <li data-line="Dedup">Multiple chunks from the same article count as ONE hit at the rank of the first appearance. This prevents an article with 5 chunks from inflating recall.<span class="purpose">We care about article-level recall, not chunk-level. Did the RIGHT source show up?</span></li>
+        <li data-line="MRR">Mean Reciprocal Rank: if the gold article is at rank 3, its contribution is 1/3. Lower ranks contribute less. MRR rewards finding the right article EARLY.<span class="purpose">Being at rank 1 (MRR contribution = 1.0) is much better than rank 10 (MRR contribution = 0.1).</span></li>
+    </ul>
+
+    <h3>Metrics Explained</h3>
+
+    <table class="comparison-table">
+        <tr><th>Metric</th><th>What it measures</th><th>Perfect score</th><th>Interpretation</th></tr>
+        <tr><td><strong>Recall@1</strong></td><td>% of time the gold article is the #1 result</td><td>1.0</td><td>"First result is always right"</td></tr>
+        <tr><td><strong>Recall@3</strong></td><td>% of time the gold article is in the top 3</td><td>1.0</td><td>"Right article always in the context window"</td></tr>
+        <tr><td><strong>Recall@5</strong></td><td>% of time the gold article is in the top 5</td><td>1.0</td><td>"With oversearch, we always find it"</td></tr>
+        <tr><td><strong>MRR</strong></td><td>Average of (1 / rank of gold article)</td><td>1.0</td><td>"The gold article is consistently ranked high"</td></tr>
+    </table>
+
+    <h3>Post-Hoc Recall from Run Logs</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/retrieval.py — recall_from_runs()</div>
+        <pre><code class="language-python">def recall_from_runs(run_path, items, *, ks=(1, 3, 5, 10)) -> RetrievalReport:
+    """Compute recall@k from already-logged retrieval triples in a run JSONL.
+
+    Reads extras['passages'] from logged question records — no need to
+    re-run the retriever or the LLM. Score historical runs against new labels.
+    """</code></pre>
+    </div>
+
+    <div class="card tip">
+        <p><strong>Why is this useful?</strong> You can label the gold articles AFTER running experiments, then retroactively score old runs without re-running expensive GPU inference. The RAGStrategy logs all retrieved passages in <code>extras['passages']</code> specifically to enable this.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 6: Ablation Scripts -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s6">
+    <div class="section-number">Section 6</div>
+    <h2>Ablation Scripts — Controlled Experiments</h2>
+
+    <div class="card analogy">
+        <p><strong>Like a scientific experiment.</strong> You change ONE variable at a time and measure the effect. Does RAG help? (eval_rag: baseline vs RAG, same LLM). Does the calculator help on maths? (eval_tools: baseline vs tool, same maths questions). Does ensemble fusion help on hard questions? (eval_ensemble: single strategies vs ensemble, same hard subset). Each script is a controlled A/B test.</p>
+    </div>
+
+    <table class="comparison-table">
+        <tr><th>Script</th><th>What it compares</th><th>Gold subset</th><th>Key insight measured</th></tr>
+        <tr><td><code>eval_rag.py</code></td><td>Baseline vs RAG</td><td>Full gold set (or filtered by category)</td><td>Does retrieval improve accuracy?</td></tr>
+        <tr><td><code>eval_tools.py</code></td><td>Baseline vs ToolStrategy</td><td>Maths only</td><td>Does deterministic calculation beat LLM on arithmetic?</td></tr>
+        <tr><td><code>eval_agent.py</code></td><td>Baseline vs Tool vs Agent</td><td>Maths only</td><td>Three-way comparison of computation approaches</td></tr>
+        <tr><td><code>eval_ensemble.py</code></td><td>Baseline vs RAG vs Ensemble</td><td>Hard tier (level ≥ 8)</td><td>Does probability fusion help on difficult questions?</td></tr>
+        <tr><td><code>eval_tiered.py</code></td><td>All strategies vs final Tiered</td><td>Full gold set</td><td>Does smart routing match ensemble accuracy at lower cost?</td></tr>
+    </table>
+
+    <h3>Anatomy of an Ablation Script</h3>
+
+    <div class="code-block">
+        <div class="filename">scripts/eval_rag.py — structure</div>
+        <pre><code class="language-python">def main():
+    # 1. Load gold set (frozen test bank)
+    gold = load_gold_set(PATHS.eval_dir / "gold_set.jsonl")
+
+    # 2. Optionally filter by category
+    if args.categories:
+        gold = [g for g in gold if g.category in keep]
+
+    # 3. Build LLM ONCE (shared by all strategies — controlled variable)
+    llm = LLM.load(LLMSpec(model_id=args.model))
+
+    # 4. Build strategies using the SAME LLM
+    baseline = BaselineLLMStrategy(llm, style=style)
+    rag      = RAGStrategy(llm, retriever, k=args.k, ...)
+
+    # 5. Evaluate each and persist reports
+    baseline.warm_up()
+    report_baseline = evaluate_strategy(baseline, gold)
+    save_report(report_baseline, name="baseline_zs__qwen", eval_dir=PATHS.eval_dir)
+
+    report_rag = evaluate_strategy(rag, gold)
+    save_report(report_rag, name="rag__qwen", eval_dir=PATHS.eval_dir)
+
+    # 6. Print side-by-side comparison (delta table)
+    _print_comparison(report_baseline, report_rag)
+    # Shows: Accuracy  68.5%  →  78.2%  (+9.7% ✓)
+    #        ECE       0.12   →  0.08   (-0.04 ✓)
+    #        Latency   0.5s   →  1.2s   (+0.7s ✗)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Shared LLM">ALL strategies share the same loaded LLM instance. This ensures any accuracy difference comes from the strategy logic, not model randomness.<span class="purpose">Scientific method: control all variables except the one you're testing.</span></li>
+        <li data-line="Persist">Reports are saved to <code>data/eval/</code> immediately after each evaluation. If the script crashes halfway, you don't lose the first strategy's results.<span class="purpose">Crash-resilient design: partial results are always available.</span></li>
+        <li data-line="Delta table">The comparison table shows direction + magnitude of change with ✓/✗ markers. Accuracy up = good (✓). Latency up = bad (✗). ECE down = good (✓).<span class="purpose">At-a-glance understanding: did this change help or hurt?</span></li>
+    </ul>
+
+    <h3>The --mock Flag</h3>
+
+    <div class="code-block">
+        <div class="filename">Every eval script supports --mock</div>
+        <pre><code class="language-python"># CPU smoke test (no GPU, no index, instant):
+python scripts/eval_rag.py --mock
+
+# Real evaluation (requires GPU + FAISS index):
+python scripts/eval_rag.py
+
+# With options:
+python scripts/eval_rag.py --k 5 --categories history science
+python scripts/eval_rag.py --live-fallback --min-score 0.40</code></pre>
+    </div>
+
+    <div class="card tip">
+        <p><strong>Always test with --mock first.</strong> It uses a MockLLM (no GPU) and MockRetriever (no index), so the full pipeline runs end-to-end on CPU in seconds. This catches import errors, missing files, and logic bugs before you burn GPU hours.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 7: The Leaderboard -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s7">
+    <div class="section-number">Section 7</div>
+    <h2>The Leaderboard — Who's Winning?</h2>
+
+    <div class="card analogy">
+        <p><strong>Like a sports league table.</strong> Every time you run an eval script, a JSON "match result" is saved. The leaderboard builder scans all results and produces a sorted table: best strategy at the top, worst at the bottom. One command gives you the full ranking across all experiments.</p>
+    </div>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph LR
+    E1["eval_rag.py<br/>→ baseline_zs.json<br/>→ rag.json"] --> DIR["data/eval/*.json"]
+    E2["eval_tools.py<br/>→ tools_agent.json"] --> DIR
+    E3["eval_ensemble.py<br/>→ ensemble.json"] --> DIR
+    E4["eval_tiered.py<br/>→ tiered_final.json"] --> DIR
+    
+    DIR --> LB["make_leaderboard.py"]
+    LB --> CSV["data/eval/leaderboard.csv"]
+    LB --> TABLE["Printed table:<br/>sorted by accuracy"]
+    
+    style LB fill:#f59e0b,color:#000
+    style CSV fill:#10b981,color:#fff
+        </div>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/make_leaderboard.py</div>
+        <pre><code class="language-python">def build_leaderboard(eval_dir: Path) -> pd.DataFrame:
+    """Scan eval_dir for *.json strategy reports → sorted DataFrame."""
+    rows = []
+    for p in sorted(eval_dir.glob("*.json")):
+        row = _parse_report(p)   # extract: strategy, accuracy, ece, latency, n
+        if row:
+            rows.append(row)
+
+    df = pd.DataFrame(rows, columns=[
+        "strategy", "accuracy", "ece", "latency_p50_s", "latency_p95_s", "n"
+    ])
+    # Sort by accuracy descending — best strategy first
+    return df.sort_values("accuracy", ascending=False)
+
+# Output example:
+#   Strategy                           Accuracy  ECE ↓  Latency p50  N
+#   tiered_final__qwen2.5-7b            82.4%   0.067     1.05s    142
+#   ensemble__qwen2.5-7b                 80.9%   0.072     2.31s    142
+#   rag__qwen2.5-7b                      78.2%   0.083     1.23s    142
+#   baseline_zs__qwen2.5-7b              68.5%   0.121     0.52s    142</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Scan">Scans ALL <code>*.json</code> files in the eval directory. Every eval script writes its results here, so the leaderboard automatically incorporates new experiments.<span class="purpose">No manual registration needed. Run a new eval script → it appears on the leaderboard automatically.</span></li>
+        <li data-line="Sort">Sorted by accuracy descending. The best strategy is always at the top. Ties broken by ECE (lower is better).<span class="purpose">Instant "what's our best strategy?" answer — the top row of the leaderboard.</span></li>
+        <li data-line="CSV">Exports to CSV for downstream analysis (spreadsheets, reports, presentations).<span class="purpose">Machine-readable output enables automated reporting pipelines.</span></li>
+    </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 8: Logging Infrastructure -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s8">
+    <div class="section-number">Section 8</div>
+    <h2>Logging — The Source of All Truth</h2>
+
+    <div class="card analogy">
+        <p><strong>Think of run logs as a ship's black box.</strong> Every question asked, every answer given, every timing, every confidence score — all recorded in real-time to a crash-safe file. After the game, you can reconstruct exactly what happened, mine gold labels, compute calibration, and debug wrong answers. The logs are the raw material that powers the entire evaluation ecosystem.</p>
+    </div>
+
+    <h3>JSONL Format</h3>
+
+    <div class="code-block">
+        <div class="filename">data/runs/run_20260514_012345_baseline_zs.jsonl</div>
+        <pre><code class="language-python"># Line 1: Run manifest (metadata for reproducibility)
+{"run_kind": "manifest", "run_id": "baseline_zs", "started_at": "2026-05-14T01:23:45Z",
+ "git_sha": "abc123", "python_version": "3.11.5", "extra": {"strategy": "baseline[...]"}}
+
+# Lines 2..N: One per question played
+{"run_kind": "question", "level": 5, "question_text": "Who painted the Mona Lisa?",
+ "options": ["Michelangelo", "Da Vinci", "Raphael", "Donatello"],
+ "chosen_index": 1, "chosen_text": "Da Vinci", "correct": true,
+ "latency_seconds": 0.83, "confidence": 0.92, "strategy": "baseline[qwen|zero_shot]",
+ "probs": {"A": 0.03, "B": 0.92, "C": 0.03, "D": 0.02},
+ "extras": {"margin": 0.89, "passages": [...]}}
+
+# Last line: Game summary
+{"run_kind": "summary", "final_level": 12, "earned_amount": 64000.0,
+ "n_questions": 12, "n_correct": 11, "finished_normally": true}</code></pre>
+    </div>
+
+    <h3>The RunLogger</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/logging_utils.py</div>
+        <pre><code class="language-python">class RunLogger:
+    """JSONL append-only logger. Use as a context manager."""
+
+    def __init__(self, runs_dir, *, run_id, extra=None):
+        # Filename: run_20260514_012345_baseline_zs.jsonl
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        self.path = runs_dir / f"run_{ts}_{safe_id}.jsonl"
+
+    def __enter__(self):
+        self._fh = self.path.open("a", encoding="utf-8")
+        self._write(RunManifest(run_id=..., git_sha=...))  # first line
+        return self
+
+    def __exit__(self, *args):
+        self._fh.flush()
+        os.fsync(self._fh.fileno())   # crash-safety: force to disk
+        self._fh.close()
+
+    def log_question(self, rec: QuestionRecord):
+        self._write(rec)
+
+    def log_summary(self, rec: GameSummaryRecord):
+        self._write(rec)
+
+    def _write(self, rec):
+        self._fh.write(json.dumps(asdict(rec)) + "\n")
+        self._fh.flush()  # tail -f friendly</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Manifest">First line captures git SHA, Python version, platform, strategy name. Enough to reproduce the exact conditions of this run.<span class="purpose">Reproducibility: months later, you can recreate the exact environment that produced these results.</span></li>
+        <li data-line="fsync"><code>os.fsync()</code> forces the file to disk on close. Even if the process crashes, all committed data is safe.<span class="purpose">Crash safety: a mid-game crash doesn't lose the questions already played.</span></li>
+        <li data-line="flush">Each <code>_write()</code> calls <code>flush()</code> immediately. You can <code>tail -f</code> the file and watch questions arrive in real-time during a live game.<span class="purpose">Live observability: watch the bot play in real-time from another terminal.</span></li>
+        <li data-line="run_kind">Every record has a <code>run_kind</code> field ("manifest", "question", "summary"). Readers filter on this to extract only what they need.<span class="purpose">Self-describing format: one file, multiple record types, trivial to parse.</span></li>
+    </ul>
+
+    <div class="card warning">
+        <p><strong>Why JSONL (not CSV or SQLite)?</strong> JSONL is append-only (no schema migration), human-readable (open in any editor), streamable (process line-by-line without loading all into memory), and crash-safe (each line is independent — corruption of one line doesn't kill the file). For experimental logging, it's the sweet spot.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 9: The Big Picture -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s9">
+    <div class="section-number">The Big Picture</div>
+    <h2>Full Evaluation Lifecycle</h2>
+
+    <p>Here's how the entire evaluation system connects, from live games to the final leaderboard:</p>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    subgraph "Phase 1: Data Collection"
+        GAME["Play live games<br/>(scripts/play_baseline.py)"] --> LOGS["Run logs (JSONL)<br/>data/runs/*.jsonl"]
+    end
+    
+    subgraph "Phase 2: Gold Set Construction (ONCE)"
+        LOGS --> HARVEST["harvest_gold_set()<br/>(scripts/build_gold_set.py)"]
+        HARVEST --> GOLD["Gold Set (frozen)<br/>data/eval/gold_set.jsonl"]
+    end
+    
+    subgraph "Phase 3: Evaluation (repeated for each strategy)"
+        GOLD --> EVAL_RAG["eval_rag.py<br/>Baseline vs RAG"]
+        GOLD --> EVAL_TOOL["eval_tools.py<br/>Baseline vs ToolStrategy"]
+        GOLD --> EVAL_AGENT["eval_agent.py<br/>Baseline vs Tool vs Agent"]
+        GOLD --> EVAL_ENS["eval_ensemble.py<br/>Baseline vs RAG vs Ensemble"]
+        GOLD --> EVAL_TIER["eval_tiered.py<br/>All vs TieredStrategy"]
+    end
+    
+    subgraph "Phase 4: Analysis"
+        EVAL_RAG --> REPORTS["data/eval/*.json<br/>(one per strategy)"]
+        EVAL_TOOL --> REPORTS
+        EVAL_AGENT --> REPORTS
+        EVAL_ENS --> REPORTS
+        EVAL_TIER --> REPORTS
+        
+        REPORTS --> LEADER["make_leaderboard.py<br/>→ leaderboard.csv"]
+        LOGS --> CALIB["plot_calibration.py<br/>→ reliability diagram"]
+        GOLD --> RET_EVAL["evaluate_retrieval()<br/>→ recall@k, MRR"]
+    end
+    
+    style GOLD fill:#f59e0b,color:#000
+    style LEADER fill:#10b981,color:#fff
+    style CALIB fill:#8b5cf6,color:#fff
+    style RET_EVAL fill:#3b82f6,color:#fff
+        </div>
+    </div>
+
+    <h3>The Evaluation Contract</h3>
+
+    <div class="code-block">
+        <div class="filename">Complete evaluation workflow (conceptual)</div>
+        <pre><code class="language-python"># ═══ PHASE 1: Collect data (run once, or periodically) ═══
+# Play games with baseline strategies to collect correct/wrong answers
+python scripts/play_baseline.py           # → data/runs/run_*.jsonl
+
+# ═══ PHASE 2: Build gold set (run ONCE, then freeze) ═══
+python scripts/build_gold_set.py          # → data/eval/gold_set.jsonl
+
+# ═══ PHASE 3: Evaluate strategies (run after each change) ═══
+python scripts/eval_rag.py                # → data/eval/baseline_zs__*.json
+                                          # → data/eval/rag__*.json
+python scripts/eval_tools.py              # → data/eval/tools_agent__*.json
+python scripts/eval_ensemble.py           # → data/eval/ensemble__*.json
+python scripts/eval_tiered.py             # → data/eval/tiered_final__*.json
+
+# ═══ PHASE 4: Consolidate results ═══
+python -m polimibot.eval.make_leaderboard # → data/eval/leaderboard.csv
+python scripts/plot_calibration.py data/runs/run_xxx.jsonl  # → PNG
+
+# ═══ PHASE 5: Inspect (from Python) ═══
+from polimibot.eval import GoldSet, evaluate_strategy
+
+gold = GoldSet.load("data/eval/gold_set.jsonl")
+gold.print_stats()       # category × level matrix
+maths = gold.filter_category("maths")
+pilot = gold.take_per_level(3, seed=0)
+
+report = evaluate_strategy(my_strategy, pilot)
+report.print_summary()   # accuracy, ECE, latency, per-category</code></pre>
+    </div>
+
+    <h3>Design Principles</h3>
+
+    <table class="comparison-table">
+        <tr><th>Principle</th><th>How it's implemented</th><th>Why it matters</th></tr>
+        <tr><td><strong>Frozen test set</strong></td><td>Gold set built once, committed, never re-harvested</td><td>Comparisons are valid across time</td></tr>
+        <tr><td><strong>Controlled variables</strong></td><td>All strategies in a script share one LLM instance</td><td>Differences come from strategy, not model randomness</td></tr>
+        <tr><td><strong>Reproducibility</strong></td><td>Seeds everywhere, git SHA in manifest, frozen dataclasses</td><td>Re-run → same results</td></tr>
+        <tr><td><strong>Composability</strong></td><td>GoldSet chainable API + evaluate_strategy() accepts any iterable</td><td>Mix and match filters without code changes</td></tr>
+        <tr><td><strong>Crash safety</strong></td><td>fsync on close, flush per write, JSONL format</td><td>No data loss on crashes or keyboard interrupts</td></tr>
+        <tr><td><strong>Incremental</strong></td><td>Each eval script saves results immediately; leaderboard scans all</td><td>Run one script at a time; results accumulate automatically</td></tr>
+        <tr><td><strong>Offline first</strong></td><td>No network calls during evaluation (except --live-fallback)</td><td>Fast iteration without server dependency</td></tr>
+    </table>
+
+    <h3>Metrics at a Glance</h3>
+
+    <table class="comparison-table">
+        <tr><th>Metric</th><th>Source</th><th>Perfect</th><th>Measures</th></tr>
+        <tr><td><strong>Accuracy</strong></td><td>evaluate_strategy()</td><td>1.0</td><td>% of questions answered correctly</td></tr>
+        <tr><td><strong>ECE</strong></td><td>compute_calibration()</td><td>0.0</td><td>Confidence vs reality alignment</td></tr>
+        <tr><td><strong>Latency p50/p95</strong></td><td>evaluate_strategy()</td><td>low</td><td>Time to answer (must fit in server timeout)</td></tr>
+        <tr><td><strong>Recall@k</strong></td><td>evaluate_retrieval()</td><td>1.0</td><td>% of time the right article is in top-k</td></tr>
+        <tr><td><strong>MRR</strong></td><td>evaluate_retrieval()</td><td>1.0</td><td>Mean rank quality of the gold article</td></tr>
+        <tr><td><strong>Per-category acc</strong></td><td>EvalReport.by_category</td><td>1.0</td><td>Which categories are weak spots</td></tr>
+    </table>
+
+    <div class="card analogy">
+        <p><strong>The evaluation system is the project's immune system.</strong> It detects regressions (did this change hurt?), validates improvements (did this change actually help?), and provides the evidence needed to choose which strategy to deploy in production. Without it, every change would be a leap of faith.</p>
+    </div>
+</section>
+
+</div>
+
+<script>
+mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+        primaryColor: '#1a2235',
+        primaryTextColor: '#e2e8f0',
+        primaryBorderColor: '#f59e0b',
+        lineColor: '#4b5563',
+        secondaryColor: '#111827',
+        tertiaryColor: '#0a0e1a',
+    }
+});
+</script>
+
+</body>
+</html>

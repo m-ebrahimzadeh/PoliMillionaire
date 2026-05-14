@@ -1,0 +1,1458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PoliMillionaire — Prompt Engineering Deep Dive</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <!-- Prism.js — syntax highlighting -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js" defer></script>
+
+  <!-- Mermaid.js — diagrams -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'base',
+      themeVariables: {
+        primaryColor: '#1e3a5f',
+        primaryTextColor: '#f0f4ff',
+        primaryBorderColor: '#f59e0b',
+        lineColor: '#94a3b8',
+        secondaryColor: '#0f2035',
+        tertiaryColor: '#162d4a',
+        background: '#0d1b2e',
+        mainBkg: '#1e3a5f',
+        nodeBorder: '#f59e0b',
+        clusterBkg: '#0f2035',
+        titleColor: '#f0f4ff',
+        edgeLabelBackground: '#0f2035',
+        fontFamily: 'Inter, sans-serif',
+        fontSize: '14px',
+      }
+    });
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #0a1628;
+      --surface:     #0f2035;
+      --surface2:    #162d4a;
+      --border:      #1e3a5f;
+      --accent:      #f59e0b;
+      --accent2:     #38bdf8;
+      --accent3:     #34d399;
+      --accent4:     #f472b6;
+      --accent5:     #a78bfa;
+      --text:        #e2e8f0;
+      --text-muted:  #94a3b8;
+      --text-dim:    #64748b;
+      --heading:     #f0f4ff;
+      --code-bg:     #0d1b2e;
+      --radius:      10px;
+      --radius-lg:   16px;
+      --shadow:      0 4px 24px rgba(0,0,0,0.4);
+      --max-w:       920px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      font-size: 16px;
+    }
+
+    .container { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; }
+
+    /* ─── Hero ──────────────────────────────────────────────────────────── */
+    .hero {
+      background: linear-gradient(135deg, #0a1628 0%, #0f2035 40%, #162d4a 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 80px 0 60px;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse 80% 60% at 60% 40%, rgba(167,139,250,0.07) 0%, transparent 70%),
+                  radial-gradient(ellipse 50% 50% at 20% 80%, rgba(56,189,248,0.06) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(167,139,250,0.1);
+      border: 1px solid rgba(167,139,250,0.3);
+      color: var(--accent5);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 5px 14px;
+      border-radius: 100px;
+      margin-bottom: 20px;
+    }
+    .hero h1 {
+      font-size: clamp(2rem, 5vw, 3.2rem);
+      font-weight: 700;
+      color: var(--heading);
+      line-height: 1.2;
+      margin-bottom: 16px;
+    }
+    .hero h1 span { color: var(--accent5); }
+    .hero p {
+      font-size: 1.1rem;
+      color: var(--text-muted);
+      max-width: 620px;
+      margin-bottom: 32px;
+    }
+    .hero-tags { display: flex; flex-wrap: wrap; gap: 10px; }
+    .tag {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 4px 12px;
+      border-radius: 100px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ─── TOC ───────────────────────────────────────────────────────────── */
+    .toc {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px 32px;
+      margin: 48px 0 0;
+    }
+    .toc h2 {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent5);
+      margin-bottom: 16px;
+    }
+    .toc ol { padding-left: 0; list-style: none; counter-reset: toc; }
+    .toc > ol > li { counter-increment: toc; margin-bottom: 6px; }
+    .toc > ol > li > a::before {
+      content: counter(toc, decimal-leading-zero) ". ";
+      color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+    }
+    .toc a { color: var(--text-muted); text-decoration: none; font-size: 14px; transition: color 0.15s; }
+    .toc a:hover { color: var(--accent5); }
+
+    /* ─── Sections ──────────────────────────────────────────────────────── */
+    section { padding: 64px 0; border-bottom: 1px solid var(--border); }
+    section:last-of-type { border-bottom: none; }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--accent5);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+    h2.section-title {
+      font-size: clamp(1.5rem, 3vw, 2rem);
+      font-weight: 700;
+      color: var(--heading);
+      margin-bottom: 12px;
+      line-height: 1.3;
+    }
+    .section-intro {
+      font-size: 1.05rem;
+      color: var(--text-muted);
+      margin-bottom: 36px;
+      max-width: 700px;
+    }
+
+    h3.sub-title {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: var(--heading);
+      margin: 36px 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    h3.sub-title .pill {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 2px 10px;
+      border-radius: 100px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .pill-fast  { background: rgba(52,211,153,0.15); color: var(--accent3); border: 1px solid rgba(52,211,153,0.3); }
+    .pill-slow  { background: rgba(244,114,182,0.15); color: var(--accent4); border: 1px solid rgba(244,114,182,0.3); }
+    .pill-new   { background: rgba(56,189,248,0.15);  color: var(--accent2); border: 1px solid rgba(56,189,248,0.3); }
+    .pill-core  { background: rgba(245,158,11,0.12);  color: var(--accent);  border: 1px solid rgba(245,158,11,0.3); }
+    .pill-purple { background: rgba(167,139,250,0.12); color: var(--accent5); border: 1px solid rgba(167,139,250,0.3); }
+
+    p { margin-bottom: 16px; }
+    p:last-child { margin-bottom: 0; }
+
+    /* ─── Callout Boxes ─────────────────────────────────────────────────── */
+    .callout {
+      border-radius: var(--radius);
+      padding: 18px 22px;
+      margin: 24px 0;
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+    }
+    .callout-icon { font-size: 20px; flex-shrink: 0; margin-top: 2px; }
+    .callout-body { flex: 1; font-size: 14px; }
+    .callout-body strong { display: block; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
+    .callout.info    { background: rgba(56,189,248,0.08);  border-left: 3px solid var(--accent2); }
+    .callout.info    .callout-body strong { color: var(--accent2); }
+    .callout.tip     { background: rgba(52,211,153,0.08);  border-left: 3px solid var(--accent3); }
+    .callout.tip     .callout-body strong { color: var(--accent3); }
+    .callout.warning { background: rgba(245,158,11,0.08);  border-left: 3px solid var(--accent); }
+    .callout.warning .callout-body strong { color: var(--accent); }
+    .callout.purple  { background: rgba(167,139,250,0.08); border-left: 3px solid var(--accent5); }
+    .callout.purple  .callout-body strong { color: var(--accent5); }
+
+    /* ─── Code Blocks ───────────────────────────────────────────────────── */
+    .code-block {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin: 20px 0;
+      overflow: hidden;
+    }
+    .code-block-header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .code-file {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .code-file span { color: var(--accent5); }
+    .code-block pre {
+      margin: 0 !important;
+      padding: 20px !important;
+      background: transparent !important;
+      font-size: 13px !important;
+      line-height: 1.65 !important;
+      font-family: 'JetBrains Mono', monospace !important;
+      overflow-x: auto;
+    }
+    code { font-family: 'JetBrains Mono', monospace; }
+    :not(pre) > code {
+      background: var(--surface2);
+      color: var(--accent2);
+      font-size: 0.88em;
+      padding: 2px 7px;
+      border-radius: 4px;
+    }
+
+    /* ─── Diagram Wrapper ───────────────────────────────────────────────── */
+    .diagram-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 32px 24px;
+      margin: 28px 0;
+      overflow-x: auto;
+    }
+    .diagram-wrap .mermaid { display: flex; justify-content: center; }
+    .diagram-caption { text-align: center; font-size: 12px; color: var(--text-dim); margin-top: 14px; }
+
+    /* ─── Cards Grid ────────────────────────────────────────────────────── */
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin: 24px 0;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .card:hover { border-color: var(--accent5); transform: translateY(-2px); }
+    .card-icon { font-size: 28px; margin-bottom: 12px; }
+    .card h4 { font-size: 15px; font-weight: 600; color: var(--heading); margin-bottom: 6px; }
+    .card p { font-size: 13px; color: var(--text-muted); margin-bottom: 0; }
+
+    /* ─── Prompt Showcase ───────────────────────────────────────────────── */
+    .prompt-showcase {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      margin: 24px 0;
+    }
+    .prompt-showcase-header {
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .prompt-showcase-header .role {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 3px 10px;
+      border-radius: 100px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .role-system  { background: rgba(245,158,11,0.12); color: var(--accent);  border: 1px solid rgba(245,158,11,0.3); }
+    .role-user    { background: rgba(56,189,248,0.12);  color: var(--accent2); border: 1px solid rgba(56,189,248,0.3); }
+    .role-assistant { background: rgba(52,211,153,0.12); color: var(--accent3); border: 1px solid rgba(52,211,153,0.3); }
+    .prompt-showcase-body {
+      padding: 18px 20px;
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.8;
+      white-space: pre-wrap;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ─── Style Comparison ──────────────────────────────────────────────── */
+    .style-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin: 24px 0;
+    }
+    @media (max-width: 700px) { .style-grid { grid-template-columns: 1fr; } }
+    .style-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 22px;
+      position: relative;
+    }
+    .style-card.active { border-color: var(--accent5); }
+    .style-card h4 {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--heading);
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .style-card .enum-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: var(--accent5);
+      background: rgba(167,139,250,0.08);
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .style-card p { font-size: 13px; color: var(--text-muted); margin: 8px 0 0; }
+    .style-card .output-fmt {
+      margin-top: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--accent3);
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      white-space: pre-wrap;
+    }
+    .style-card .badges { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+    .style-card .badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .badge-logit { background: rgba(52,211,153,0.12); color: var(--accent3); }
+    .badge-gen   { background: rgba(244,114,182,0.12); color: var(--accent4); }
+    .badge-few   { background: rgba(56,189,248,0.12);  color: var(--accent2); }
+
+    /* ─── Parse cascade ─────────────────────────────────────────────────── */
+    .cascade { margin: 24px 0; }
+    .cascade-item {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 16px;
+      align-items: flex-start;
+    }
+    .cascade-num {
+      width: 28px; height: 28px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; color: var(--accent5);
+      flex-shrink: 0;
+    }
+    .cascade-body h4 { font-size: 14px; font-weight: 600; color: var(--heading); margin-bottom: 4px; }
+    .cascade-body p { font-size: 13px; color: var(--text-muted); margin: 0; }
+    .cascade-body code { font-size: 11px; }
+
+    /* ─── Comparison Table ──────────────────────────────────────────────── */
+    .compare-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 24px 0;
+      font-size: 14px;
+    }
+    .compare-table th {
+      background: var(--surface2);
+      color: var(--heading);
+      font-weight: 600;
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 2px solid var(--accent5);
+    }
+    .compare-table th:first-child { border-radius: var(--radius) 0 0 0; }
+    .compare-table th:last-child  { border-radius: 0 var(--radius) 0 0; }
+    .compare-table td {
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-muted);
+      vertical-align: top;
+    }
+    .compare-table tr:last-child td { border-bottom: none; }
+    .compare-table tr:hover td { background: rgba(255,255,255,0.02); }
+    .compare-table td:first-child { color: var(--text); font-weight: 500; }
+    .compare-table .good { color: var(--accent3); }
+    .compare-table .bad  { color: #f87171; }
+
+    /* ─── Config Table ──────────────────────────────────────────────────── */
+    .config-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 24px 0;
+      font-size: 13px;
+    }
+    .config-table th {
+      background: var(--surface2);
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 10px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    .config-table td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    .config-table tr:last-child td { border-bottom: none; }
+    .config-table .cfg-key { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent2); }
+    .config-table .cfg-default { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent3); }
+    .config-table .cfg-desc { color: var(--text-muted); }
+
+    /* ─── Footer ─────────────────────────────────────────────────────────── */
+    footer {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 32px 0;
+      text-align: center;
+    }
+    footer p { font-size: 13px; color: var(--text-dim); }
+    footer a { color: var(--accent5); text-decoration: none; }
+
+    /* ─── Scrollbar ──────────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--accent5); }
+
+    @media (max-width: 600px) {
+      .hero { padding: 48px 0 40px; }
+      section { padding: 44px 0; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ HERO -->
+<header class="hero">
+  <div class="container">
+    <div class="hero-badge">📝 Technical Documentation</div>
+    <h1>The <span>Prompt Engineering</span><br/>System — Deep Dive</h1>
+    <p>A complete guide to how PoliMillionaire crafts prompts for the LLM — from category-specific system messages to answer parsing, ablatable experiment styles, and logit scoring.</p>
+    <div class="hero-tags">
+      <span class="tag">PromptStyle enum</span>
+      <span class="tag">Chain-of-Thought</span>
+      <span class="tag">Few-Shot</span>
+      <span class="tag">Elimination</span>
+      <span class="tag">Logit Scoring</span>
+      <span class="tag">Answer Parsing</span>
+      <span class="tag">Chat Templates</span>
+    </div>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ TOC -->
+<div class="container">
+  <nav class="toc">
+    <h2>Table of Contents</h2>
+    <ol>
+      <li><a href="#s1">Why Prompt Design Matters</a></li>
+      <li><a href="#s2">The PromptStyle Enum — 5 Experiment Conditions</a></li>
+      <li><a href="#s3">System Prompts — Category-Specific Instructions</a></li>
+      <li><a href="#s4">Output Instructions — Direct, CoT, Elimination</a></li>
+      <li><a href="#s5">Few-Shot Examples — Teaching by Demonstration</a></li>
+      <li><a href="#s6">Message Assembly — build_messages() Deep Dive</a></li>
+      <li><a href="#s7">RAG Context Injection — build_messages_with_context()</a></li>
+      <li><a href="#s8">Answer Parsing — The Regex Cascade</a></li>
+      <li><a href="#s9">LLM Integration — Logit Scoring vs Free Generation</a></li>
+      <li><a href="#s10">Strategy Wiring — How Strategies Use Prompts</a></li>
+    </ol>
+  </nav>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ MAIN -->
+<main>
+<div class="container">
+
+<!-- ─── S1: WHY PROMPTS MATTER ──────────────────────────────────────── -->
+<section id="s1">
+  <div class="section-label">Section 01</div>
+  <h2 class="section-title">Why Prompt Design Matters</h2>
+  <p class="section-intro">In PoliMillionaire, the same LLM answers trivia questions across four categories. The difference between 60% and 85% accuracy often isn't a better model — it's a better prompt.</p>
+
+  <div class="callout purple">
+    <div class="callout-icon">🎯</div>
+    <div class="callout-body">
+      <strong>Core Philosophy</strong>
+      A <code>PromptStyle</code> is an <strong>experiment condition</strong>, not a magic string. Only the <code>templates.py</code> module knows what text goes to the model. Everything else speaks in terms of the enum — making ablation studies trivial.
+    </div>
+  </div>
+
+  <p>The prompt system in <code>polimibot/prompts/templates.py</code> is designed with three principles:</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <div class="card-icon">🧪</div>
+      <h4>Ablatable</h4>
+      <p>Swap one enum value → completely different prompting strategy. Same interface, different experiment condition. No code changes needed.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🧩</div>
+      <h4>Composable</h4>
+      <p>System prompt + output instruction + optional few-shot + optional RAG context. Each piece is independent and can be toggled.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">✅</div>
+      <h4>Testable</h4>
+      <p>Pure functions that return message lists. No model dependency. Unit tests verify structure without loading a 7B model.</p>
+    </div>
+  </div>
+
+  <div class="diagram-wrap">
+    <div class="mermaid">
+flowchart LR
+    Q(["🎯 Question\n+ Options"]) --> B["📝 build_messages()"]
+    CAT["📂 Category"] --> B
+    STYLE["🎨 PromptStyle"] --> B
+    B --> M["💬 Messages\n[system, user, ...]"]
+    M --> LLM{{"🤖 LLM"}}
+    LLM --> |"score_options()"| LOG["📊 Logit\nProbabilities"]
+    LLM --> |"generate()"| GEN["📄 Free Text"]
+    GEN --> PA["🔍 parse_answer()"]
+    PA --> ANS(["✅ Answer\nA/B/C/D"])
+    LOG --> ANS
+
+    style Q fill:#1e3a5f,stroke:#38bdf8,color:#f0f4ff
+    style ANS fill:#1e3a5f,stroke:#34d399,color:#f0f4ff
+    style STYLE fill:#162d4a,stroke:#a78bfa,color:#f0f4ff
+    style LLM fill:#162d4a,stroke:#f59e0b,color:#f0f4ff
+    </div>
+    <p class="diagram-caption">High-level flow: question → prompts → LLM → answer</p>
+  </div>
+</section>
+
+<!-- ─── S2: PROMPT STYLES ───────────────────────────────────────────── -->
+<section id="s2">
+  <div class="section-label">Section 02</div>
+  <h2 class="section-title">The PromptStyle Enum — 5 Experiment Conditions</h2>
+  <p class="section-intro">Each <code>PromptStyle</code> produces a completely different prompt structure. Changing the enum is like flipping a switch between different strategies — the calling code doesn't change at all.</p>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/prompts/templates.py</span> — the enum</span>
+    </div>
+    <pre><code class="language-python">class PromptStyle(str, Enum):
+    """Ablatable prompting variants. Add new ones here; nothing else changes."""
+    ZERO_SHOT     = "zero_shot"       # no examples, no CoT — direct "Answer: X"
+    ZERO_SHOT_COT = "zero_shot_cot"   # no examples, numbered-step reasoning + \boxed
+    FEW_SHOT      = "few_shot"        # 1 curated example per category
+    FEW_SHOT_COT  = "few_shot_cot"    # 1 example with reasoning trace + \boxed
+    ELIMINATION   = "elimination"     # option-by-option scaffolding + \boxed</code></pre>
+  </div>
+
+  <div class="style-grid">
+    <div class="style-card">
+      <h4>Zero-Shot <span class="enum-val">zero_shot</span></h4>
+      <p>No examples, no reasoning. The model must answer directly in one letter.</p>
+      <div class="output-fmt">Answer: B</div>
+      <div class="badges">
+        <span class="badge badge-logit">✓ logit scoring</span>
+      </div>
+    </div>
+    <div class="style-card">
+      <h4>Zero-Shot CoT <span class="enum-val">zero_shot_cot</span></h4>
+      <p>Step-by-step reasoning chain, then commit to an answer.</p>
+      <div class="output-fmt">Step 1: The question asks...
+Step 2: Recall that...
+Step 3: Therefore...
+\boxed{B}</div>
+      <div class="badges">
+        <span class="badge badge-gen">✓ generation only</span>
+      </div>
+    </div>
+    <div class="style-card">
+      <h4>Few-Shot <span class="enum-val">few_shot</span></h4>
+      <p>One curated example per category, then the real question. Direct answer.</p>
+      <div class="output-fmt">Answer: B</div>
+      <div class="badges">
+        <span class="badge badge-logit">✓ logit scoring</span>
+        <span class="badge badge-few">1 example</span>
+      </div>
+    </div>
+    <div class="style-card">
+      <h4>Few-Shot CoT <span class="enum-val">few_shot_cot</span></h4>
+      <p>One example with full reasoning trace, then the real question with CoT.</p>
+      <div class="output-fmt">Steven Spielberg directed Jaws (1975) 
+and Schindler's List (1993).
+\boxed{B}</div>
+      <div class="badges">
+        <span class="badge badge-gen">✓ generation only</span>
+        <span class="badge badge-few">1 example</span>
+      </div>
+    </div>
+    <div class="style-card active" style="grid-column: span 2;">
+      <h4>Elimination <span class="enum-val">elimination</span></h4>
+      <p>Evaluate each option systematically, eliminating wrong answers before committing. Forces the model to consider every option rather than anchoring on the first plausible one.</p>
+      <div class="output-fmt">A: Martin Scorsese — directed Goodfellas, not Jaws. Wrong.
+B: Steven Spielberg — directed both Jaws and Schindler's List. Correct.
+C: Francis Ford Coppola — directed The Godfather, not these. Wrong.
+D: Stanley Kubrick — directed 2001, not these. Wrong.
+\boxed{B}</div>
+      <div class="badges">
+        <span class="badge badge-gen">✓ generation only</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout tip">
+    <div class="callout-icon">⚡</div>
+    <div class="callout-body">
+      <strong>Key Rule: Logit Scoring vs Generation</strong>
+      Only <code>ZERO_SHOT</code> and <code>FEW_SHOT</code> support logit scoring (<code>use_score_options=True</code>). The CoT and Elimination styles <em>must</em> use free generation because the first predicted token is the start of the reasoning trace, not the answer letter. The code enforces this with a hard error.
+    </div>
+  </div>
+</section>
+
+<!-- ─── S3: SYSTEM PROMPTS ──────────────────────────────────────────── -->
+<section id="s3">
+  <div class="section-label">Section 03</div>
+  <h2 class="section-title">System Prompts — Category-Specific Instructions</h2>
+  <p class="section-intro">Each category gets a different system prompt that teaches the model the <em>gotchas</em> of that domain. These are instructive, not flattering — generic praise ("You are an expert") leaves accuracy on the table.</p>
+
+  <div class="callout warning">
+    <div class="callout-icon">💡</div>
+    <div class="callout-body">
+      <strong>Design Insight</strong>
+      The system prompts warn about <em>specific distractor patterns</em> the trivia game uses. For History: "similar-sounding dynasties, namesake successors." For Science: "units confusion, necessary vs sufficient conditions." This primes the model to double-check exactly the things the distractors exploit.
+    </div>
+  </div>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-system">system</span>
+      <span style="font-size:12px;color:var(--text-dim);">Category: ENTERTAINMENT</span>
+    </div>
+    <div class="prompt-showcase-body">You are answering multiple-choice trivia on film, music, television, and pop culture. Trivia distractors often pair real co-stars from the same era, films by the same director, or bands sharing members. Verify the specific year, director, album, or actor before committing.</div>
+  </div>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-system">system</span>
+      <span style="font-size:12px;color:var(--text-dim);">Category: HISTORY</span>
+    </div>
+    <div class="prompt-showcase-body">You are answering multiple-choice trivia on ancient history, classical civilisations, and political history. Watch for plausible distractors that confuse adjacent centuries, similar-sounding dynasties, or namesake successors (e.g. Caesar vs Augustus, Henry V vs Henry VIII). Verify the specific century or reign before committing.</div>
+  </div>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-system">system</span>
+      <span style="font-size:12px;color:var(--text-dim);">Category: SCIENCE</span>
+    </div>
+    <div class="prompt-showcase-body">You are answering multiple-choice trivia on biology, chemistry, physics, and the natural world. Be careful with units (atoms vs molecules, kg vs g, joules vs calories) and distinguish necessary from sufficient conditions in causal claims.</div>
+  </div>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-system">system</span>
+      <span style="font-size:12px;color:var(--text-dim);">Category: MATHS</span>
+    </div>
+    <div class="prompt-showcase-body">You are a careful mathematician. Compute precisely — do not guess. Verify each calculation before committing.</div>
+  </div>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-system">system</span>
+      <span style="font-size:12px;color:var(--text-dim);">Category: None (fallback)</span>
+    </div>
+    <div class="prompt-showcase-body">You are a careful, knowledgeable quiz contestant. From four options labelled A, B, C and D, pick the single best answer.</div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/prompts/templates.py</span> — system prompt selection</span>
+    </div>
+    <pre><code class="language-python">def _system_prompt(category: Optional[Category]) -> str:
+    """Pick the category-specific system prompt, or fall back to generic."""
+    return _CATEGORY_SYSTEM.get(category, _GENERIC_SYSTEM) if category else _GENERIC_SYSTEM</code></pre>
+  </div>
+</section>
+
+<!-- ─── S4: OUTPUT INSTRUCTIONS ─────────────────────────────────────── -->
+<section id="s4">
+  <div class="section-label">Section 04</div>
+  <h2 class="section-title">Output Instructions — Direct, CoT, Elimination</h2>
+  <p class="section-intro">The output instruction tells the model <em>how to format</em> its answer. Different styles require different formats — and the format must be parseable back to a single letter.</p>
+
+  <h3 class="sub-title">The Three Instruction Blocks</h3>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-user">_DIRECT</span>
+      <span style="font-size:12px;color:var(--text-dim);">Used by: ZERO_SHOT, FEW_SHOT</span>
+    </div>
+    <div class="prompt-showcase-body">Begin your reply with 'Answer:' followed by exactly one letter from A, B, C, D. Do not include any text before 'Answer:'.</div>
+  </div>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-user">_COT</span>
+      <span style="font-size:12px;color:var(--text-dim);">Used by: ZERO_SHOT_COT, FEW_SHOT_COT</span>
+    </div>
+    <div class="prompt-showcase-body">Solve step by step using this structure:
+  Step 1: Restate what the question asks.
+  Step 2: Compute, eliminate, or recall the relevant fact.
+  Step 3: End with \boxed{X} on its own line, where X is one of A, B, C, D.</div>
+  </div>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-user">_ELIMINATION</span>
+      <span style="font-size:12px;color:var(--text-dim);">Used by: ELIMINATION</span>
+    </div>
+    <div class="prompt-showcase-body">Evaluate each option in one short sentence, then commit:
+  A: &lt;why right or wrong&gt;
+  B: &lt;why right or wrong&gt;
+  C: &lt;why right or wrong&gt;
+  D: &lt;why right or wrong&gt;
+Then on a new line write \boxed{X} with the best answer.</div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/prompts/templates.py</span> — instruction selector</span>
+    </div>
+    <pre><code class="language-python">def _instruction_for(style: PromptStyle) -> str:
+    """Pick the output-instruction block for the given style."""
+    if style == PromptStyle.ELIMINATION:
+        return _ELIMINATION
+    if style in (PromptStyle.ZERO_SHOT_COT, PromptStyle.FEW_SHOT_COT):
+        return _COT
+    return _DIRECT</code></pre>
+  </div>
+
+  <div class="callout info">
+    <div class="callout-icon">📐</div>
+    <div class="callout-body">
+      <strong>Why \boxed{X}?</strong>
+      <code>\boxed{X}</code> is the native answer format for Qwen-Math and DeepSeek-Math RL models. Using it as the termination signal means: (1) the model produces it naturally without extra training, (2) it serves as an early-stop signal (cuts off "Hope this helps!" chatter), and (3) it's unambiguous for the regex parser.
+    </div>
+  </div>
+</section>
+
+<!-- ─── S5: FEW-SHOT EXAMPLES ───────────────────────────────────────── -->
+<section id="s5">
+  <div class="section-label">Section 05</div>
+  <h2 class="section-title">Few-Shot Examples — Teaching by Demonstration</h2>
+  <p class="section-intro">For <code>FEW_SHOT</code> and <code>FEW_SHOT_COT</code> styles, one hand-curated example per category is injected before the real question. These examples are carefully designed to teach reasoning patterns, not just answer format.</p>
+
+  <h3 class="sub-title">Design Principles for Examples</h3>
+  <ul style="margin: 12px 0 24px 24px; color: var(--text-muted); font-size: 14px; line-height: 2.2;">
+    <li><strong style="color:var(--text)">Exercise the right reasoning</strong> — modular arithmetic for Maths, date disambiguation for History</li>
+    <li><strong style="color:var(--text)">Avoid word-overlap</strong> — if the question mentions the correct option's noun, the model learns a brittle "pick the repeated word" heuristic</li>
+    <li><strong style="color:var(--text)">Match the output format</strong> — CoT examples include rationale + <code>\boxed{X}</code>; direct examples just say <code>Answer: X</code></li>
+  </ul>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/prompts/templates.py</span> — the curated few-shot bank</span>
+    </div>
+    <pre><code class="language-python">_FEW_SHOT_BANK: Dict[Category, FewShotExample] = {
+    Category.ENTERTAINMENT: FewShotExample(
+        question="Which director directed both 'Jaws' and 'Schindler's List'?",
+        options=("Martin Scorsese", "Steven Spielberg", 
+                 "Francis Ford Coppola", "Stanley Kubrick"),
+        answer_letter="B",
+        rationale="Steven Spielberg directed Jaws (1975) and Schindler's List (1993).",
+    ),
+    Category.HISTORY: FewShotExample(
+        question="In which year did Julius Caesar cross the Rubicon?",
+        options=("63 BC", "49 BC", "44 BC", "31 BC"),
+        answer_letter="B",
+        rationale="Caesar crossed the Rubicon in 49 BC, triggering the Roman civil war.",
+    ),
+    Category.SCIENCE: FewShotExample(
+        question="What is the chemical symbol for gold?",
+        options=("Ag", "Fe", "Au", "Cu"),
+        answer_letter="C",
+        rationale="Gold's symbol Au comes from the Latin 'aurum'.",
+    ),
+    Category.MATHS: FewShotExample(
+        question="What is the units digit of 3^100?",
+        options=("1", "3", "7", "9"),
+        answer_letter="A",
+        rationale=(
+            "Units digits of 3^n cycle (3, 9, 7, 1) with period 4. "
+            "100 mod 4 = 0, so we take the last value in the cycle: 1."
+        ),
+    ),
+}</code></pre>
+  </div>
+
+  <h3 class="sub-title">How Examples Become Messages</h3>
+  <p>Each example is turned into a user + assistant message pair. The assistant's response format <em>exactly matches</em> the output instruction the model just received — so the example teaches the format, it doesn't contradict it:</p>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/prompts/templates.py</span> — example formatting</span>
+    </div>
+    <pre><code class="language-python">def _example_answer_format(style: PromptStyle, rationale: Optional[str], letter: str) -> str:
+    """How a few-shot assistant turn should phrase its answer."""
+    if style in (PromptStyle.ZERO_SHOT_COT, PromptStyle.FEW_SHOT_COT) and rationale:
+        return f"{rationale}\n\\boxed{{{letter}}}"
+    return f"Answer: {letter}"
+
+# For FEW_SHOT (direct): assistant says "Answer: B"
+# For FEW_SHOT_COT: assistant says "Steven Spielberg directed Jaws...\n\boxed{B}"</code></pre>
+  </div>
+</section>
+
+<!-- ─── S6: MESSAGE ASSEMBLY ────────────────────────────────────────── -->
+<section id="s6">
+  <div class="section-label">Section 06</div>
+  <h2 class="section-title">Message Assembly — build_messages() Deep Dive</h2>
+  <p class="section-intro">The <code>build_messages()</code> function is the single public API that strategies call. It assembles a list of chat messages ready for the LLM — the format that HuggingFace <code>apply_chat_template()</code> expects.</p>
+
+  <div class="diagram-wrap">
+    <div class="mermaid">
+flowchart TD
+    SYS["🔧 System Prompt\n(category-specific)"] --> MSGS["💬 Messages List"]
+    
+    subgraph "Only if FEW_SHOT or FEW_SHOT_COT"
+        EX_U["👤 Example User Turn\n(question + options + instruction)"]
+        EX_A["🤖 Example Assistant Turn\n(format-matching answer)"]
+    end
+    
+    EX_U --> MSGS
+    EX_A --> MSGS
+    
+    USER["👤 Real User Turn\n(question + options + instruction)"] --> MSGS
+    
+    MSGS --> OUT(["Return: List[Dict]\nready for LLM"])
+
+    style SYS fill:#1e3a5f,stroke:#f59e0b,color:#f0f4ff
+    style USER fill:#1e3a5f,stroke:#38bdf8,color:#f0f4ff
+    style EX_U fill:#162d4a,stroke:#38bdf8,color:#f0f4ff
+    style EX_A fill:#162d4a,stroke:#34d399,color:#f0f4ff
+    style OUT fill:#1e3a5f,stroke:#a78bfa,color:#f0f4ff
+    </div>
+    <p class="diagram-caption">Message assembly order — system → (optional few-shot pair) → real question</p>
+  </div>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/prompts/templates.py</span> — build_messages()</span>
+    </div>
+    <pre><code class="language-python">def build_messages(
+    question: str,
+    options: Sequence[str],
+    *,
+    category: Optional[Category] = None,
+    style: PromptStyle = PromptStyle.ZERO_SHOT,
+) -> List[Dict[str, str]]:
+    """Assemble chat messages for a single MCQ question.
+
+    This is the only function the strategy layer calls.
+    Swap the style → different experiment condition, same interface.
+    """
+    if len(options) != 4:
+        raise ValueError(f"Expected 4 options, got {len(options)}")
+
+    messages: List[Dict[str, str]] = [
+        {"role": "system", "content": _system_prompt(category)}
+    ]
+
+    # Inject the curated example if this is a few-shot style
+    if style in (PromptStyle.FEW_SHOT, PromptStyle.FEW_SHOT_COT):
+        example = _FEW_SHOT_BANK.get(category) if category else None
+        if example:
+            messages.extend(_few_shot_turns(example, style=style))
+
+    # The actual question
+    messages.append({"role": "user", "content": _user_turn(question, options, style=style)})
+    return messages</code></pre>
+  </div>
+
+  <h3 class="sub-title">Example: Complete ZERO_SHOT Message</h3>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-system">system</span>
+    </div>
+    <div class="prompt-showcase-body">You are answering multiple-choice trivia on biology, chemistry, physics, and the natural world. Be careful with units (atoms vs molecules, kg vs g, joules vs calories) and distinguish necessary from sufficient conditions in causal claims.</div>
+  </div>
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-user">user</span>
+    </div>
+    <div class="prompt-showcase-body">Question: What is the chemical symbol for gold?
+
+Options:
+A. Ag
+B. Fe
+C. Au
+D. Cu
+
+Begin your reply with 'Answer:' followed by exactly one letter from A, B, C, D. Do not include any text before 'Answer:'.</div>
+  </div>
+
+  <h3 class="sub-title">Example: Complete FEW_SHOT_COT Messages</h3>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-system">system</span>
+    </div>
+    <div class="prompt-showcase-body">You are a careful mathematician. Compute precisely — do not guess. Verify each calculation before committing.</div>
+  </div>
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-user">user</span>
+      <span style="font-size:11px;color:var(--text-dim);">← Few-shot example</span>
+    </div>
+    <div class="prompt-showcase-body">Question: What is the units digit of 3^100?
+
+Options:
+A. 1
+B. 3
+C. 7
+D. 9
+
+Solve step by step using this structure:
+  Step 1: Restate what the question asks.
+  Step 2: Compute, eliminate, or recall the relevant fact.
+  Step 3: End with \boxed{X} on its own line, where X is one of A, B, C, D.</div>
+  </div>
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-assistant">assistant</span>
+      <span style="font-size:11px;color:var(--text-dim);">← Teaching the format</span>
+    </div>
+    <div class="prompt-showcase-body">Units digits of 3^n cycle (3, 9, 7, 1) with period 4. 100 mod 4 = 0, so we take the last value in the cycle: 1.
+\boxed{A}</div>
+  </div>
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-user">user</span>
+      <span style="font-size:11px;color:var(--text-dim);">← Real question</span>
+    </div>
+    <div class="prompt-showcase-body">Question: What is 17 mod 5?
+
+Options:
+A. 1
+B. 2
+C. 3
+D. 4
+
+Solve step by step using this structure:
+  Step 1: Restate what the question asks.
+  Step 2: Compute, eliminate, or recall the relevant fact.
+  Step 3: End with \boxed{X} on its own line, where X is one of A, B, C, D.</div>
+  </div>
+</section>
+
+<!-- ─── S7: RAG CONTEXT INJECTION ───────────────────────────────────── -->
+<section id="s7">
+  <div class="section-label">Section 07</div>
+  <h2 class="section-title">RAG Context Injection — build_messages_with_context()</h2>
+  <p class="section-intro">When the RAG strategy retrieves relevant passages, they need to be injected into the prompt. <code>build_messages_with_context()</code> handles this with a careful ordering rationale.</p>
+
+  <div class="callout info">
+    <div class="callout-icon">🧠</div>
+    <div class="callout-body">
+      <strong>Ordering Rationale</strong>
+      Chat-tuned models attend most strongly to the most recent tokens. The question + options come BEFORE the context, so the question never has to compete with retrieval for attention. The context is framed as "reference material (may or may not be relevant)" — hedging avoids pulling the model toward fabricated answers from off-topic retrievals.
+    </div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/prompts/templates.py</span> — build_messages_with_context()</span>
+    </div>
+    <pre><code class="language-python">def build_messages_with_context(
+    question: str,
+    options: Sequence[str],
+    context: str,            # pre-formatted retrieval results
+    *,
+    category: Optional[Category] = None,
+    style: PromptStyle = PromptStyle.ZERO_SHOT,
+) -> List[Dict[str, str]]:
+    """Like build_messages, but appends retrieved passages after the question."""
+    if not context:
+        return build_messages(question, options, category=category, style=style)
+
+    instr = _instruction_for(style)
+
+    user_content = (
+        f"Question: {question}\n\n"
+        f"Options:\n{_format_options(options)}\n\n"
+        f"Reference material (may or may not be relevant):\n{context}\n\n"
+        f"{instr}"
+    )
+
+    messages = [
+        {"role": "system", "content": _system_prompt(category)},
+        {"role": "user",   "content": user_content},
+    ]
+    return messages</code></pre>
+  </div>
+
+  <h3 class="sub-title">RAG Prompt Structure</h3>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-system">system</span>
+    </div>
+    <div class="prompt-showcase-body">You are answering multiple-choice trivia on ancient history...</div>
+  </div>
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-user">user</span>
+      <span style="font-size:11px;color:var(--text-dim);">← single user message with everything</span>
+    </div>
+    <div class="prompt-showcase-body">Question: In which year did Julius Caesar cross the Rubicon?
+
+Options:
+A. 63 BC
+B. 49 BC
+C. 44 BC
+D. 31 BC
+
+Reference material (may or may not be relevant):
+[1] Julius_Caesar (chunk 7, history)
+Caesar marched his legions across the Rubicon river in January 49 BC, 
+an act of insurrection that triggered civil war with the Senate...
+
+[2] Roman_Republic (chunk 23, history)
+The fall of the Republic is traditionally dated from Caesar's 
+crossing in 49 BC to the establishment of the Principate...
+
+Begin your reply with 'Answer:' followed by exactly one letter from A, B, C, D. Do not include any text before 'Answer:'.</div>
+  </div>
+
+  <div class="callout tip">
+    <div class="callout-icon">🔑</div>
+    <div class="callout-body">
+      <strong>Key Design Choice: No Few-Shot with RAG</strong>
+      Notice that <code>build_messages_with_context()</code> does NOT inject few-shot examples, even for <code>FEW_SHOT</code> or <code>FEW_SHOT_COT</code> styles. The context already uses most of the attention budget — adding examples on top would push the model's attention away from the retrieved passages that actually contain the answer.
+    </div>
+  </div>
+</section>
+
+<!-- ─── S8: ANSWER PARSING ──────────────────────────────────────────── -->
+<section id="s8">
+  <div class="section-label">Section 08</div>
+  <h2 class="section-title">Answer Parsing — The Regex Cascade</h2>
+  <p class="section-intro">When the LLM generates free text (CoT/Elimination modes), we need to extract the final answer letter. The <code>parse_answer()</code> function uses a carefully ordered cascade of regex patterns.</p>
+
+  <h3 class="sub-title">The Problem</h3>
+  <p>LLMs are creative with their output format. The same answer might appear as:</p>
+  <ul style="margin: 12px 0 24px 24px; color: var(--text-muted); font-size: 14px; line-height: 2;">
+    <li><code>\boxed{B}</code> — Qwen/DeepSeek Math format</li>
+    <li><code>Answer: B</code> — direct format</li>
+    <li><code>The final answer is B</code> — verbose phrasing</li>
+    <li><code>Option B</code> — referring to the option</li>
+    <li><code>B.</code> at the start of a line</li>
+    <li>Just <code>B</code> somewhere in the text (last resort)</li>
+  </ul>
+
+  <h3 class="sub-title">The Cascade (Most Specific → Least Specific)</h3>
+
+  <div class="cascade">
+    <div class="cascade-item">
+      <div class="cascade-num">1</div>
+      <div class="cascade-body">
+        <h4><code>\boxed{X}</code> — highest priority</h4>
+        <p>Regex: <code>\\boxed\{\s*([A-D])\s*\}</code> — Catches the Math-RL native format. Placed first so it wins against any earlier letters in the reasoning trace.</p>
+      </div>
+    </div>
+    <div class="cascade-item">
+      <div class="cascade-num">2</div>
+      <div class="cascade-body">
+        <h4><code>Answer: X</code> or <code>answer - X</code></h4>
+        <p>Regex: <code>answer\s*[:\-]?\s*\(?([A-D])\)?</code> — The standard direct-format answer.</p>
+      </div>
+    </div>
+    <div class="cascade-item">
+      <div class="cascade-num">3</div>
+      <div class="cascade-body">
+        <h4><code>final answer is X</code> / <code>correct answer X</code></h4>
+        <p>Regex: <code>\b(?:final|correct)\s+answer\s*(?:is)?\s*[:\-]?\s*\(?([A-D])\)?</code> — Verbose phrasing patterns.</p>
+      </div>
+    </div>
+    <div class="cascade-item">
+      <div class="cascade-num">4</div>
+      <div class="cascade-body">
+        <h4><code>option X</code></h4>
+        <p>Regex: <code>\boption\s+\(?([A-D])\)?</code> — "I'll go with option B" style.</p>
+      </div>
+    </div>
+    <div class="cascade-item">
+      <div class="cascade-num">5</div>
+      <div class="cascade-body">
+        <h4><code>X.</code> or <code>X)</code> at line start</h4>
+        <p>Regex: <code>^([A-D])\s*[\.\)]</code> (multiline) — "B." or "B)" at the beginning of a line.</p>
+      </div>
+    </div>
+    <div class="cascade-item">
+      <div class="cascade-num">6</div>
+      <div class="cascade-body">
+        <h4>Bare letter (LAST match wins)</h4>
+        <p>Regex: <code>\b([A-D])\b</code> — Critical: takes the <strong>last</strong> match, not the first! So "Let A be the area... the answer is C" correctly picks <strong>C</strong>, not A.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/prompts/templates.py</span> — parse_answer()</span>
+    </div>
+    <pre><code class="language-python">def parse_answer(text: str) -> Optional[int]:
+    """Extract 0-based option index from model output. Returns None if unparseable.
+
+    Cascade:
+      1. Structured patterns (\\boxed{X}, "Answer: X", "final answer is X",
+         "Option X", line-leading "X." / "X)") — first match wins.
+      2. Bare letter \\b([A-D])\\b — LAST match wins (so a CoT setup like
+         "Let A be the area, so the answer is C" picks C, not A).
+
+    Converts letter → 0-based index: A→0, B→1, C→2, D→3.
+    """
+    if not text:
+        return None
+    for pattern in _STRUCTURED_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            return ord(m.group(1).upper()) - ord("A")
+    # Bare letter — last match wins
+    matches = _BARE_LETTER.findall(text)
+    if matches:
+        return ord(matches[-1].upper()) - ord("A")
+    return None   # unparseable → strategy abstains</code></pre>
+  </div>
+
+  <div class="callout warning">
+    <div class="callout-icon">⚠️</div>
+    <div class="callout-body">
+      <strong>On Parse Failure</strong>
+      When <code>parse_answer()</code> returns <code>None</code>, the strategy marks the response as <code>is_abstain=True</code>. The runner then substitutes its fallback index (default: 0). The ensemble system redistributes weight to surviving strategies. This is better than silently defaulting to "A" which would bias accuracy.
+    </div>
+  </div>
+</section>
+
+<!-- ─── S9: LLM INTEGRATION ─────────────────────────────────────────── -->
+<section id="s9">
+  <div class="section-label">Section 09</div>
+  <h2 class="section-title">LLM Integration — Logit Scoring vs Free Generation</h2>
+  <p class="section-intro">The prompt messages produced by <code>build_messages()</code> are consumed by two fundamentally different LLM methods. Understanding the difference is key to understanding why certain styles only work with certain methods.</p>
+
+  <h3 class="sub-title">Method A: score_options() <span class="pill pill-fast">logit scoring</span></h3>
+
+  <p>A single forward pass that measures the probability the model assigns to each answer letter at the next-token position:</p>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/models/llm.py</span> — score_options() core logic</span>
+    </div>
+    <pre><code class="language-python">def score_options(self, messages, letters=("A", "B", "C", "D")):
+    """One forward pass → probabilities over answer letters.
+
+    The prompt ends with "Answer: " — the next token IS the answer letter.
+    We probe logits[0, -1, :] for the token IDs of A, B, C, D.
+    """
+    # Apply chat template: adds special tokens like <|im_start|>assistant\n
+    prompt = self._apply_template(messages, add_generation_prompt=True)
+    prompt = prompt + "Answer: "   # ← the model completes THIS
+
+    inputs = self._tokenizer(prompt, return_tensors="pt").to(self._model.device)
+
+    with torch.inference_mode():
+        last_logits = self._model(**inputs).logits[0, -1, :]
+
+    # Find token IDs for " A", " B", " C", " D" (leading space variant)
+    letter_ids = {}
+    for l in letters:
+        ids_with_space = self._tokenizer.encode(" " + l, add_special_tokens=False)
+        ids_bare = self._tokenizer.encode(l, add_special_tokens=False)
+        letter_ids[l] = ids_with_space[0] if len(ids_with_space) == 1 else ids_bare[0]
+
+    # Softmax over just these 4 logits
+    raw = torch.tensor([last_logits[tid] for tid in letter_ids.values()])
+    probs = torch.softmax(raw, dim=0)
+    # → {"A": 0.05, "B": 0.89, "C": 0.03, "D": 0.03}</code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="callout-icon">⚡</div>
+    <div class="callout-body">
+      <strong>Why Leading-Space Variant?</strong>
+      After <code>"Answer: "</code>, the model predicts <code>" B"</code> (with a leading space) not <code>"B"</code>. Most tokenizers encode these differently. The code tries the space-prefixed variant first, falls back to bare letter. Getting this wrong means probing the wrong token ID → garbage probabilities.
+    </div>
+  </div>
+
+  <h3 class="sub-title">Method B: generate() <span class="pill pill-slow">free generation</span></h3>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/models/llm.py</span> — generate() with stop strings</span>
+    </div>
+    <pre><code class="language-python">def generate(self, messages, *, max_new_tokens=None, temperature=0.0, stop_strings=None):
+    """Generate free text from a chat-formatted message list.
+
+    stop_strings: when produced, terminate generation.
+    E.g. [r"\\boxed{A}", r"\\boxed{B}", ...] cuts off post-answer chatter.
+    """
+    prompt = self._apply_template(messages, add_generation_prompt=True)
+    inputs = self._tokenizer(prompt, return_tensors="pt").to(self._model.device)
+
+    gen_kwargs = dict(
+        max_new_tokens=max_new_tokens or self.spec.max_new_tokens,
+        do_sample=(temperature > 0),
+        temperature=temperature if temperature > 0 else None,
+    )
+    if stop_strings:
+        gen_kwargs["stop_strings"] = list(stop_strings)
+        gen_kwargs["tokenizer"] = self._tokenizer
+
+    with torch.inference_mode():
+        out = self._model.generate(**inputs, **gen_kwargs)
+
+    new_tokens = out[0][n_in:]
+    text = self._tokenizer.decode(new_tokens, skip_special_tokens=True)
+    return LLMResponse(text=text, ...)</code></pre>
+  </div>
+
+  <h3 class="sub-title">Comparison Table</h3>
+
+  <table class="compare-table">
+    <thead>
+      <tr><th>Property</th><th>score_options()</th><th>generate()</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Forward passes</td><td class="good">Exactly 1</td><td class="bad">Many (token by token)</td></tr>
+      <tr><td>Output</td><td>Probabilities {A: 0.89, B: 0.05, ...}</td><td>Free text string</td></tr>
+      <tr><td>Parsing needed?</td><td class="good">No — pick max probability</td><td class="bad">Yes — regex cascade</td></tr>
+      <tr><td>Parse failure risk</td><td class="good">None — always returns a letter</td><td>~2-5% of outputs unparseable</td></tr>
+      <tr><td>Confidence calibration</td><td class="good">Natural (softmax probs)</td><td>Synthetic (0.5 if parsed, 0.25 if not)</td></tr>
+      <tr><td>Compatible styles</td><td>ZERO_SHOT, FEW_SHOT</td><td>All five styles</td></tr>
+      <tr><td>Reasoning visible?</td><td class="bad">No — just a number</td><td class="good">Yes — full CoT trace</td></tr>
+      <tr><td>Speed (7B model)</td><td class="good">~100ms</td><td>~2-5 seconds</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ─── S10: STRATEGY WIRING ────────────────────────────────────────── -->
+<section id="s10">
+  <div class="section-label">Section 10</div>
+  <h2 class="section-title">Strategy Wiring — How Strategies Use Prompts</h2>
+  <p class="section-intro">Two main strategies consume the prompt system: <code>BaselineLLMStrategy</code> (pure LLM) and <code>RAGStrategy</code> (retrieval + LLM). Both use the same prompt module but configure it differently.</p>
+
+  <div class="diagram-wrap">
+    <div class="mermaid">
+flowchart TD
+    subgraph "BaselineLLMStrategy"
+        B_Q["Question + Options"] --> B_BM["build_messages()\nstyle=PROMPT_STYLE"]
+        B_BM --> B_DEC{{"use_score_options?"}}
+        B_DEC -- "True" --> B_LOG["llm.score_options()\n→ AnswerProbabilities"]
+        B_DEC -- "False" --> B_GEN["llm.generate()\n→ free text"]
+        B_GEN --> B_PARSE["parse_answer()\n→ letter index"]
+    end
+
+    subgraph "RAGStrategy"
+        R_Q["Question + Options"] --> R_RET["Retrieve passages"]
+        R_RET --> R_FMT["Format context"]
+        R_FMT --> R_BMC["build_messages_with_context()\nstyle=PROMPT_STYLE"]
+        R_BMC --> R_DEC{{"use_score_options?"}}
+        R_DEC -- "True" --> R_LOG["llm.score_options()\n→ AnswerProbabilities"]
+        R_DEC -- "False" --> R_GEN["llm.generate()\n→ free text"]
+        R_GEN --> R_PARSE["parse_answer()\n→ letter index"]
+    end
+
+    style B_BM fill:#1e3a5f,stroke:#a78bfa,color:#f0f4ff
+    style R_BMC fill:#1e3a5f,stroke:#a78bfa,color:#f0f4ff
+    style B_LOG fill:#162d4a,stroke:#34d399,color:#f0f4ff
+    style R_LOG fill:#162d4a,stroke:#34d399,color:#f0f4ff
+    style B_GEN fill:#162d4a,stroke:#f472b6,color:#f0f4ff
+    style R_GEN fill:#162d4a,stroke:#f472b6,color:#f0f4ff
+    </div>
+    <p class="diagram-caption">Both strategies use the same prompt module — RAGStrategy adds context injection</p>
+  </div>
+
+  <h3 class="sub-title">BaselineLLMStrategy</h3>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/strategies/llm_baseline.py</span> — answer method</span>
+    </div>
+    <pre><code class="language-python">class BaselineLLMStrategy(Strategy):
+    """One model, one prompt, one forward pass."""
+
+    def answer(self, inp: StrategyInput) -> StrategyOutput:
+        # Build the prompt messages using the configured style
+        messages = build_messages(
+            inp.question,
+            inp.options,
+            category=inp.category,
+            style=self.style,
+        )
+        # Route to the appropriate decoding method
+        if self.use_score_options:
+            return self._answer_via_logits(messages)
+        return self._answer_via_generation(messages)</code></pre>
+  </div>
+
+  <h3 class="sub-title">RAGStrategy</h3>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/strategies/rag_strategy.py</span> — prompt building (simplified)</span>
+    </div>
+    <pre><code class="language-python"># After retrieval and context formatting:
+messages = build_messages_with_context(
+    question=inp.question,
+    options=inp.options,
+    context=formatted_context,   # "[1] Source (chunk 7)...\n[2] ..."
+    category=inp.category,
+    style=self.style,
+)
+
+# Same two decoding paths as baseline
+if self.use_score_options:
+    result = self.llm.score_options(messages)
+else:
+    response = self.llm.generate(messages, max_new_tokens=256, 
+                                  stop_strings=DEFAULT_COT_STOP_STRINGS)
+    idx = parse_answer(response.text)</code></pre>
+  </div>
+
+  <h3 class="sub-title">Generation Safety Guards</h3>
+
+  <div class="code-block">
+    <div class="code-block-header">
+      <span class="code-file"><span>polimibot/strategies/llm_baseline.py</span> — safety validation</span>
+    </div>
+    <pre><code class="language-python"># Hard error: CoT styles CANNOT use logit scoring
+if style in _COT_STYLES and use_score_options:
+    raise ValueError(
+        f"style={style.value} requires free generation (use_score_options=False). "
+        "score_options reads the first predicted token — which is the start of "
+        "the reasoning trace, not the answer letter."
+    )
+
+# Hard error: direct style with too-small generation cap
+if style not in _COT_STYLES and not use_score_options and max_new_tokens < 8:
+    raise ValueError(
+        f"direct_max_new_tokens={max_new_tokens} is too small. "
+        "The model needs at least ~8 tokens to emit 'Answer: X'."
+    )</code></pre>
+  </div>
+
+  <h3 class="sub-title">Token Budget by Style</h3>
+
+  <table class="config-table">
+    <thead>
+      <tr><th>Style</th><th>Decoding</th><th>max_new_tokens</th><th>Stop Strings</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="cfg-key">ZERO_SHOT</td><td class="cfg-default">logit scoring</td><td>N/A (no generation)</td><td>N/A</td></tr>
+      <tr><td class="cfg-key">FEW_SHOT</td><td class="cfg-default">logit scoring</td><td>N/A (no generation)</td><td>N/A</td></tr>
+      <tr><td class="cfg-key">ZERO_SHOT (free gen)</td><td class="cfg-default">generation</td><td>16</td><td>None</td></tr>
+      <tr><td class="cfg-key">ZERO_SHOT_COT</td><td class="cfg-default">generation</td><td>256</td><td>\boxed{A}, \boxed{B}, \boxed{C}, \boxed{D}</td></tr>
+      <tr><td class="cfg-key">FEW_SHOT_COT</td><td class="cfg-default">generation</td><td>256</td><td>\boxed{A}, \boxed{B}, \boxed{C}, \boxed{D}</td></tr>
+      <tr><td class="cfg-key">ELIMINATION</td><td class="cfg-default">generation</td><td>256</td><td>\boxed{A}, \boxed{B}, \boxed{C}, \boxed{D}</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout info">
+    <div class="callout-icon">🎛️</div>
+    <div class="callout-body">
+      <strong>Notebook Configuration</strong>
+      All of this is controlled by a single knob in the notebook (Section 1.1): <code>PROMPT_STYLE = PromptStyle.ZERO_SHOT</code>. Change that one line, and the entire prompt pipeline — system message, output instruction, generation budget, stop strings, and answer parsing — adapts automatically.
+    </div>
+  </div>
+</section>
+
+</div><!-- /container -->
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ FOOTER -->
+<footer>
+  <div class="container">
+    <p>PoliMillionaire Prompt Documentation &mdash; Generated from source analysis of <code>polimibot/prompts/templates.py</code>, <code>polimibot/models/llm.py</code> &amp; <code>polimibot/strategies/</code></p>
+    <p style="margin-top:8px;">Built with <a href="https://mermaid.js.org" target="_blank">Mermaid.js</a>, <a href="https://prismjs.com" target="_blank">Prism.js</a>, and ❤️</p>
+  </div>
+</footer>
+
+</body>
+</html>

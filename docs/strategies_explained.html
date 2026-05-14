@@ -1,0 +1,1386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PoliMillionaire — Strategy Architecture Explained</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<style>
+:root {
+    --bg-primary: #0a0e1a;
+    --bg-secondary: #111827;
+    --bg-card: #1a2235;
+    --bg-code: #0d1117;
+    --accent: #10b981;
+    --accent-light: #34d399;
+    --accent-dim: rgba(16, 185, 129, 0.1);
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --border: #1e293b;
+    --border-accent: rgba(16, 185, 129, 0.3);
+    --strategy-1: #f59e0b;
+    --strategy-2: #3b82f6;
+    --strategy-3: #8b5cf6;
+    --strategy-4: #ec4899;
+    --strategy-5: #14b8a6;
+    --strategy-6: #f97316;
+    --strategy-7: #06b6d4;
+    --strategy-8: #a855f7;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.7;
+    overflow-x: hidden;
+}
+
+/* Hero */
+.hero {
+    position: relative;
+    padding: 100px 40px 80px;
+    text-align: center;
+    background: linear-gradient(135deg, var(--bg-primary) 0%, #0f1629 50%, #0a1628 100%);
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+}
+.hero::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(ellipse at center, rgba(16,185,129,0.03) 0%, transparent 50%);
+    animation: pulse 8s infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 0.5; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.05); }
+}
+.hero h1 {
+    font-size: 3.2rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--accent-light), var(--accent), #059669);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 16px;
+    position: relative;
+}
+.hero .subtitle {
+    font-size: 1.25rem;
+    color: var(--text-secondary);
+    max-width: 700px;
+    margin: 0 auto;
+    position: relative;
+}
+
+/* Navigation */
+.nav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(10, 14, 26, 0.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 40px;
+    overflow-x: auto;
+}
+.nav-inner {
+    display: flex;
+    gap: 8px;
+    max-width: 1200px;
+    margin: 0 auto;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+.nav a {
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.82rem;
+    font-weight: 500;
+    padding: 6px 14px;
+    border-radius: 6px;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+.nav a:hover {
+    color: var(--accent-light);
+    background: var(--accent-dim);
+}
+
+/* Main content */
+.container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 60px 40px;
+}
+
+/* Sections */
+.section {
+    margin-bottom: 80px;
+}
+.section-number {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 8px;
+}
+.section h2 {
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 24px;
+    color: var(--text-primary);
+}
+.section h3 {
+    font-size: 1.3rem;
+    font-weight: 600;
+    margin: 32px 0 16px;
+    color: var(--text-primary);
+}
+
+/* Cards */
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    margin: 20px 0;
+}
+.card.analogy {
+    border-left: 4px solid var(--accent);
+    background: linear-gradient(135deg, var(--accent-dim), transparent);
+}
+.card.analogy::before {
+    content: '💡 Analogy';
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 12px;
+}
+.card.warning {
+    border-left: 4px solid var(--strategy-1);
+    background: rgba(245, 158, 11, 0.05);
+}
+.card.warning::before {
+    content: '⚠️ Key Insight';
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--strategy-1);
+    margin-bottom: 12px;
+}
+
+/* Strategy header badges */
+.strategy-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-bottom: 12px;
+}
+.badge-foundation { background: rgba(16,185,129,0.15); color: var(--accent-light); }
+.badge-baseline { background: rgba(245,158,11,0.15); color: var(--strategy-1); }
+.badge-core { background: rgba(59,130,246,0.15); color: var(--strategy-2); }
+.badge-advanced { background: rgba(139,92,246,0.15); color: var(--strategy-3); }
+.badge-orchestration { background: rgba(236,72,153,0.15); color: var(--strategy-4); }
+
+/* Code blocks */
+.code-block {
+    position: relative;
+    margin: 20px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+.code-block .filename {
+    background: var(--bg-secondary);
+    padding: 8px 16px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+}
+.code-block pre {
+    margin: 0 !important;
+    padding: 20px !important;
+    background: var(--bg-code) !important;
+    font-size: 0.82rem !important;
+    line-height: 1.6 !important;
+    overflow-x: auto;
+}
+.code-block code {
+    font-family: 'JetBrains Mono', monospace !important;
+}
+
+/* Walkthrough */
+.walkthrough {
+    margin: 20px 0;
+    padding: 0;
+    list-style: none;
+}
+.walkthrough li {
+    position: relative;
+    padding: 12px 16px 12px 60px;
+    margin: 8px 0;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    font-size: 0.9rem;
+}
+.walkthrough li::before {
+    content: attr(data-line);
+    position: absolute;
+    left: 12px;
+    top: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-dim);
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+.walkthrough .purpose {
+    color: var(--text-secondary);
+    font-style: italic;
+    display: block;
+    margin-top: 4px;
+    font-size: 0.82rem;
+}
+
+/* Mermaid diagrams */
+.mermaid-wrapper {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 30px;
+    margin: 24px 0;
+    overflow-x: auto;
+}
+.mermaid {
+    display: flex;
+    justify-content: center;
+}
+
+/* Strategy comparison table */
+.comparison-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 24px 0;
+    font-size: 0.85rem;
+}
+.comparison-table th {
+    background: var(--bg-secondary);
+    padding: 12px 16px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--accent);
+    border-bottom: 2px solid var(--border-accent);
+}
+.comparison-table td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+.comparison-table tr:hover td {
+    background: rgba(16, 185, 129, 0.03);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .hero { padding: 60px 20px 50px; }
+    .hero h1 { font-size: 2.2rem; }
+    .container { padding: 40px 20px; }
+    .section h2 { font-size: 1.5rem; }
+}
+
+p { margin-bottom: 16px; color: var(--text-secondary); }
+strong { color: var(--text-primary); }
+code:not([class*="language-"]) {
+    font-family: 'JetBrains Mono', monospace;
+    background: rgba(16, 185, 129, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    color: var(--accent-light);
+}
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<div class="hero">
+    <h1>Strategy Architecture</h1>
+    <p class="subtitle">A beginner-friendly deep-dive into every strategy pattern in PoliMillionaire — from the simplest coin-flip to the full orchestrated AI pipeline</p>
+</div>
+
+<!-- Navigation -->
+<nav class="nav">
+    <div class="nav-inner">
+        <a href="#s1">1. The Contract</a>
+        <a href="#s2">2. Random</a>
+        <a href="#s3">3. LLM Baseline</a>
+        <a href="#s4">4. RAG</a>
+        <a href="#s5">5. Tool</a>
+        <a href="#s6">6. Agent</a>
+        <a href="#s7">7. Ensemble</a>
+        <a href="#s8">8. Tiered</a>
+        <a href="#s9">9. Big Picture</a>
+    </div>
+</nav>
+
+<!-- Content -->
+<div class="container">
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 1: Strategy Pattern (The Contract) -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s1">
+    <div class="section-number">Strategy 1</div>
+    <h2>The Strategy Pattern — The Contract Everyone Signs</h2>
+    
+    <span class="strategy-badge badge-foundation">🏗️ Foundation</span>
+
+    <div class="card analogy">
+        <p><strong>Imagine a game show.</strong> The host doesn't care whether you're a genius, have a cheat-sheet, or are flipping a coin — the interaction is always the same: host asks question → contestant picks A/B/C/D → host reveals answer. The Strategy pattern is that contract. Every "contestant" (algorithm) must follow the same interface, so the game-runner can swap them out without caring <em>how</em> they decide.</p>
+    </div>
+
+    <p>In software design, this is called the <strong>Strategy Pattern</strong> — one of the classic Gang-of-Four patterns. You define a common interface, and each implementation fills it differently. The caller (runner) doesn't know or care which algorithm is inside.</p>
+
+    <h3>How It Looks in the Code</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/base.py</div>
+        <pre><code class="language-python">@dataclass(frozen=True)
+class StrategyInput:
+    """Everything a strategy is allowed to see when answering one question."""
+    question: str
+    options: tuple[str, ...]          # always 4; index 0..3 = letters A..D
+    level: int                        # 1..15 (difficulty increases)
+    max_level: int = 15
+    category: Optional[Category] = None
+    competition_id: Optional[int] = None
+    time_budget_seconds: float = 25.0
+
+
+@dataclass(frozen=True)
+class StrategyOutput:
+    """What the strategy returns."""
+    chosen_index: int                 # 0..3 → A..D
+    confidence: float = 0.25          # in [0, 1]; default = random chance
+    rationale: Optional[str] = None   # for logging/debugging
+    is_abstain: bool = False          # True if strategy refused to answer
+    extras: dict[str, Any] = field(default_factory=dict)
+
+
+class Strategy(ABC):
+    """Abstract base. Subclass and implement answer()."""
+    name: str = "strategy"
+
+    def warm_up(self) -> None:
+        """Optional: load models, build indices."""
+        return None
+
+    def shutdown(self) -> None:
+        """Optional: release resources."""
+        return None
+
+    @abstractmethod
+    def answer(self, inp: StrategyInput) -> StrategyOutput:
+        """Pick one option. Must return within inp.time_budget_seconds."""</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Input"><code>StrategyInput</code> is a <strong>frozen dataclass</strong> — the strategy sees the question, the 4 options, the difficulty level, category, and time budget. "Frozen" means strategies can't cheat by modifying their input.<span class="purpose">Separation of concerns: input is read-only data, output is the decision.</span></li>
+        <li data-line="Output"><code>StrategyOutput</code> carries the answer (0–3), a confidence score, optional reasoning text, and an abstain flag. If the strategy can't answer, it sets <code>is_abstain=True</code> and the runner substitutes a fallback.<span class="purpose">Honest uncertainty reporting enables downstream ensemble logic.</span></li>
+        <li data-line="ABC"><code>Strategy</code> is abstract — you can't instantiate it directly. You MUST implement <code>answer()</code>. The optional <code>warm_up()</code> and <code>shutdown()</code> give strategies a lifecycle hook for loading/releasing GPU models.<span class="purpose">The contract guarantees every strategy is plug-and-play.</span></li>
+    </ul>
+
+    <div class="card warning">
+        <p><strong>Why frozen dataclasses?</strong> If a strategy could modify the input, it might accidentally corrupt data for other strategies in an ensemble. Immutability prevents an entire class of bugs.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 2: RandomStrategy -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s2">
+    <div class="section-number">Strategy 2</div>
+    <h2>RandomStrategy — The Statistical Floor</h2>
+
+    <span class="strategy-badge badge-baseline">🎲 Baseline</span>
+
+    <div class="card analogy">
+        <p><strong>Think of it as the monkey test.</strong> If you put a monkey in front of a 4-option quiz, it'll get ~25% right by chance. This strategy IS that monkey — it picks randomly. Every other strategy must beat 25% to prove it's doing anything useful. This is your "control group" in the experiment.</p>
+    </div>
+
+    <h3>How It Looks in the Code</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/random_pick.py</div>
+        <pre><code class="language-python">class RandomStrategy(Strategy):
+    """Uniform random over the four options."""
+
+    def __init__(self, seed: int | None = None) -> None:
+        self.name = "random"
+        self._rng = random.Random(seed)  # local instance, not global
+
+    def answer(self, inp: StrategyInput) -> StrategyOutput:
+        n = len(inp.options)
+        idx = self._rng.randrange(n)
+        return StrategyOutput(
+            chosen_index=idx,
+            confidence=1.0 / n,   # honest: 25% confidence
+            rationale=None,
+        )</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="seed">Uses a <strong>local</strong> <code>random.Random(seed)</code> instance — never touches the global <code>random</code> state. This means other code (tests, other strategies) won't get their randomness perturbed.<span class="purpose">Reproducibility: same seed → same sequence of "random" picks every time.</span></li>
+        <li data-line="confidence"><code>confidence=1.0/n</code> means "I'm 25% sure" — this is the honest thing to do. It tells the ensemble and logger "I'm literally guessing."<span class="purpose">When combined in an ensemble, a 25% confidence means this vote barely counts.</span></li>
+    </ul>
+
+    <div class="card warning">
+        <p><strong>Why does this exist?</strong> It's the scientific baseline. If your fancy RAG+Agent system scores 26%, you know something is broken. Any real strategy should score significantly above 25%.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 3: BaselineLLMStrategy -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s3">
+    <div class="section-number">Strategy 3</div>
+    <h2>BaselineLLMStrategy — Pure Brain Power</h2>
+
+    <span class="strategy-badge badge-core">🧠 Core</span>
+
+    <div class="card analogy">
+        <p><strong>This is the smart contestant who studied everything in school but brought no notes.</strong> They sit down, read the question, and answer purely from memory (their training data). No Google, no calculator, no phone-a-friend. Just raw knowledge baked into their neural network during training.</p>
+    </div>
+
+    <p>This strategy sends the question to an LLM (Large Language Model) and gets back an answer. It supports two completely different "decoding paths" depending on how you want the LLM to respond:</p>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    Q[Question + Options] --> PM[Build Prompt<br/>via PromptStyle]
+    PM --> DECISION{use_score_options?}
+    DECISION -->|Yes| LOGIT[Logit Scoring<br/>Read probabilities<br/>for A/B/C/D tokens]
+    DECISION -->|No| GEN[Free Generation<br/>Let LLM write reasoning<br/>then parse answer letter]
+    LOGIT --> OUT[StrategyOutput<br/>confidence = probability]
+    GEN --> PARSE[parse_answer regex]
+    PARSE --> OUT
+    
+    style LOGIT fill:#059669,color:#fff
+    style GEN fill:#3b82f6,color:#fff
+        </div>
+    </div>
+
+    <h3>Two Decoding Paths Explained</h3>
+
+    <table class="comparison-table">
+        <tr><th>Aspect</th><th>Logit Scoring (default)</th><th>Free Generation</th></tr>
+        <tr><td>How it works</td><td>Peek at the probability the LLM assigns to each letter token at the next position</td><td>Let the LLM write text freely, then regex-parse the answer letter</td></tr>
+        <tr><td>Speed</td><td>⚡ 1 forward pass</td><td>🐢 Many forward passes (autoregressive)</td></tr>
+        <tr><td>Confidence</td><td>Real probability distribution (0.72 for B, 0.15 for A...)</td><td>Binary: either parsed or abstain (0.5 or 0.25)</td></tr>
+        <tr><td>Required for</td><td>ZERO_SHOT, FEW_SHOT</td><td>ZERO_SHOT_COT, FEW_SHOT_COT, ELIMINATION</td></tr>
+        <tr><td>Why?</td><td>The first token IS the answer letter</td><td>The first token is "Let me think..." — reasoning comes before the answer</td></tr>
+    </table>
+
+    <h3>How It Looks in the Code</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/llm_baseline.py</div>
+        <pre><code class="language-python">class BaselineLLMStrategy(Strategy):
+    """One model, one prompt, one forward pass."""
+
+    def __init__(self, llm, *, style=PromptStyle.ZERO_SHOT,
+                 use_score_options=True, ...) -> None:
+        if style in _COT_STYLES and use_score_options:
+            raise ValueError(
+                "CoT requires free generation — score_options reads "
+                "the first token, which is reasoning, not the answer."
+            )
+        self.llm = llm
+        self.style = style
+        self.use_score_options = use_score_options
+
+    def answer(self, inp: StrategyInput) -> StrategyOutput:
+        messages = build_messages(
+            inp.question, inp.options,
+            category=inp.category, style=self.style,
+        )
+        if self.use_score_options:
+            return self._answer_via_logits(messages)
+        return self._answer_via_generation(messages)
+
+    def _answer_via_logits(self, messages) -> StrategyOutput:
+        result = self.llm.score_options(messages)
+        chosen_index = ord(result.top_letter) - ord("A")
+        return StrategyOutput(
+            chosen_index=chosen_index,
+            confidence=result.top_prob,
+            extras={"probs": result.probs, "margin": result.margin},
+        )
+
+    def _answer_via_generation(self, messages) -> StrategyOutput:
+        response = self.llm.generate(messages, max_new_tokens=...,
+                                     temperature=0.0, stop_strings=...)
+        idx = parse_answer(response.text)
+        parse_ok = idx is not None
+        return StrategyOutput(
+            chosen_index=idx if parse_ok else 0,
+            confidence=0.5 if parse_ok else 0.25,
+            is_abstain=not parse_ok,
+        )</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Guard"><code>if style in _COT_STYLES and use_score_options: raise</code> — A safety check that prevents a nonsensical combination. If you use Chain-of-Thought, the model's first token is "Let me..." not "B". Reading logits would give gibberish.<span class="purpose">Fail-fast design: catch misconfigurations at construction time, not per-question.</span></li>
+        <li data-line="build_messages"><code>build_messages()</code> formats the question into the correct chat-message shape (system prompt + user prompt) based on the chosen <code>PromptStyle</code>.<span class="purpose">The prompt module is decoupled from the strategy — you can change prompts without touching strategy code.</span></li>
+        <li data-line="score_options"><code>self.llm.score_options(messages)</code> does a single forward pass and reads the logit (probability) for tokens "A", "B", "C", "D". The highest probability wins.<span class="purpose">This is the fastest and most informative path — you get actual confidence numbers.</span></li>
+        <li data-line="parse_answer"><code>parse_answer(response.text)</code> runs a regex cascade to find "Answer: B" or "\boxed{B}" in the generated text. Returns <code>None</code> if it can't find a letter.<span class="purpose">The model's free text must be machine-parsed — regex is the robust bridge between LLM text and a 0–3 integer.</span></li>
+        <li data-line="abstain">If parsing fails, the strategy sets <code>is_abstain=True</code> instead of guessing. The runner then submits a fallback (default: option A).<span class="purpose">Honest abstention prevents silent bias — if we defaulted to A, we'd inflate accuracy on questions where A happens to be correct.</span></li>
+    </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 4: RAGStrategy -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s4">
+    <div class="section-number">Strategy 4</div>
+    <h2>RAGStrategy — The Open-Book Exam</h2>
+
+    <span class="strategy-badge badge-core">📚 Core</span>
+
+    <div class="card analogy">
+        <p><strong>Imagine taking a test, but you're allowed to bring a textbook.</strong> You don't read the whole textbook — you quickly flip to the relevant pages (retrieval), skim the key paragraphs (context formatting), and then use your brain to answer (LLM scoring). If your textbook doesn't cover the topic, you quickly Google it on your phone (live search fallback). And next time, you add that new info to your notes (IndexGrower).</p>
+    </div>
+
+    <p>RAG (Retrieval-Augmented Generation) is the most powerful single strategy in the system. It combines <strong>external knowledge</strong> with the LLM's reasoning ability. The pipeline has 6 stages:</p>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    Q[Question arrives] --> MQ{Multi-query<br/>mode?}
+    MQ -->|Yes| QUERIES["Build 5 queries:<br/>[question, q+optA, q+optB, q+optC, q+optD]"]
+    MQ -->|No| SINGLE["Single query:<br/>just the question"]
+    
+    QUERIES --> RETRIEVE["Retrieve top-k per query<br/>(FAISS dense + optional BM25)"]
+    SINGLE --> RETRIEVE2["Retrieve top-k<br/>(FAISS dense + optional BM25)"]
+    
+    RETRIEVE --> RRF["RRF Fusion<br/>Merge 5 ranked lists"]
+    RETRIEVE2 --> GATE
+    RRF --> RERANK{"Reranker<br/>enabled?"}
+    RERANK -->|Yes| CE["Cross-encoder<br/>rerank fused pool"]
+    RERANK -->|No| GATE
+    CE --> GATE
+    
+    GATE{"Top score ≥<br/>threshold?"}
+    GATE -->|Yes| FORMAT["Format passages<br/>as numbered context"]
+    GATE -->|No| LIVE{"Live search<br/>enabled?"}
+    LIVE -->|Yes| WIKI["Wikipedia API<br/>fetch + chunk"]
+    LIVE -->|No| DEGRADE["No context<br/>(degrades to baseline)"]
+    WIKI --> FORMAT
+    
+    FORMAT --> PROMPT["Build RAG prompt<br/>with context block"]
+    DEGRADE --> PROMPT
+    PROMPT --> LLM["LLM scores/generates"]
+    LLM --> ANSWER[StrategyOutput]
+    
+    style FORMAT fill:#059669,color:#fff
+    style WIKI fill:#f59e0b,color:#000
+    style DEGRADE fill:#ef4444,color:#fff
+        </div>
+    </div>
+
+    <h3>The Core Answer Method</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/rag_strategy.py — answer()</div>
+        <pre><code class="language-python">def answer(self, inp: StrategyInput) -> StrategyOutput:
+    # 1. Build retrieval query/queries
+    category_filter = (
+        inp.category.value
+        if (self.use_category_filter and inp.category is not None)
+        else None
+    )
+
+    if self.use_multi_query:
+        queries = _build_multi_queries(inp)
+        # Retrieve per-query, then RRF-fuse across queries
+        ranked_lists = [
+            self.retriever.retrieve(q, k=pool_k, **per_query_kwargs)
+            for q in queries
+        ]
+        fused = reciprocal_rank_fusion(ranked_lists, k=pool_k)
+        if self.use_reranker:
+            passages = self.retriever.rerank_pool(inp.question, fused, k=self.k)
+        else:
+            passages = fused[:self.k]
+    else:
+        query = _build_query(inp)
+        passages = self.retriever.retrieve(query, **common_kwargs)
+
+    # 2. Score gating — is the retrieval quality good enough?
+    top_score = float(passages[0][1]) if passages else 0.0
+    gated = (active_threshold is not None
+             and (not passages or top_score < active_threshold))
+
+    # 3. Live-search fallback (fires only when offline is gated)
+    if gated and self._live_search is not None:
+        live_articles = self._live_search.search(inp.question, ...)
+        if live_articles:
+            # Buffer in IndexGrower for future learning
+            if self.index_grower is not None:
+                self.index_grower.buffer(article, question_id)
+            live_passages = [(chunk, 1.0) for chunk in chunks[:self.k]]
+
+    # 4. Format context (offline passages OR live passages)
+    context = _format_context(effective_passages, ...)
+
+    # 5. Build RAG-augmented prompt
+    messages = build_messages_with_context(
+        inp.question, inp.options, context, ...
+    )
+
+    # 6. Score via logits or generate
+    if self.use_score_options:
+        chosen_index, confidence, ... = self._answer_via_logits(messages)
+    else:
+        chosen_index, confidence, ... = self._answer_via_generation(messages)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Multi-query">In multi-query mode, builds 5 separate queries (question alone + question paired with each option). Each query retrieves its own ranked list, then they're merged with RRF (Reciprocal Rank Fusion).<span class="purpose">An entity might appear only in one option (e.g., "Who painted the Mona Lisa?" — "Da Vinci" is in option C). Querying with each option separately ensures its supporting article gets found.</span></li>
+        <li data-line="Category">The category filter restricts retrieval to chunks tagged with the question's category (e.g., only HISTORY chunks for a history question).<span class="purpose">Prevents noise: a maths question shouldn't pull in random entertainment trivia.</span></li>
+        <li data-line="Gating">Score gating checks if the best passage's score is above a calibrated threshold. If retrieval quality is poor (irrelevant articles), the context is dropped entirely.<span class="purpose">Bad context is worse than no context — an irrelevant passage can mislead the LLM into a wrong answer.</span></li>
+        <li data-line="Live">When offline retrieval is gated (scored too low), live Wikipedia search fires as a fallback. The fetched articles are chunked and used as context for this question.<span class="purpose">The offline index can't cover everything. Live search fills knowledge gaps in real-time.</span></li>
+        <li data-line="Grower">The IndexGrower buffers live-fetched articles. If the game confirms the answer was correct, those articles are permanently added to the index for future questions.<span class="purpose">Self-improving system: the bot learns from correct answers and gets smarter over time.</span></li>
+    </ul>
+
+    <h3>Multi-Query Construction</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/rag_strategy.py — _build_multi_queries()</div>
+        <pre><code class="language-python">def _build_multi_queries(inp: StrategyInput) -> list[str]:
+    """One query for the question, one per option.
+    Returns: [question, "question option_A", "question option_B", ...]
+    """
+    return [inp.question] + [
+        f"{inp.question} {opt}" for opt in inp.options
+    ]</code></pre>
+    </div>
+
+    <div class="card warning">
+        <p><strong>Why not just concatenate all options into one query?</strong> Because three of the four options are wrong distractors. Averaging them into a single embedding vector means the correct answer's entity gets only ~20% weight — diluted by noise. Separate queries give each option a fair chance, then RRF fusion picks the consensus winners.</p>
+    </div>
+
+    <h3>Context Formatting (What the LLM Sees)</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/rag_strategy.py — _format_context()</div>
+        <pre><code class="language-python">def _format_context(passages, *, max_passage_chars=800,
+                    max_total_chars=2400) -> str:
+    """Number passages, add citation headers, truncate at sentence boundaries."""
+    parts = []
+    used = 0
+    for i, (chunk, _score) in enumerate(passages, start=1):
+        snippet = _truncate_to_sentence(chunk.text, max_passage_chars)
+        header = f"[{i}] {chunk.source} (chunk {chunk.chunk_id})"
+        entry = f"{header}\n{snippet}"
+        if used + len(entry) > max_total_chars:
+            break
+        parts.append(entry)
+        used += len(entry)
+    return "\n\n".join(parts)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Truncate"><code>_truncate_to_sentence</code> cuts passages at a sentence boundary (not mid-word). The LLM never sees dangling fragments that could confuse it.<span class="purpose">Clean input → better reasoning. A half-sentence like "Caesar crossed the" is useless.</span></li>
+        <li data-line="Budget">Two budgets: max 800 chars per passage, max 2400 chars total. This prevents context from eating the entire LLM input window.<span class="purpose">LLM context windows are finite. Leave room for the question, instructions, and generation.</span></li>
+        <li data-line="Citations">Each passage gets a numbered header like <code>[1] Julius Caesar (chunk 3, history)</code>. The LLM can reference "[Passage 1]" in reasoning.<span class="purpose">Structured citations help the LLM attribute its reasoning and help humans debug wrong answers.</span></li>
+    </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 5: ToolStrategy + MathsTool -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s5">
+    <div class="section-number">Strategy 5</div>
+    <h2>ToolStrategy — The Calculator Belt</h2>
+
+    <span class="strategy-badge badge-advanced">🔧 Advanced</span>
+
+    <div class="card analogy">
+        <p><strong>Imagine a contestant who wears a utility belt.</strong> Before using their brain (the LLM), they check their belt: "Do I have a tool for this?" If the question is "What is 15% of 400?", they grab their calculator, compute 60, match it against the options, and answer instantly with 99% confidence. If no tool applies, they put the belt away and think with their brain (fallback LLM). This is the <strong>Chain of Responsibility</strong> pattern.</p>
+    </div>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph LR
+    Q[Question] --> T1{Tool 1:<br/>can_handle?}
+    T1 -->|Yes| U1[Tool 1: use]
+    T1 -->|No| T2{Tool 2:<br/>can_handle?}
+    T2 -->|Yes| U2[Tool 2: use]
+    T2 -->|No| TN{Tool N:<br/>can_handle?}
+    TN -->|No| FB[Fallback Strategy<br/>e.g. RAG or Baseline]
+    U1 --> DONE[Answer]
+    U2 --> DONE
+    FB --> DONE
+    
+    style U1 fill:#059669,color:#fff
+    style U2 fill:#059669,color:#fff
+    style FB fill:#3b82f6,color:#fff
+        </div>
+    </div>
+
+    <h3>ToolStrategy Code</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/tool_strategy.py</div>
+        <pre><code class="language-python">class ToolStrategy(Strategy):
+    """Try registered tools in order; fall back to an LLM strategy."""
+
+    def __init__(self, tools: list[Tool], fallback: Strategy) -> None:
+        self.tools = tools
+        self.fallback = fallback
+        tool_names = "+".join(t.name for t in tools)
+        self.name = f"tool[{tool_names}|fallback={fallback.name}]"
+
+    def answer(self, inp: StrategyInput) -> StrategyOutput:
+        for tool in self.tools:
+            if tool.can_handle(inp):
+                out = tool.use(inp)
+                if out is not None:
+                    return out   # tool answered — done
+        # All tools abstained
+        return self.fallback.answer(inp)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Chain"><code>for tool in self.tools</code> — tools are tried in priority order. First one that can handle AND produces an answer wins. This is the Chain of Responsibility pattern.<span class="purpose">Separates "what to try" (tool list) from "how to answer if tools fail" (fallback). Add new tools without touching existing code.</span></li>
+        <li data-line="can_handle"><code>tool.can_handle(inp)</code> is a fast guard (no computation). MathsTool checks <code>inp.category == Category.MATHS</code> — instant boolean, no heavy processing.<span class="purpose">Don't waste time running a calculator on a history question.</span></li>
+        <li data-line="Abstain"><code>if out is not None</code> — a tool can return <code>None</code> to say "I tried but couldn't solve this." The chain continues to the next tool.<span class="purpose">Precision over recall: better to abstain than give a wrong deterministic answer.</span></li>
+    </ul>
+
+    <h3>MathsTool — The Deterministic Calculator</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/tools/maths_tool.py</div>
+        <pre><code class="language-python">class MathsTool(Tool):
+    """Deterministic arithmetic solver. Only answers when it can prove the answer."""
+    name = "maths_tool"
+
+    def can_handle(self, inp: StrategyInput) -> bool:
+        return inp.category == Category.MATHS
+
+    def use(self, inp: StrategyInput) -> Optional[StrategyOutput]:
+        # 1. Normalize: "15% of 200" → "15/100*200"
+        expr = _extract_expression(inp.question)
+        if expr is None:
+            return None  # can't parse → abstain
+
+        # 2. Evaluate safely (AST sandbox, no eval())
+        try:
+            result = safe_eval(expr)
+        except Exception:
+            return None  # math error → abstain
+
+        # 3. Match against numeric options
+        idx = _match_options(float(result), inp.options)
+        if idx is None:
+            return None  # doesn't match any option → abstain
+
+        return StrategyOutput(
+            chosen_index=idx,
+            confidence=0.99,   # deterministic = near-certain
+            rationale=f"MathsTool: {expr} = {result}",
+        )</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Normalize">Text normalization converts natural language math ("15% of 200", "square root of 144") into Python arithmetic ("15/100*200", "sqrt(144)") using regex patterns.<span class="purpose">LLMs sometimes struggle with arithmetic. Deterministic computation is always correct.</span></li>
+        <li data-line="safe_eval"><code>safe_eval()</code> uses Python's AST (Abstract Syntax Tree) parser to evaluate only whitelisted operations. It's NOT <code>eval()</code> — that would be a security hole.<span class="purpose">The model's output goes through here. If we used eval(), a malicious expression could execute arbitrary code.</span></li>
+        <li data-line="confidence"><code>confidence=0.99</code> — a correct computation is near-certain. In an ensemble, this vote will dominate because 0.99 >> 0.50 (LLM confidence).<span class="purpose">Deterministic answers should outweigh probabilistic ones when both are present.</span></li>
+    </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 6: AgentStrategy -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s6">
+    <div class="section-number">Strategy 6</div>
+    <h2>AgentStrategy — The Thinking Loop</h2>
+
+    <span class="strategy-badge badge-advanced">🤖 Advanced</span>
+
+    <div class="card analogy">
+        <p><strong>Think of a contestant who can talk to themselves and use a calculator mid-thought.</strong> They read the question, think aloud ("I need to calculate..."), reach for their calculator, get a result, think some more, and finally say their answer. This is the <strong>ReAct</strong> pattern (Reasoning + Acting): the LLM reasons, calls tools, observes results, and iterates until it has an answer — all within a time budget.</p>
+    </div>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+sequenceDiagram
+    participant R as Runner
+    participant A as AgentStrategy
+    participant L as LLM
+    participant C as Calculator
+
+    R->>A: answer(question)
+    A->>L: Generate (system: "you have calc tool")
+    L-->>A: "I need to compute 2^10..."<br/>CALL: calc(2**10)
+    A->>C: safe_eval("2**10")
+    C-->>A: "1024"
+    A->>L: "Tool result: 1024. Now give your final answer."
+    L-->>A: "Answer: B"
+    A->>R: StrategyOutput(chosen_index=1)
+        </div>
+    </div>
+
+    <h3>The ReAct Loop</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/agent_strategy.py</div>
+        <pre><code class="language-python">class AgentStrategy(Strategy):
+    """ReAct agent: LLM emits CALL: markers; tool results injected as user turns."""
+
+    def __init__(self, llm, *, max_iterations=3, per_turn_tokens=200):
+        self.llm = llm
+        self.max_iterations = max_iterations
+
+    def answer(self, inp: StrategyInput) -> StrategyOutput:
+        deadline = time.monotonic() + inp.time_budget_seconds - 1.0
+        messages = self._initial_messages(inp)
+        trace = []
+
+        for iteration in range(self.max_iterations + 1):
+            if time.monotonic() >= deadline:
+                break
+
+            resp = self.llm.generate(messages, max_new_tokens=200, temperature=0.0)
+            text = resp.text.strip()
+            messages.append({"role": "assistant", "content": text})
+
+            # Branch 1: tool call detected
+            call = _extract_call(text)
+            if call and time.monotonic() < deadline:
+                tool_name, expression = call
+                observation = _run_calc(expression)
+                messages.append({
+                    "role": "user",
+                    "content": f"Tool result: {observation}\nNow give your final answer."
+                })
+                continue   # next iteration
+
+            # Branch 2: final answer detected
+            idx = parse_answer(text)
+            if idx is not None:
+                return StrategyOutput(chosen_index=idx, confidence=0.70)
+
+            # Branch 3: neither — nudge the model
+            messages.append({
+                "role": "user",
+                "content": "Please write your final answer: 'Answer: <letter>'."
+            })
+
+        # Exhausted — salvage from trace
+        return StrategyOutput(chosen_index=0, is_abstain=True)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Deadline"><code>deadline = time.monotonic() + budget - 1.0</code> — leaves a 1-second safety margin before the hard server deadline. If the loop runs too long, it breaks out and salvages what it can.<span class="purpose">The game server has a 30-second timer. Exceeding it means automatic wrong answer.</span></li>
+        <li data-line="CALL"><code>_extract_call(text)</code> uses regex + balanced-paren scanning to find <code>CALL: calc(expr)</code> in the LLM's output. The expression can contain nested parentheses like <code>factorial(5)</code>.<span class="purpose">The LLM "decides" to use a tool by emitting a special text pattern — no function-calling API needed.</span></li>
+        <li data-line="Inject">Tool results are injected as a new <code>user</code> message. The LLM sees the conversation grow: its reasoning → tool result → and can now conclude.<span class="purpose">Multi-turn conversation simulates a "think → act → observe → conclude" loop.</span></li>
+        <li data-line="Nudge">If the LLM produces text that's neither a tool call nor a final answer, we nudge it: "Please write your final answer." This prevents infinite spinning.<span class="purpose">LLMs sometimes ramble. The nudge gives them one more chance to commit to an answer.</span></li>
+        <li data-line="Salvage">If all iterations are exhausted, the strategy scans the trace backwards looking for any parseable answer. If none found, it abstains.<span class="purpose">Graceful degradation: even a timeout shouldn't crash. Try to salvage, then honestly report failure.</span></li>
+    </ul>
+
+    <h3>Tool Call Detection (Balanced Parens)</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/agent_strategy.py — _extract_call()</div>
+        <pre><code class="language-python">def _extract_call(text: str) -> Optional[tuple[str, str]]:
+    """Find 'CALL: tool_name(expr)' handling nested parens correctly."""
+    m = re.search(r"CALL\s*:\s*(\w+)\s*\(", text, re.IGNORECASE)
+    if not m:
+        return None
+    tool_name = m.group(1).lower()
+    start = m.end()      # first char INSIDE the outer '('
+    depth = 1
+    for i, ch in enumerate(text[start:]):
+        if ch == "(":  depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return tool_name, text[start : start + i]
+    return None   # unbalanced parens</code></pre>
+    </div>
+
+    <div class="card warning">
+        <p><strong>Why balanced-paren scanning instead of a simple regex?</strong> Because expressions can be nested: <code>calc(factorial(5) + sqrt(16))</code>. A regex like <code>\((.+?)\)</code> would stop at the first <code>)</code> and capture only <code>factorial(5</code> — broken! The manual scan counts depth to find the matching outer parenthesis.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 7: EnsembleStrategy -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s7">
+    <div class="section-number">Strategy 7</div>
+    <h2>EnsembleStrategy — Wisdom of Crowds</h2>
+
+    <span class="strategy-badge badge-orchestration">🗳️ Orchestration</span>
+
+    <div class="card analogy">
+        <p><strong>Imagine asking three experts the same question:</strong> a historian, a Wikipedia researcher, and a calculator wizard. Instead of trusting just one, you combine their votes. If two say "B" and one says "C", you go with "B". But it's even smarter — if the calculator is 99% sure and the others are only 50% sure, the calculator's vote counts more. This is <strong>ensemble fusion</strong> — combining multiple imperfect judges to get a better answer than any single one.</p>
+    </div>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    Q[Question] --> S1["Strategy 1<br/>(e.g. Baseline)"]
+    Q --> S2["Strategy 2<br/>(e.g. RAG)"]
+    Q --> S3["Strategy 3<br/>(e.g. Tool)"]
+    
+    S1 --> |"probs: A=0.1, B=0.7,<br/>C=0.1, D=0.1"| FUSE[Weighted<br/>Probability Fusion]
+    S2 --> |"probs: A=0.05, B=0.8,<br/>C=0.1, D=0.05"| FUSE
+    S3 --> |"abstain"| DROP[Dropped from<br/>fusion]
+    
+    FUSE --> BEST["Best letter: B<br/>Combined confidence: 0.75"]
+    
+    style FUSE fill:#8b5cf6,color:#fff
+    style DROP fill:#ef4444,color:#fff
+        </div>
+    </div>
+
+    <h3>Two Fusion Modes</h3>
+
+    <table class="comparison-table">
+        <tr><th>Mode</th><th>How it works</th><th>When to use</th></tr>
+        <tr><td><strong>weighted</strong> (default)</td><td>Sum per-letter probabilities, each scaled by the strategy's trust weight</td><td>When strategies provide probability distributions (logit scoring)</td></tr>
+        <tr><td><strong>vote</strong></td><td>Weighted majority vote on chosen_index only</td><td>When strategies only output a single choice (no probs available)</td></tr>
+    </table>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/ensemble_strategy.py</div>
+        <pre><code class="language-python">class EnsembleStrategy(Strategy):
+    """Run sub-strategies sequentially, combine their verdicts."""
+
+    def __init__(self, strategies: list[Strategy], *,
+                 weights=None, mode="weighted"):
+        self.strategies = strategies
+        self.weights = weights or [1.0] * len(strategies)
+        self.mode = mode
+
+    def answer(self, inp: StrategyInput) -> StrategyOutput:
+        outputs = [s.answer(inp) for s in self.strategies]
+
+        # Drop strategies that abstained
+        active = [
+            (out, w) for out, w in zip(outputs, self.weights)
+            if not out.is_abstain
+        ]
+        if not active:
+            return outputs[0]  # all abstained — nothing better to do
+
+        if self.mode == "weighted":
+            return self._weighted_fusion(active)
+        return self._vote_fusion(active)
+
+    def _weighted_fusion(self, active):
+        combined = {"A": 0.0, "B": 0.0, "C": 0.0, "D": 0.0}
+        total_w = sum(w for _, w in active)
+
+        for out, w in active:
+            probs = _extract_probs(out)       # get full distribution
+            norm_w = w / total_w              # normalize weights to sum=1
+            for letter in "ABCD":
+                combined[letter] += norm_w * probs[letter]
+
+        best_letter = max(combined, key=lambda l: combined[l])
+        return StrategyOutput(
+            chosen_index=ord(best_letter) - ord("A"),
+            confidence=combined[best_letter],
+        )</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Sequential"><code>[s.answer(inp) for s in self.strategies]</code> — all strategies are run sequentially (they share one GPU). Parallelism isn't possible here since they compete for the same CUDA resources.<span class="purpose">Sequential is intentional, not a limitation — GPU can only run one model at a time.</span></li>
+        <li data-line="Abstain filter">Strategies that abstained (e.g., MathsTool on a non-math question) are dropped from the fusion. Their weight is automatically redistributed via normalization.<span class="purpose">An abstaining strategy saying "I don't know" shouldn't dilute the signal from strategies that DO know.</span></li>
+        <li data-line="_extract_probs"><code>_extract_probs(out)</code> tries to get the full probability distribution from <code>extras["probs"]</code>. If unavailable, it creates a "soft one-hot": chosen letter gets the confidence, rest share the remainder.<span class="purpose">Graceful fallback: even strategies without full probs can participate meaningfully in fusion.</span></li>
+        <li data-line="Normalization"><code>norm_w = w / total_w</code> — weights always sum to 1 after normalization. You can assign weights like [2.0, 1.0, 1.0] to trust the first strategy more, or [1,1,1] for equal trust.<span class="purpose">Flexible trust allocation without requiring exact values. Just express relative preference.</span></li>
+    </ul>
+
+    <div class="card warning">
+        <p><strong>Why is ensemble better than any single strategy?</strong> Different strategies have different blind spots. The LLM might hallucinate on arithmetic; the MathsTool can't handle word problems; RAG fails on rare topics not in the index. By fusing their opinions, you get the union of their strengths — each covers the others' weaknesses.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 8: TieredStrategy -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s8">
+    <div class="section-number">Strategy 8</div>
+    <h2>TieredStrategy — The Smart Dispatcher</h2>
+
+    <span class="strategy-badge badge-orchestration">🎯 Orchestration</span>
+
+    <div class="card analogy">
+        <p><strong>Think of a hospital triage system.</strong> A small cut? → Nurse handles it (cheap, fast). Broken bone? → Doctor (more expensive, more capable). Heart attack? → Specialist surgeon (most expensive, most capable). You don't send every patient to the surgeon — that wastes resources. Similarly, easy quiz questions don't need the full RAG+Ensemble pipeline. A bare LLM can answer "What color is the sky?" in milliseconds. Save the heavy artillery for level-15 questions.</p>
+    </div>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    Q[Question<br/>level + category] --> MATHS{Category<br/>== MATHS?}
+    MATHS -->|Yes| MO["Maths Override<br/>(ToolStrategy)"]
+    MATHS -->|No| LEVEL{Difficulty<br/>level?}
+    
+    LEVEL -->|"Level 1–5"| EASY["Easy Strategy<br/>(BaselineLLM)"]
+    LEVEL -->|"Level 6–10"| MED["Medium Strategy<br/>(RAGStrategy)"]
+    LEVEL -->|"Level 11–15"| HARD["Hard Strategy<br/>(EnsembleStrategy)"]
+    
+    EASY --> ESC{Confidence<br/>margin low?}
+    MED --> ESC
+    ESC -->|Yes| UP["Escalate to<br/>next tier ⬆️"]
+    ESC -->|No| DONE[Return answer]
+    UP --> DONE
+    HARD --> DONE
+    MO --> DONE
+    
+    style EASY fill:#10b981,color:#fff
+    style MED fill:#f59e0b,color:#000
+    style HARD fill:#ef4444,color:#fff
+    style MO fill:#8b5cf6,color:#fff
+        </div>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/tiered_strategy.py</div>
+        <pre><code class="language-python">@dataclass(frozen=True)
+class TierBreakpoints:
+    easy_max_level: int = 5     # levels 1..5 → easy
+    medium_max_level: int = 10  # levels 6..10 → medium
+                                 # levels 11..15 → hard
+
+
+class TieredStrategy(Strategy):
+    """Route questions to the cheapest strategy that can handle them."""
+
+    def __init__(self, easy, medium, hard, *,
+                 breakpoints=TierBreakpoints(),
+                 maths_override=None,
+                 escalation_threshold=None):
+        self.easy = easy
+        self.medium = medium
+        self.hard = hard
+        self.maths_override = maths_override
+        self.escalation_threshold = escalation_threshold
+
+    def answer(self, inp: StrategyInput) -> StrategyOutput:
+        primary, next_tier = self._route(inp)
+        out = primary.answer(inp)
+
+        # Confidence-based escalation
+        if (next_tier is not None
+            and self.escalation_threshold is not None
+            and not out.is_abstain):
+            margin = out.extras.get("margin")
+            if isinstance(margin, float) and margin < self.escalation_threshold:
+                escalated = next_tier.answer(inp)
+                return escalated  # use the more expensive answer
+        return out
+
+    def _route(self, inp) -> tuple[Strategy, Optional[Strategy]]:
+        # Maths override: ALL maths questions → special handler
+        if inp.category == Category.MATHS and self.maths_override:
+            return self.maths_override, None
+
+        bp = self.breakpoints
+        if inp.level <= bp.easy_max_level:
+            return self.easy, self.medium      # can escalate to medium
+        if inp.level <= bp.medium_max_level:
+            return self.medium, self.hard      # can escalate to hard
+        return self.hard, None                 # already at max tier</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Route"><code>_route()</code> maps the question to a (primary, next_tier) pair. The primary runs first. If it's uncertain, the next tier gets a chance.<span class="purpose">Cost optimization: only spend compute where it's needed. Easy questions get fast answers.</span></li>
+        <li data-line="Maths">Maths override is checked FIRST, regardless of level. A level-1 arithmetic question is better handled by the MathsTool than any LLM.<span class="purpose">Category-specific routing: some question types have specialized solvers that beat general approaches at all difficulty levels.</span></li>
+        <li data-line="Escalation">If <code>margin < escalation_threshold</code>, the cheap strategy wasn't confident enough. The system "escalates" to the next tier (more expensive but more capable).<span class="purpose">Adaptive compute: spend more time/resources only when the cheap path is uncertain. Confident cheap answers skip the expensive path entirely.</span></li>
+        <li data-line="No ceiling">At the hard tier, <code>next_tier=None</code> — there's nothing to escalate to. This is the best we've got.<span class="purpose">Design constraint: escalation stops at the top. The hard strategy is the "last resort" — usually a full ensemble.</span></li>
+    </ul>
+
+    <div class="card warning">
+        <p><strong>The beauty of tiering:</strong> In a 15-question game, questions 1–5 are trivial ("What color is the sky?"). Using a full RAG+Ensemble on these wastes 5× the compute and adds latency for no accuracy gain. Tiering gives you the same accuracy as running the hard strategy on everything, but at a fraction of the cost and time.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 9: The Big Picture -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s9">
+    <div class="section-number">The Big Picture</div>
+    <h2>How Everything Connects</h2>
+
+    <p>Now that you understand each strategy individually, let's see how they compose into the full production system. The <strong>Runner</strong> is the spine that orchestrates everything.</p>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph TD
+    subgraph "Game Server"
+        GS[Millionaire Server<br/>Sends questions, validates answers]
+    end
+    
+    subgraph "Runner (runner.py)"
+        GA[GameAdapter<br/>Translates server ↔ domain types]
+        WD[Watchdog<br/>Enforces time budget per question]
+        PACER[Pacer<br/>Rate-limits API calls]
+        LOG[Logger<br/>JSONL file per game]
+        GRO[IndexGrower<br/>confirm/discard after each answer]
+    end
+    
+    subgraph "Strategy Layer"
+        TIERED[TieredStrategy<br/>Routes by difficulty + category]
+        
+        subgraph "Easy Tier (Levels 1-5)"
+            BL[BaselineLLMStrategy<br/>ZERO_SHOT logits]
+        end
+        
+        subgraph "Medium Tier (Levels 6-10)"
+            RAG[RAGStrategy<br/>Retrieve + score]
+        end
+        
+        subgraph "Hard Tier (Levels 11-15)"
+            ENS[EnsembleStrategy]
+            ENS_RAG[RAGStrategy<br/>with reranker]
+            ENS_TOOL[ToolStrategy<br/>MathsTool + fallback]
+        end
+        
+        subgraph "Maths Override (Any Level)"
+            TOOL[ToolStrategy<br/>MathsTool → RAG fallback]
+        end
+    end
+    
+    subgraph "Knowledge Layer"
+        FAISS[FAISS Dense Index<br/>384-dim vectors]
+        BM25[BM25 Sparse Index<br/>Token frequencies]
+        WIKI[Live Wikipedia API<br/>Real-time fallback]
+        IG[IndexGrower Buffer<br/>Self-improving memory]
+    end
+    
+    subgraph "Model Layer"
+        LLM[LLM<br/>Qwen/DeepSeek]
+        EMB[Embedder<br/>BGE-small-en-v1.5]
+        CE[Cross-Encoder<br/>Reranker]
+    end
+    
+    GS <-->|questions/answers| GA
+    GA --> WD
+    WD --> TIERED
+    
+    TIERED --> BL
+    TIERED --> RAG
+    TIERED --> ENS
+    TIERED --> TOOL
+    
+    ENS --> ENS_RAG
+    ENS --> ENS_TOOL
+    
+    RAG --> FAISS
+    RAG --> BM25
+    RAG --> WIKI
+    RAG --> IG
+    ENS_RAG --> FAISS
+    
+    BL --> LLM
+    RAG --> LLM
+    ENS_RAG --> LLM
+    ENS_TOOL --> LLM
+    TOOL --> LLM
+    
+    RAG --> EMB
+    ENS_RAG --> CE
+    
+    GA --> PACER
+    GA --> LOG
+    GA --> GRO
+    
+    style TIERED fill:#a855f7,color:#fff
+    style ENS fill:#8b5cf6,color:#fff
+    style RAG fill:#059669,color:#fff
+    style TOOL fill:#f59e0b,color:#000
+    style BL fill:#3b82f6,color:#fff
+        </div>
+    </div>
+
+    <h3>The Runner: Game Loop</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/runner.py — play_game() simplified</div>
+        <pre><code class="language-python">def play_game(client, competition_id, strategy, *, logger=None, 
+              fallback_index=0, verbose=True) -> GameResult:
+    """Play one full game with the given strategy."""
+    
+    game = GameAdapter(client, competition_id)
+    pacer = _Pacer(min_delay=1.5)  # don't spam the server
+    
+    while not game.is_over:
+        q = game.current_question
+        
+        # Build input for the strategy
+        inp = StrategyInput(
+            question=q.text, options=q.options,
+            level=q.level, category=category,
+            time_budget_seconds=budget,
+        )
+        
+        # Run strategy under watchdog (daemon thread + timeout)
+        try:
+            out = _call_with_deadline(strategy, inp, budget)
+        except _DeadlineExceeded:
+            out = None   # timed out → use fallback
+        
+        chosen_idx = out.chosen_index if out and not out.is_abstain else fallback_index
+        
+        # Submit answer (rate-limited)
+        pacer.wait()
+        outcome = game.submit_answer(chosen_idx)
+        
+        # Learning: confirm or discard live-search articles
+        grower = getattr(strategy, "index_grower", None)
+        if grower:
+            if outcome.correct:
+                grower.confirm(f"lvl_{q.level}")   # add to permanent index
+            else:
+                grower.discard(f"lvl_{q.level}")   # throw away bad info
+        
+        logger.log_question(...)  # persist everything for analysis
+    
+    # End of game: flush any learned articles to disk
+    if grower:
+        grower.flush()
+    
+    return GameResult(...)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Watchdog"><code>_call_with_deadline</code> runs the strategy in a daemon thread. If it exceeds the time budget, the thread is abandoned and the runner submits the fallback answer (default: A).<span class="purpose">The game server has a hard timer. A timed-out answer is wrong — better to submit a guess than nothing.</span></li>
+        <li data-line="Pacer">The <code>_Pacer</code> ensures at least 1.5 seconds between API calls to the server.<span class="purpose">Politeness: the proof-of-concept server isn't designed for rapid-fire requests. Rate limiting prevents accidental DoS.</span></li>
+        <li data-line="Learning loop">After each answer, the runner tells the IndexGrower whether it was correct or not. Correct → live-fetched articles join the permanent index. Wrong → they're discarded.<span class="purpose">Only learn from correct answers. Adding wrong-answer context would poison future retrieval.</span></li>
+        <li data-line="Flush">At game end, <code>grower.flush()</code> persists any learned articles to disk so they survive across sessions.<span class="purpose">The bot remembers what it learned. Next game starts with a bigger, better knowledge base.</span></li>
+    </ul>
+
+    <h3>Strategy Composition: How They Nest</h3>
+
+    <p>The most powerful aspect of this architecture is <strong>composability</strong>. Strategies can contain other strategies. Here's a typical production configuration:</p>
+
+    <div class="code-block">
+        <div class="filename">Typical production wiring (conceptual)</div>
+        <pre><code class="language-python"># Layer 1: Atomic strategies
+baseline = BaselineLLMStrategy(llm, style=PromptStyle.ZERO_SHOT)
+rag      = RAGStrategy(llm, retriever, k=3, use_multi_query=True,
+                       use_hybrid=True, use_live_fallback=True,
+                       index_grower=grower)
+rag_hard = RAGStrategy(llm, retriever, k=5, use_reranker=True,
+                       use_multi_query=True, use_hybrid=True)
+
+# Layer 2: Tool composition
+maths_tool = MathsTool()
+tool_strat = ToolStrategy(tools=[maths_tool], fallback=rag)
+
+# Layer 3: Ensemble (for hard questions)
+ensemble = EnsembleStrategy(
+    strategies=[rag_hard, tool_strat],
+    weights=[2.0, 1.0],  # trust RAG more than tools
+    mode="weighted",
+)
+
+# Layer 4: Tiered dispatch (the top-level strategy)
+final = TieredStrategy(
+    easy=baseline,           # levels 1-5: fast LLM
+    medium=rag,              # levels 6-10: RAG
+    hard=ensemble,           # levels 11-15: full ensemble
+    maths_override=tool_strat,  # all maths: calculator first
+    escalation_threshold=0.15,  # escalate if margin < 15%
+)
+
+# Run the game
+result = play_game(client, competition_id=1, strategy=final)</code></pre>
+    </div>
+
+    <h3>Design Patterns Summary</h3>
+
+    <table class="comparison-table">
+        <tr><th>Pattern</th><th>Where Used</th><th>Benefit</th></tr>
+        <tr><td><strong>Strategy Pattern</strong></td><td>All strategies implement the same interface</td><td>Swap any algorithm without changing the runner</td></tr>
+        <tr><td><strong>Chain of Responsibility</strong></td><td>ToolStrategy tries tools in order</td><td>Add new tools without modifying existing code</td></tr>
+        <tr><td><strong>Composite Pattern</strong></td><td>EnsembleStrategy contains strategies</td><td>Strategies compose recursively like building blocks</td></tr>
+        <tr><td><strong>Template Method</strong></td><td>Strategy.warm_up() / shutdown()</td><td>Optional lifecycle hooks without forcing implementation</td></tr>
+        <tr><td><strong>Decorator/Wrapper</strong></td><td>TieredStrategy wraps 3 strategies with routing logic</td><td>Add routing without modifying the wrapped strategies</td></tr>
+        <tr><td><strong>Observer</strong></td><td>Runner notifies IndexGrower of confirm/discard</td><td>Learning loop without coupling strategy to game state</td></tr>
+    </table>
+
+    <h3>The Accuracy Hierarchy</h3>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+graph LR
+    R["🎲 Random<br/>~25%"] --> B["🧠 Baseline LLM<br/>~55-65%"]
+    B --> RAG["📚 RAG<br/>~70-80%"]
+    RAG --> T["🔧 Tool+RAG<br/>~75-85%"]
+    T --> E["🗳️ Ensemble<br/>~80-90%"]
+    E --> TI["🎯 Tiered<br/>~80-90%<br/>(same accuracy,<br/>less compute)"]
+    
+    style R fill:#ef4444,color:#fff
+    style B fill:#f59e0b,color:#000
+    style RAG fill:#059669,color:#fff
+    style T fill:#3b82f6,color:#fff
+    style E fill:#8b5cf6,color:#fff
+    style TI fill:#a855f7,color:#fff
+        </div>
+    </div>
+
+    <div class="card analogy">
+        <p><strong>The progression tells a story:</strong> Each strategy builds on the previous one. Random is the floor. LLM adds intelligence. RAG adds knowledge. Tools add precision. Ensemble adds redundancy. Tiering adds efficiency. Together, they form a system where the whole is greater than the sum of its parts — and does so efficiently by only deploying expensive resources when the cheap ones aren't confident enough.</p>
+    </div>
+</section>
+
+</div>
+
+<script>
+mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+        primaryColor: '#1a2235',
+        primaryTextColor: '#e2e8f0',
+        primaryBorderColor: '#10b981',
+        lineColor: '#4b5563',
+        secondaryColor: '#111827',
+        tertiaryColor: '#0a0e1a',
+    }
+});
+</script>
+
+</body>
+</html>
