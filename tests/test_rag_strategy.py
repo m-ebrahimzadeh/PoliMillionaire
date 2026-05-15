@@ -837,7 +837,7 @@ def test_live_search_query_in_extras():
 
 
 def test_extract_search_query_strips_think_tags():
-    """Qwen3 <think>…</think> traces should be stripped from the keywords."""
+    """Qwen3 complete <think>…</think> traces should be stripped."""
     llm = _RecordingMockLLM(
         generate_response="<think>some internal reasoning</think>Julius Caesar"
     )
@@ -862,6 +862,40 @@ def test_extract_search_query_strips_think_tags():
 
     # <think>…</think> should be stripped; only "Julius Caesar" remains.
     assert _FakeLiveSearch.searched[0] == "Julius Caesar"
+
+
+def test_extract_search_query_strips_truncated_think_tags():
+    """Qwen3 <think>… blocks truncated by max_new_tokens (no closing tag)
+    should also be stripped — this was the real-world failure mode where
+    the model never reached the keywords within the token budget."""
+    llm = _RecordingMockLLM(
+        # Simulates a think block cut off mid-stream (no </think>)
+        generate_response="<think>\nOkay, let's tackle this. The user wants me to extract 2-5 Wikipedia"
+    )
+    retriever = _GatedRetriever(_passages())
+
+    class _FakeLiveSearch:
+        searched: list[str] = []
+        def search(self, query, *, category=None):
+            _FakeLiveSearch.searched.append(query)
+            return []
+
+    strategy = RAGStrategy(
+        llm, retriever, k=2,
+        min_score=0.30,
+        use_multi_query=False,
+        use_live_fallback=True,
+        live_use_llm_query=True,
+    )
+    strategy._live_search = _FakeLiveSearch()
+
+    strategy.answer(_inp("B"))
+
+    # The truncated <think> block should be stripped and result is empty →
+    # fallback to the bare question (not garbage Wikipedia query).
+    assert _FakeLiveSearch.searched[0].startswith("Who crossed the Rubicon?"), (
+        f"Expected question fallback, got: {_FakeLiveSearch.searched[0]!r}"
+    )
 
 
 def test_extract_search_query_falls_back_to_question_on_empty_response():

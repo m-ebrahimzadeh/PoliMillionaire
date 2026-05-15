@@ -591,7 +591,8 @@ class RAGStrategy(Strategy):
 
         Uses a minimal system-free chat turn so the model stays in
         instruction-following mode without any extra context overhead.
-        The response is stripped of Qwen3 ``<think>…</think>`` blocks
+        The response is stripped of Qwen3 ``<think>…</think>`` blocks —
+        including *truncated* blocks that were cut off by the token budget —
         before being returned; if the result is empty after stripping we
         fall back to the bare question to guarantee a non-empty query.
 
@@ -606,15 +607,21 @@ class RAGStrategy(Strategy):
         import re
         prompt = (
             "Extract 2-5 Wikipedia search keywords from this trivia question. "
-            "Output ONLY the keywords, nothing else.\n\n"
+            "Do NOT use <think> tags. Output ONLY the keywords, nothing else.\n\n"
             f"Question: {inp.question}\n"
             f"Options: {', '.join(inp.options)}"
         )
         messages = [{"role": "user", "content": prompt}]
         try:
-            resp = self.llm.generate(messages, max_new_tokens=20, temperature=0.0)
-            # Strip Qwen3 thinking traces (<think>…</think>) if present.
-            text = re.sub(r"<think>.*?</think>", "", resp.text, flags=re.DOTALL).strip()
+            # 50 tokens: enough for the keywords even if the model emits a
+            # short think preamble despite the instruction above.
+            resp = self.llm.generate(messages, max_new_tokens=50, temperature=0.0)
+            # Strip Qwen3 thinking traces — both complete (<think>…</think>)
+            # *and* truncated ones (<think>… with no closing tag) that can
+            # appear when max_new_tokens cuts off mid-block.
+            text = re.sub(
+                r"<think>.*?(?:</think>|$)", "", resp.text, flags=re.DOTALL
+            ).strip()
             return text if text else inp.question
         except Exception:  # noqa: BLE001 — never crash the answer pipeline
             return inp.question
