@@ -710,3 +710,182 @@ def test_rag_multi_query_rerank_fuses_first_then_reranks_once():
     assert call["query"].startswith("Who crossed the Rubicon?")
     # k requested must equal the strategy's top-k.
     assert call["k"] == 2
+
+
+# ── LLM-based live-search query extraction ──────────────────────────────────
+
+class _RecordingMockLLM(MockLLM):
+    """MockLLM that records every generate() call and returns a canned response."""
+
+    def __init__(self, generate_response: str = "Julius Caesar Rubicon", **kw):
+        super().__init__(**kw)
+        self.generate_calls: list[list[dict]] = []
+        self._generate_response = generate_response
+
+    def generate(self, messages, **_):
+        from polimibot.models.llm import LLMResponse
+        self.generate_calls.append(list(messages))
+        return LLMResponse(text=self._generate_response, elapsed_seconds=0.001)
+
+
+class _GatedRetriever(MockRetriever):
+    """Always returns a passage with a score below any reasonable threshold
+    so the gate always fires and live search is triggered."""
+
+    def retrieve(self, query, k=3, **kwargs):
+        super().retrieve(query, k=k, **kwargs)
+        return [(Chunk(text="irrelevant", source="X", chunk_id=0), 0.01)]
+
+
+def test_live_use_llm_query_fires_generate_before_search():
+    """When live_use_llm_query=True, a generate() call is made to extract
+    search keywords before live search fires."""
+    llm = _RecordingMockLLM(generate_response="Julius Caesar Roman general")
+    # Gated retriever: top score=0.01 < min_score=0.30 → gate fires.
+    retriever = _GatedRetriever(_passages())
+
+    # Patch live search to avoid real HTTP calls.
+    class _FakeLiveSearch:
+        searched: list[str] = []
+        def search(self, query, *, category=None):
+            _FakeLiveSearch.searched.append(query)
+            return []   # no articles — just checking query was passed
+
+    strategy = RAGStrategy(
+        llm, retriever, k=2,
+        min_score=0.30,
+        use_multi_query=False,
+        use_live_fallback=True,
+        live_use_llm_query=True,
+    )
+    strategy._live_search = _FakeLiveSearch()  # inject fake live search
+
+    strategy.answer(_inp("B"))
+
+    # A generate() call should have been made.
+    assert len(llm.generate_calls) >= 1, (
+        "Expected at least one llm.generate() call for keyword extraction."
+    )
+    # The generate call's prompt should mention the question.
+    prompt_content = llm.generate_calls[0][-1]["content"]
+    assert "Who crossed the Rubicon?" in prompt_content
+
+    # The generated keywords should be passed to live search.
+    assert len(_FakeLiveSearch.searched) == 1
+    assert _FakeLiveSearch.searched[0] == "Julius Caesar Roman general"
+
+
+def test_live_use_llm_query_false_uses_bare_question():
+    """When live_use_llm_query=False (default), no extra generate() call
+    is made — the bare question goes to live search unchanged."""
+    llm = _RecordingMockLLM()
+    retriever = _GatedRetriever(_passages())
+
+    class _FakeLiveSearch:
+        searched: list[str] = []
+        def search(self, query, *, category=None):
+            _FakeLiveSearch.searched.append(query)
+            return []
+
+    strategy = RAGStrategy(
+        llm, retriever, k=2,
+        min_score=0.30,
+        use_multi_query=False,
+        use_live_fallback=True,
+        live_use_llm_query=False,   # default
+    )
+    strategy._live_search = _FakeLiveSearch()
+
+    strategy.answer(_inp("B"))
+
+    # No generate() calls should have been made for keyword extraction
+    # (score_options is used for the final answer — those go through
+    # score_options(), not generate()).
+    for call in llm.generate_calls:
+        content = call[-1]["content"]
+        assert "Wikipedia search keywords" not in content, (
+            "Unexpected keyword-extraction prompt when live_use_llm_query=False."
+        )
+
+    # The live search should receive the bare question.
+    assert len(_FakeLiveSearch.searched) == 1
+    assert _FakeLiveSearch.searched[0].startswith("Who crossed the Rubicon?")
+
+
+def test_live_search_query_in_extras():
+    """The query actually sent to live search appears in extras as
+    live_search_query — visible in the trace viewer."""
+    llm = _RecordingMockLLM(generate_response="Roman history")
+    retriever = _GatedRetriever(_passages())
+
+    class _FakeLiveSearch:
+        def search(self, query, *, category=None):
+            return []
+
+    strategy = RAGStrategy(
+        llm, retriever, k=2,
+        min_score=0.30,
+        use_multi_query=False,
+        use_live_fallback=True,
+        live_use_llm_query=True,
+    )
+    strategy._live_search = _FakeLiveSearch()
+
+    out = strategy.answer(_inp("B"))
+    assert "live_search_query" in out.extras
+    assert out.extras["live_search_query"] == "Roman history"
+
+
+def test_extract_search_query_strips_think_tags():
+    """Qwen3 <think>…</think> traces should be stripped from the keywords."""
+    llm = _RecordingMockLLM(
+        generate_response="<think>some internal reasoning</think>Julius Caesar"
+    )
+    retriever = _GatedRetriever(_passages())
+
+    class _FakeLiveSearch:
+        searched: list[str] = []
+        def search(self, query, *, category=None):
+            _FakeLiveSearch.searched.append(query)
+            return []
+
+    strategy = RAGStrategy(
+        llm, retriever, k=2,
+        min_score=0.30,
+        use_multi_query=False,
+        use_live_fallback=True,
+        live_use_llm_query=True,
+    )
+    strategy._live_search = _FakeLiveSearch()
+
+    strategy.answer(_inp("B"))
+
+    # <think>…</think> should be stripped; only "Julius Caesar" remains.
+    assert _FakeLiveSearch.searched[0] == "Julius Caesar"
+
+
+def test_extract_search_query_falls_back_to_question_on_empty_response():
+    """If the LLM response is empty after stripping, fall back to the
+    bare question so live search always has a non-empty query."""
+    llm = _RecordingMockLLM(generate_response="<think>all thinking</think>")
+    retriever = _GatedRetriever(_passages())
+
+    class _FakeLiveSearch:
+        searched: list[str] = []
+        def search(self, query, *, category=None):
+            _FakeLiveSearch.searched.append(query)
+            return []
+
+    strategy = RAGStrategy(
+        llm, retriever, k=2,
+        min_score=0.30,
+        use_multi_query=False,
+        use_live_fallback=True,
+        live_use_llm_query=True,
+    )
+    strategy._live_search = _FakeLiveSearch()
+
+    strategy.answer(_inp("B"))
+
+    # Should have fallen back to the bare question.
+    assert _FakeLiveSearch.searched[0].startswith("Who crossed the Rubicon?")
