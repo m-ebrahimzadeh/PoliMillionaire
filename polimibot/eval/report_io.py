@@ -9,11 +9,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from polimibot.config import ts
 from polimibot.eval.evaluator import EvalReport
 
 
 def save_report(report: EvalReport, name: str, eval_dir: Path) -> Path:
-    """Serialise *report* to ``eval_dir/{name}.json``.
+    """Serialise *report* to ``eval_dir/{name}_{ts()}.json``.
+
+    A UTC timestamp is embedded in the filename so each run produces a
+    new file and no previous results are silently overwritten.
 
     Args:
         report:   completed EvalReport from evaluate_strategy().
@@ -24,7 +28,7 @@ def save_report(report: EvalReport, name: str, eval_dir: Path) -> Path:
         Path to the written file.
     """
     eval_dir.mkdir(parents=True, exist_ok=True)
-    out = eval_dir / f"{name}.json"
+    out = eval_dir / f"{name}_{ts()}.json"
     report.save(out)
     return out
 

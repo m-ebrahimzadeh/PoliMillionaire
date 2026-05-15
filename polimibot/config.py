@@ -6,6 +6,7 @@ Anywhere else hardcoding these values, a smell it is.
 from __future__ import annotations
 
 import dataclasses
+import datetime as _dt
 import os
 from dataclasses import dataclass
 from enum import Enum
@@ -123,3 +124,17 @@ def update_runtime(**kwargs: object) -> RuntimeConfig:
     global RUNTIME
     RUNTIME = dataclasses.replace(RUNTIME, **kwargs)
     return RUNTIME
+
+
+def ts() -> str:
+    """Return a filesystem-safe UTC timestamp string: ``YYYYMMDD_HHMMSS``.
+
+    Use this to stamp output filenames so each run creates a new file
+    and never silently overwrites previous results.
+
+    Example::
+
+        from polimibot.config import PATHS, ts
+        out = PATHS.eval_dir / f"report_rag_{ts()}.json"
+    """
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d_%H%M%S")

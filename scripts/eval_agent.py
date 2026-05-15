@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from polimibot.config import PATHS, Category
+from polimibot.config import PATHS, Category, ts
 from polimibot.eval.evaluator import EvalReport, evaluate_strategy
 from polimibot.eval.gold_set import load_gold_set
 from polimibot.models.mock import MockLLM
@@ -57,7 +57,7 @@ def main() -> int:
         print(f"\n{'='*55}\nEvaluating: {strat.name}")
         r = evaluate_strategy(strat, maths, verbose=True)
         r.print_summary()
-        r.save(PATHS.eval_dir / f"report_{strat.name}_maths.json")
+        r.save(PATHS.eval_dir / f"report_{strat.name}_maths_{ts()}.json")
         reports.append(r)
 
     baseline.shutdown()

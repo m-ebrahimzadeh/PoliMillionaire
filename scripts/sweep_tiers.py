@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from polimibot.config import PATHS
+from polimibot.config import PATHS, ts
 from polimibot.eval.evaluator import evaluate_strategy
 from polimibot.eval.gold_set import load_gold_set
 from polimibot.strategies.ensemble_strategy import EnsembleStrategy
@@ -104,7 +104,7 @@ def main() -> None:
     easy.warm_up()   # one warm-up covers all three (same underlying LLM)
 
     # ── sweep ────────────────────────────────────────────────────────────
-    out = PATHS.eval_dir / "tier_sweep.jsonl"
+    out = PATHS.eval_dir / f"tier_sweep_{ts()}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
 
     configs = list(itertools.product(args.easy, args.medium, args.escalation_threshold))

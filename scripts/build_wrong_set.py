@@ -1,4 +1,4 @@
-"""Mine run logs → data/eval/wrong_set.jsonl.
+"""Mine run logs → data/eval/wrong_set_YYYYMMDD_HHMMSS.jsonl.
 
 Symmetrical companion to build_gold_set.py.  Where the gold set harvests
 questions the bot answered correctly, this script harvests questions that
@@ -13,15 +13,21 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from polimibot.config import CATEGORIES, PATHS
+from polimibot.config import CATEGORIES, PATHS, ts
 from polimibot.eval.wrong_set import harvest_wrong_set, save_wrong_set
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--runs", type=Path, default=PATHS.runs_dir)
-    p.add_argument("--out",  type=Path, default=PATHS.eval_dir / "wrong_set.jsonl")
+    p.add_argument("--out",  type=Path, default=None,
+                   help="Output path (default: data/eval/wrong_set_YYYYMMDD_HHMMSS.jsonl)")
     args = p.parse_args()
+
+    # Compute timestamped default at runtime (not at argparse-definition time)
+    out_path: Path = args.out if args.out is not None else (
+        PATHS.eval_dir / f"wrong_set_{ts()}.jsonl"
+    )
 
     items = harvest_wrong_set(args.runs)
 
@@ -41,8 +47,8 @@ def main() -> None:
     if not items:
         return
 
-    save_wrong_set(items, args.out)
-    print(f"Wrong set saved → {args.out}")
+    save_wrong_set(items, out_path)
+    print(f"Wrong set saved → {out_path}")
 
 
 if __name__ == "__main__":

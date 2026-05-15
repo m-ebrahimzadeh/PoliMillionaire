@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from polimibot.config import PATHS
+from polimibot.config import PATHS, ts
 from polimibot.eval.evaluator import EvalReport, evaluate_strategy
 from polimibot.eval.gold_set import load_gold_set
 from polimibot.models.mock import MockLLM
@@ -86,7 +86,7 @@ def main() -> int:
         print(f"\n{'='*55}\nEvaluating: {strat.name}")
         r = evaluate_strategy(strat, hard, verbose=True)
         r.print_summary()
-        r.save(PATHS.eval_dir / f"report_{strat.name}_hard.json")
+        r.save(PATHS.eval_dir / f"report_{strat.name}_hard_{ts()}.json")
         reports.append(r)
 
     ensemble.shutdown()
