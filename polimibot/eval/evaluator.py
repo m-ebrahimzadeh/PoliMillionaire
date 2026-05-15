@@ -55,7 +55,14 @@ def _percentile(values: list[float], p: float) -> float:
 
 @dataclass
 class EvalSample:
-    """One question's outcome. Kept for post-hoc error analysis."""
+    """One question's outcome. Kept for post-hoc error analysis.
+
+    ``extras`` is the full ``StrategyOutput.extras`` dict — it carries
+    everything the strategy computed internally (retrieved passages, gate
+    status, live-search results, per-arm votes, tier routing, etc.).
+    Stored here so callers can run post-hoc diagnostics without re-running
+    the strategy.  Defaults to empty dict for strategies that don't emit extras.
+    """
     question_text: str
     options: tuple[str, ...]
     correct_index: int
@@ -65,6 +72,7 @@ class EvalSample:
     elapsed_seconds: float
     category: Optional[Category]
     level: int
+    extras: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -157,6 +165,7 @@ def evaluate_strategy(
             elapsed_seconds=elapsed,
             category=item.category,
             level=item.level,
+            extras=out.extras or {},  # preserve full pipeline trace for diagnostics
         ))
 
         if verbose and (i + 1) % 10 == 0:
