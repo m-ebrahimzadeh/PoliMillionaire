@@ -1119,6 +1119,7 @@ code:not([class*="language-"]) {
                 <div class="section-group-title">Evaluation</div>
                 <li><a href="#eval-why">Why Evaluate Offline?</a></li>
                 <li><a href="#eval-gold">Gold Set</a></li>
+                <li><a href="#eval-wrong">Wrong Set</a></li>
                 <li><a href="#eval-evaluator">The Evaluator</a></li>
                 <li><a href="#eval-calibration">Calibration &amp; ECE</a></li>
                 <li><a href="#eval-retrieval">Retrieval Evaluation</a></li>
@@ -2743,6 +2744,144 @@ def harvest_gold_set(runs_dir: Path) -> list[GoldItem]:
 
     <div class="callout warning">
         <p><strong>The cardinal rule:</strong> Build your gold set ONCE from baseline runs, then FREEZE it. Never re-harvest mid-experiment — that would invalidate all previous comparisons.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SECTION: EVALUATION — WRONG SET
+     ═══════════════════════════════════════════════════════════════════════ -->
+<section class="section" id="eval-wrong" data-chapter="eval">
+    <div class="section-label">Evaluation</div>
+    <h2>The Wrong Set — Your Error Archive</h2>
+
+    <div class="callout analogy">
+        <p><strong>Think of a surgeon's morbidity &amp; mortality review.</strong> The gold set is your record of successes; the wrong set is your record of failures — every case that went wrong, preserved for analysis. Reviewing your failures systematically reveals the patterns you need to fix.</p>
+    </div>
+
+    <p>The wrong set is the symmetric counterpart of the gold set: instead of collecting confirmed-correct answers, it collects confirmed-wrong ones. Every question where the bot submitted an incorrect index is preserved as a <code>WrongItem</code>.</p>
+
+    <h3>Gold Set vs Wrong Set</h3>
+
+    <table class="comparison-table">
+        <tr><th>Dimension</th><th>Gold Set</th><th>Wrong Set</th></tr>
+        <tr><td>What it stores</td><td>Questions the bot answered <strong>correctly</strong></td><td>Questions the bot answered <strong>incorrectly</strong></td></tr>
+        <tr><td>What it proves</td><td>Strategy capability ceiling</td><td>Strategy failure patterns</td></tr>
+        <tr><td>Labelled field</td><td><code>correct_index</code></td><td><code>wrong_index</code> + <code>correct_index</code> (if known)</td></tr>
+        <tr><td>Harvesting</td><td>1-pass: look for <code>correct=True</code></td><td>2-pass: collect wrongs, then cross-ref for correct</td></tr>
+        <tr><td>Primary use</td><td>Offline evaluation (accuracy metrics)</td><td>Error analysis, targeted fine-tuning, hard-negative mining</td></tr>
+        <tr><td>File</td><td><code>data/eval/gold_set.jsonl</code></td><td><code>data/eval/wrong_set.jsonl</code></td></tr>
+    </table>
+
+    <h3>The WrongItem Dataclass</h3>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/wrong_set.py — WrongItem</div>
+        <pre><code class="language-python">@dataclass(frozen=True)
+class WrongItem:
+    """One question where the bot chose incorrectly."""
+    question_text: str
+    options: tuple[str, ...]      # Original server order — NEVER shuffled
+    wrong_index: int              # 0=A, 1=B, 2=C, 3=D — what we chose
+    correct_index: int            # -1 if still unknown
+    competition_id: int
+    level: int
+    category: Optional[Category] = None
+    source_run: str = ""          # run file that provided this record
+
+    @property
+    def correct_known(self) -> bool:
+        return self.correct_index >= 0
+
+    @property
+    def wrong_option_text(self) -> str:
+        return self.options[self.wrong_index]
+
+    @property
+    def correct_option_text(self) -> Optional[str]:
+        if self.correct_index < 0:
+            return None
+        return self.options[self.correct_index]</code></pre>
+    </div>
+
+    <h3>Two-Pass Harvesting Algorithm</h3>
+
+    <p>The gold set only needs a single pass (every <code>correct=True</code> record is trivially a gold item). The wrong set needs two passes, because we want to also recover the <em>correct</em> answer when possible — so the item is maximally useful for training.</p>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid-wrapper-label">harvest_wrong_set() — two-pass algorithm</div>
+        <div class="mermaid">
+flowchart TD
+    LOGS["Run logs (data/runs/*.jsonl)"] --> P1["Pass 1: Collect wrong records\ncorrect=False → WrongItem(correct_index=-1)"]
+    P1 --> P2["Pass 2: Cross-reference for correct answer"]
+    P2 --> DA["Path A: Same (cid, text) has correct=True record\n→ correct_index from that record"]
+    P2 --> DB["Path B: 3 different wrong indices seen\n→ remaining index is correct (elimination)"]
+    P2 --> DC["Path C: No evidence\n→ correct_index stays -1"]
+    DA --> OUT["WrongItem (correct known)"]
+    DB --> OUT
+    DC --> OUT2["WrongItem (correct unknown)"]
+        </div>
+        <p class="diagram-caption">Two-pass harvest: collect wrongs first, then enrich with correct-answer evidence</p>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="Pass 1">Every <code>run_kind=&quot;question&quot;</code> record with <code>correct=False</code> becomes a staged <code>WrongItem</code> with <code>correct_index=-1</code>.<span class="purpose">Captures all failures across all run files.</span></li>
+        <li data-line="Path A">If the same question (identified by competition_id + text) was later answered correctly in ANY run, we know the correct index directly.<span class="purpose">Cross-run learning: a later correct run teaches the correct answer for an earlier wrong run.</span></li>
+        <li data-line="Path B">If three different indices have been seen as wrong for the same question, the fourth must be correct (process of elimination — same logic as gold set harvest).<span class="purpose">Recovers correct labels even without a direct correct run.</span></li>
+        <li data-line="correct_index=-1">If neither path yields evidence, the item is stored with <code>correct_index=-1</code>. These are still valuable for error counting / category analysis.<span class="purpose">Partial information is better than discarding the record.</span></li>
+    </ul>
+
+    <h3>The WrongSet API — Chainable Views</h3>
+
+    <p>Like <code>GoldSet</code>, <code>WrongSet</code> is immutable and chainable — every filter returns a new <code>WrongSet</code>.</p>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/wrong_set.py — WrongSet usage</div>
+        <pre><code class="language-python">from polimibot.eval import load_wrong_set, WrongSet
+
+ws = WrongSet(load_wrong_set("data/eval/wrong_set.jsonl"))
+
+# Filter and sample
+hard_history = (ws
+    .filter_category(Category.HISTORY)
+    .filter_level(min_level=8)
+    .filter_known_correct()    # only items where we know the answer
+    .shuffle(seed=42))
+
+# Stats
+ws.print_stats()
+# Wrong Set: 87 items
+#   Category breakdown: HISTORY 28  SCIENCE 24  ENTERTAINMENT 22  MATHS 13
+#   Level breakdown:    1-5: 31    6-9: 38    10-15: 18
+#   Correct recovery rate: 68.0%  (59/87 items have correct_index resolved)
+
+# Find overlap with gold set (same question answered both right and wrong)
+from polimibot.eval import load_gold_set, GoldSet
+gs = GoldSet(load_gold_set("data/eval/gold_set.jsonl"))
+overlap = ws & gs  # intersection by (competition_id, question_text)</code></pre>
+    </div>
+
+    <h3>CLI — Building the Wrong Set</h3>
+
+    <div class="code-block">
+        <div class="filename">scripts/build_wrong_set.py — usage</div>
+        <pre><code class="language-python"># Default: reads data/runs/, writes data/eval/wrong_set.jsonl
+python scripts/build_wrong_set.py
+
+# Custom paths
+python scripts/build_wrong_set.py --runs data/runs/ --out data/eval/wrong_set.jsonl
+
+# Output example:
+# Harvested 87 wrong items from 12 run files
+#   HISTORY       : 28 items  (correct known: 22 / 28)
+#   SCIENCE       : 24 items  (correct known: 17 / 24)
+#   ENTERTAINMENT : 22 items  (correct known: 14 / 22)
+#   MATHS         : 13 items  (correct known:  6 / 13)
+# Correct answer recovery rate: 68.0%
+# Saved → data/eval/wrong_set.jsonl</code></pre>
+    </div>
+
+    <div class="callout tip">
+        <p><strong>Option Order Guarantee.</strong> The options tuple in every <code>WrongItem</code> is the original server order — never shuffled, never reordered. The server's JSON array order is preserved through every layer: API response → <code>GameAdapter</code> → <code>runner.py</code> log → <code>harvest_wrong_set()</code> → <code>WrongItem.options</code>. The <code>wrong_index</code> and <code>correct_index</code> are indices into <em>that same order</em>.</p>
     </div>
 </section>
 
