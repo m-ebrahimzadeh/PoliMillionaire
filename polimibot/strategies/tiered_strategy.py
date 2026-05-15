@@ -92,10 +92,14 @@ class TieredStrategy(Strategy):
     def answer(self, inp: StrategyInput) -> StrategyOutput:
         primary, next_tier = self._route(inp)
 
+        # Determine a human-readable tier label for observability.
+        tier_label = self._tier_label(primary)
+
         out = primary.answer(inp)
 
         # Confidence-based escalation: if the cheap path is uncertain and
         # there's a more expensive tier above it, try that instead.
+        escalated_flag = False
         if (
             next_tier is not None
             and self.escalation_threshold is not None
@@ -103,19 +107,47 @@ class TieredStrategy(Strategy):
         ):
             margin = out.extras.get("margin") if isinstance(out.extras, dict) else None
             if isinstance(margin, float) and margin < self.escalation_threshold:
-                escalated = next_tier.answer(inp)
-                # Tag so we can measure escalation rate in eval
-                escalated_extras = dict(escalated.extras)
-                escalated_extras["escalated_from"] = primary.name
+                escalated_out = next_tier.answer(inp)
+                escalated_flag = True
+                # Merge tiered routing info into the escalated output's extras.
+                escalated_extras = dict(escalated_out.extras)
+                escalated_extras["escalated_from"]       = primary.name
+                escalated_extras["tier_selected"]        = self._tier_label(next_tier)
+                escalated_extras["tier_originally"]      = tier_label
+                escalated_extras["escalated"]            = True
+                escalated_extras["escalation_threshold"] = self.escalation_threshold
                 return StrategyOutput(
-                    chosen_index=escalated.chosen_index,
-                    confidence=escalated.confidence,
-                    rationale=escalated.rationale,
-                    is_abstain=escalated.is_abstain,
+                    chosen_index=escalated_out.chosen_index,
+                    confidence=escalated_out.confidence,
+                    rationale=escalated_out.rationale,
+                    is_abstain=escalated_out.is_abstain,
                     extras=escalated_extras,
                 )
 
-        return out
+        # No escalation — annotate the primary output with tier routing info.
+        tagged_extras = dict(out.extras) if isinstance(out.extras, dict) else {}
+        tagged_extras["tier_selected"]        = tier_label
+        tagged_extras["escalated"]            = False
+        tagged_extras["escalation_threshold"] = self.escalation_threshold
+        return StrategyOutput(
+            chosen_index=out.chosen_index,
+            confidence=out.confidence,
+            rationale=out.rationale,
+            is_abstain=out.is_abstain,
+            extras=tagged_extras,
+        )
+
+    def _tier_label(self, strategy: Strategy) -> str:
+        """Return a short label for which tier slot this strategy occupies."""
+        if strategy is self.maths_override:
+            return "maths"
+        if strategy is self.easy:
+            return "easy"
+        if strategy is self.medium:
+            return "medium"
+        if strategy is self.hard:
+            return "hard"
+        return strategy.name
 
     def _route(self, inp: StrategyInput) -> tuple[Strategy, Optional[Strategy]]:
         """Return (primary_strategy, next_tier_or_None)."""
