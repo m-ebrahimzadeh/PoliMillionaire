@@ -1127,6 +1127,14 @@ code:not([class*="language-"]) {
                 <li><a href="#eval-leaderboard">Leaderboard</a></li>
                 <li><a href="#eval-logging">Logging</a></li>
             </div>
+
+            <div class="section-group" data-chapter="obs">
+                <div class="section-group-title">Observability</div>
+                <li><a href="#obs-extras">The Extras Pipeline</a></li>
+                <li><a href="#obs-trace">show_trace()</a></li>
+                <li><a href="#obs-dashboard">retrieval_dashboard()</a></li>
+                <li><a href="#obs-timestamps">Timestamped Outputs</a></li>
+            </div>
         </ul>
     </nav>
 </aside>
@@ -1149,7 +1157,7 @@ code:not([class*="language-"]) {
             <div class="hero-stat-label">Sections</div>
         </div>
         <div class="hero-stat">
-            <div class="hero-stat-value">6</div>
+            <div class="hero-stat-value">7</div>
             <div class="hero-stat-label">Chapters</div>
         </div>
         <div class="hero-stat">
@@ -3093,6 +3101,331 @@ graph TD
 
     <div class="callout tip">
         <p><strong>The evaluation system is the project's immune system.</strong> It detects regressions (did this change hurt?), validates improvements (did this change help?), and provides the evidence to choose which strategy to deploy in production.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SECTION: OBSERVABILITY — EXTRAS PIPELINE
+     ═══════════════════════════════════════════════════════════════════════ -->
+<section class="section" id="obs-extras" data-chapter="obs">
+    <div class="section-label">Observability</div>
+    <h2>The Extras Pipeline — Carrying Internal State Out</h2>
+
+    <div class="callout analogy">
+        <p><strong>An aggregate accuracy number tells you the bot scored 78%. It does not tell you <em>why</em> it got question #42 wrong.</strong> Was the retrieval empty? Did the gate fire? Did one ensemble arm dissent? Did the tiered router pick the cheap path on a hard question? The <code>extras</code> dict is the breadcrumb trail — every strategy now drops structured diagnostics into it, and the evaluator preserves them in each <code>EvalSample</code>.</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/evaluator.py — EvalSample (new field)</div>
+        <pre><code class="language-python">@dataclass
+class EvalSample:
+    """One question's outcome. Kept for post-hoc error analysis.
+
+    extras is the full StrategyOutput.extras dict — it carries
+    everything the strategy computed internally (retrieved passages,
+    gate status, live-search results, per-arm votes, tier routing).
+    Stored here so callers can run post-hoc diagnostics WITHOUT
+    re-running the strategy.
+    """
+    question_text: str
+    options: tuple[str, ...]
+    correct_index: int
+    predicted_index: int
+    correct: bool
+    confidence: float
+    elapsed_seconds: float
+    category: Optional[Category]
+    level: int
+    extras: dict = field(default_factory=dict)   # ← NEW</code></pre>
+    </div>
+
+    <p>Each strategy now contributes a different slice of extras. The dashboard and trace utilities consume whichever fields are present and skip the rest — so the same tooling works for every strategy.</p>
+
+    <table class="comparison-table">
+        <tr><th>Strategy</th><th>Extras contributed</th><th>What it tells you</th></tr>
+        <tr><td><code>RAGStrategy</code></td><td><code>query</code>, <code>n_passages</code>, <code>top_score</code>, <code>top_source</code>, <code>gated_by_min_score</code>, <code>hybrid</code>, <code>reranked</code>, <code>multi_query</code>, <code>passages[]</code> (each with <code>text_preview</code>), <code>live_search_*</code>, <code>decoding_path</code>, <code>parse_ok</code></td><td>Did retrieval find the right document? Was it confident enough to use? What text did the LLM actually see?</td></tr>
+        <tr><td><code>EnsembleStrategy</code></td><td><code>arm_votes</code> (per-arm <code>chosen_index</code>, <code>confidence</code>, <code>abstained</code>, <code>probs</code>), <code>fused_probs</code>, <code>margin</code>, <code>n_active</code></td><td>Did the arms agree? Which arm dissented? How close was the fused decision?</td></tr>
+        <tr><td><code>TieredStrategy</code></td><td><code>tier_selected</code>, <code>escalated</code>, <code>escalated_from</code>, <code>tier_originally</code>, <code>escalation_threshold</code></td><td>Which tier handled this question? Did the cheap tier escalate to the expensive one?</td></tr>
+    </table>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/rag_strategy.py — text_preview on each passage</div>
+        <pre><code class="language-python"># Full retrieval triples — kept in extras for recall@k analysis.
+# text_preview (first 200 chars) lets the user read what the LLM
+# actually received without opening the full context string.
+passage_triples = [
+    {
+        "source":       chunk.source,
+        "chunk_id":     chunk.chunk_id,
+        "score":        round(score, 4),
+        "text_preview": chunk.text[:200],   # ← NEW
+    }
+    for chunk, score in effective_passages
+]</code></pre>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/ensemble_strategy.py — per-arm vote record</div>
+        <pre><code class="language-python"># Build per-arm vote record BEFORE filtering abstains, so the trace
+# shows every arm including those that were dropped from fusion.
+arm_votes: dict[str, dict] = {}
+for s, out in zip(self.strategies, outputs):
+    arm_votes[s.name] = {
+        "chosen_index": out.chosen_index,
+        "confidence":   round(out.confidence, 4),
+        "abstained":    out.is_abstain,
+        "probs": (
+            {k: round(v, 4) for k, v in out.extras["probs"].items()}
+            if isinstance(out.extras, dict)
+            and isinstance(out.extras.get("probs"), dict)
+            else None
+        ),
+    }</code></pre>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/tiered_strategy.py — tier routing tags</div>
+        <pre><code class="language-python"># After answering with the primary tier — annotate the output so the
+# evaluator can see WHICH tier handled this question, even if no
+# escalation happened.
+tagged_extras = dict(out.extras) if isinstance(out.extras, dict) else {}
+tagged_extras["tier_selected"]        = tier_label    # easy | medium | hard | maths
+tagged_extras["escalated"]            = False
+tagged_extras["escalation_threshold"] = self.escalation_threshold
+
+# When escalation FIRES, the merged extras also carry:
+#   escalated_from       = primary tier name
+#   tier_originally      = primary tier label
+#   tier_selected        = the new (escalated) tier
+#   escalated            = True</code></pre>
+    </div>
+
+    <div class="mermaid-wrapper">
+        <div class="mermaid">
+flowchart LR
+    STRAT["Strategy.answer()"] -- "StrategyOutput.extras" --> EVAL["evaluate_strategy()"]
+    EVAL -- "extras kept verbatim" --> SAMPLE["EvalSample.extras"]
+    SAMPLE --> TRACE["show_trace(sample)"]
+    SAMPLE --> DASH["retrieval_dashboard(report)"]
+    TRACE -- "console" --> USER1[Per-question debugging]
+    DASH  -- "console" --> USER2[Aggregate health]
+        </div>
+        <p class="diagram-caption">Extras flow — internal state from every strategy is preserved end-to-end</p>
+    </div>
+
+    <div class="callout tip">
+        <p><strong>Zero cost when not used.</strong> Strategies that don't write extras (e.g. <code>BaselineLLMStrategy</code>) still produce valid <code>EvalSample</code>s — <code>extras</code> defaults to <code>{}</code>. The dashboard and trace utilities detect this and gracefully degrade to a minimal summary.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SECTION: OBSERVABILITY — SHOW TRACE
+     ═══════════════════════════════════════════════════════════════════════ -->
+<section class="section" id="obs-trace" data-chapter="obs">
+    <div class="section-label">Observability</div>
+    <h2>show_trace() — One Question, the Whole Story</h2>
+
+    <div class="callout analogy">
+        <p><strong>Like reading a flight recorder for a single flight.</strong> Pass one <code>EvalSample</code> and <code>show_trace</code> prints every step: the question and options, predicted vs. correct, retrieval query, top passages with previews, gate status, live-search outcome, tier routing, and per-arm ensemble votes. Everything you need to diagnose <em>this</em> wrong answer is on one screen.</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/observability.py — show_trace (signature)</div>
+        <pre><code class="language-python">def show_trace(sample: "EvalSample", idx: int = 0) -> None:
+    """Pretty-print the full pipeline trace for one EvalSample.
+
+    Works with any strategy. When extras are absent (non-RAG strategies),
+    prints a compact summary of the decision only.
+    """</code></pre>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">Typical use — inspect the three most confidently wrong answers</div>
+        <pre><code class="language-python">from polimibot.observability import show_trace
+
+wrong = [s for s in report.samples if not s.correct]
+for i, s in enumerate(sorted(wrong, key=lambda x: -x.confidence)[:3]):
+    show_trace(s, idx=i)</code></pre>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">Example output — one RAG-routed question</div>
+        <pre><code class="language-python">════════════════════════════════════════════════════════════════════════
+  [0]  ✗ WRONG   Level 9  |  Category: history
+────────────────────────────────────────────────────────────────────────
+  Q:  Which treaty ended the Thirty Years' War?
+
+      A. Treaty of Versailles
+    → B. Peace of Westphalia
+      ✓ C. Peace of Westphalia (1648)
+      D. Treaty of Utrecht
+
+  Predicted : B  (correct: C)   Confidence: 78.10%   Elapsed: 1.42s
+────────────────────────────────────────────────────────────────────────
+  RETRIEVAL
+    Query sent    : Which treaty ended the Thirty Years' War?
+    Passages      : 4  |  Top source: wiki/peace_of_westphalia.txt  |  Top score: 0.8412
+    Category filt : history  |  Hybrid: True  |  Multi-query: False  |  Reranked: True
+    Gated         : False  |  Threshold: 0.45
+    Decoding      : score_options  |  Parse OK: True
+────────────────────────────────────────────────────────────────────────
+  TOP PASSAGES
+    [1] wiki/peace_of_westphalia.txt  (score=0.8412, chunk=12)
+        ↳ The Peace of Westphalia (1648) is the collective name for the two
+          peace treaties signed in October 1648 in the Westphalian cities…
+    [2] wiki/thirty_years_war.txt  (score=0.7891, chunk=44)
+        ↳ The war was ended by the Peace of Westphalia, a series of treaties…
+────────────────────────────────────────────────────────────────────────
+  TIER ROUTING
+    Tier selected    : medium
+    Escalated        : False
+    Margin           : 0.2814  (threshold: 0.20)
+════════════════════════════════════════════════════════════════════════</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li><code>show_trace</code> reads only from <code>sample.extras</code> — no LLM call, no retrieval, instant.<span class="purpose">Run it on a saved report; debugging never costs GPU time.</span></li>
+        <li>Each block (<code>RETRIEVAL</code>, <code>LIVE SEARCH</code>, <code>TOP PASSAGES</code>, <code>TIER ROUTING</code>, <code>ENSEMBLE ARMS</code>) only prints when the relevant extras are present.<span class="purpose">The same function works for baseline, RAG, ensemble, and tiered without flags.</span></li>
+        <li>The predicted (<code>→</code>) and correct (<code>✓</code>) markers are side-by-side in the option list.<span class="purpose">Spot near-misses (close letters, paraphrases) at a glance.</span></li>
+    </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SECTION: OBSERVABILITY — DASHBOARD
+     ═══════════════════════════════════════════════════════════════════════ -->
+<section class="section" id="obs-dashboard" data-chapter="obs">
+    <div class="section-label">Observability</div>
+    <h2>retrieval_dashboard() — Aggregate Health, at a Glance</h2>
+
+    <div class="callout analogy">
+        <p><strong>Like a fleet-wide dashboard.</strong> Where <code>show_trace</code> dissects one flight, <code>retrieval_dashboard</code> reports across the whole report: gate rate, gated-vs-ungated accuracy, top-score distributions split by correctness, live-search success and latency, tier routing frequency, and ensemble arm agreement.</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/observability.py — retrieval_dashboard (signature)</div>
+        <pre><code class="language-python">def retrieval_dashboard(report: "EvalReport") -> None:
+    """Print a compact retrieval-health dashboard for an EvalReport.
+
+    Covers:
+    - Gate rate (how often offline retrieval was gated)
+    - Live-search success rate and latency
+    - Mean top_score for correct vs. wrong questions
+    - Gated vs. ungated accuracy (were gates helpful?)
+    - Tier routing frequency (when tiered strategy used)
+    - Ensemble arm win rate (when ensemble strategy used)
+    - Per-category gate rate breakdown
+    """</code></pre>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">Example output — full ensemble report</div>
+        <pre><code class="language-python">════════════════════════════════════════════════════════════════════
+  RETRIEVAL HEALTH DASHBOARD — ensemble__qwen2.5-7b
+  Overall accuracy: 80.9%  |  N = 142
+════════════════════════════════════════════════════════════════════
+
+  RETRIEVAL GATING  (RAG questions: 96/142)
+    Gate rate     : 14/96  (14.6%)
+    top_score (correct questions) : mean=0.7821  min=0.4501  max=0.9612
+    top_score (wrong questions)   : mean=0.5933  min=0.2014  max=0.9201
+    Accuracy when gated           : 42.9%  (n=14)
+    Accuracy when NOT gated       : 85.4%  (n=82)
+
+  GATE RATE BY CATEGORY
+    geography        2/24   (8%)
+    history          3/22   (14%)
+    literature       1/18   (6%)
+    pop_culture      8/32   (25%)
+
+  LIVE SEARCH
+    Fired / total : 11/96
+    Success rate  : 9/11  (81.8%)
+    Latency       : p50=1.42s  p95=3.91s
+
+  TIER ROUTING  (n=142)
+    easy            58  (41%)
+    medium          61  (43%)
+    hard            23  (16%)
+    Escalations   : 14  (9.9%)
+
+  ENSEMBLE ARMS  (n=142)
+    rag__qwen2.5-7b               agrees with final: 121/142  (85%)
+    baseline_zs__qwen2.5-7b       agrees with final: 104/142  (73%)
+    maths_tool                    agrees with final:   7/142  ( 5%)
+════════════════════════════════════════════════════════════════════</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li><strong>Gate rate</strong> — how often retrieval was rejected for low top_score. If high, retrieval is failing.<span class="purpose">A gate rate &gt;30% on a category is a signal to grow the index for that category.</span></li>
+        <li><strong>top_score correct vs wrong</strong> — if wrong-answer top_scores cluster near correct-answer top_scores, the gate threshold is too loose.<span class="purpose">Use this to tune <code>min_score_threshold</code> in <code>RuntimeConfig</code>.</span></li>
+        <li><strong>Gated vs ungated accuracy</strong> — confirms the gate is doing its job. Ungated accuracy should be materially higher than gated accuracy.<span class="purpose">If they're equal, the gate is just throwing away usable retrievals.</span></li>
+        <li><strong>Arm agreement</strong> — an arm whose answer matches the fused final &lt;20% of the time is fighting the consensus and may be hurting accuracy.<span class="purpose">Down-weight or drop the dissenting arm; verify it doesn't carry a niche category.</span></li>
+        <li><strong>Escalation rate</strong> — if very low (&lt;2%), the threshold is too strict; if very high (&gt;25%), the cheap tier is too unsure and the cost saving disappears.<span class="purpose">Use <code>sweep_tiers.py</code> to find the sweet spot.</span></li>
+    </ul>
+
+    <div class="callout tip">
+        <p><strong>Read both layers.</strong> The dashboard says <em>where</em> the strategy is bleeding accuracy; <code>show_trace</code> says <em>why</em> for any single question. Together they let you go from "ensemble accuracy dropped 3 points" to "the maths arm voted wrongly on three calculator questions because the unit parser missed €" in one session.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SECTION: OBSERVABILITY — TIMESTAMPED OUTPUTS
+     ═══════════════════════════════════════════════════════════════════════ -->
+<section class="section" id="obs-timestamps" data-chapter="obs">
+    <div class="section-label">Observability</div>
+    <h2>Timestamped Outputs — Never Overwrite a Result</h2>
+
+    <div class="callout analogy">
+        <p><strong>Like dated lab notebook pages.</strong> Every eval run, gold-set build, calibration plot, and tier sweep now stamps a UTC timestamp into its output filename. Running the same script twice produces two files — not one silently overwritten.</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/config.py — the ts() helper</div>
+        <pre><code class="language-python">def ts() -> str:
+    """Return a filesystem-safe UTC timestamp string: YYYYMMDD_HHMMSS.
+
+    Use this to stamp output filenames so each run creates a new file
+    and never silently overwrites previous results.
+
+    Example:
+        from polimibot.config import PATHS, ts
+        out = PATHS.eval_dir / f"report_rag_{ts()}.json"
+    """
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d_%H%M%S")</code></pre>
+    </div>
+
+    <table class="comparison-table">
+        <tr><th>Output</th><th>Before</th><th>After</th></tr>
+        <tr><td>Eval report (<code>save_report</code>)</td><td><code>{name}.json</code></td><td><code>{name}_{ts}.json</code></td></tr>
+        <tr><td>Gold set build</td><td><code>gold_set.jsonl</code></td><td><code>gold_set_{ts}.jsonl</code></td></tr>
+        <tr><td>Wrong set build</td><td><code>wrong_set.jsonl</code></td><td><code>wrong_set_{ts}.jsonl</code></td></tr>
+        <tr><td>Calibration plot</td><td><code>calibration.png</code></td><td><code>calibration_{ts}.png</code></td></tr>
+        <tr><td>Tier sweep</td><td><code>tier_sweep.jsonl</code></td><td><code>tier_sweep_{ts}.jsonl</code></td></tr>
+        <tr><td>Agent eval / ensemble eval</td><td><code>report_*_maths.json</code></td><td><code>report_*_maths_{ts}.json</code></td></tr>
+    </table>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/report_io.py — save_report</div>
+        <pre><code class="language-python">def save_report(report: EvalReport, name: str, eval_dir: Path) -> Path:
+    """Serialise report to eval_dir/{name}_{ts()}.json.
+
+    A UTC timestamp is embedded in the filename so each run produces a
+    new file and no previous results are silently overwritten.
+    """
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    out = eval_dir / f"{name}_{ts()}.json"   # ← stamped
+    report.save(out)
+    return out</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li>UTC, not local time — sweeps on different machines sort consistently.<span class="purpose">Avoids the daylight-saving "two files with the same timestamp" trap.</span></li>
+        <li>Format <code>YYYYMMDD_HHMMSS</code> — sortable lexicographically.<span class="purpose"><code>ls data/eval/</code> orders runs chronologically without extra parsing.</span></li>
+        <li>Scripts that take <code>--out</code> still respect an explicit override; the timestamp is only the default.<span class="purpose">Reproducibility scripts can pin a known path when needed.</span></li>
+    </ul>
+
+    <div class="callout tip">
+        <p><strong>The leaderboard scanner reads every JSON in <code>data/eval/</code>.</strong> Timestamped files let you keep historical runs alongside new ones — the leaderboard naturally shows progress over time, not just the latest result.</p>
     </div>
 </section>
 
