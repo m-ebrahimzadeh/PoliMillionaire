@@ -192,6 +192,7 @@ class RAGStrategy(Strategy):
         live_search_timeout: float = 5.0,
         live_max_articles: int = 2,
         index_grower=None,   # Optional[IndexGrower] — avoids circular import
+        live_use_llm_query: bool = False,
     ) -> None:
         """
         Args:
@@ -299,6 +300,7 @@ class RAGStrategy(Strategy):
         self.live_search_timeout = live_search_timeout
         self.live_max_articles   = live_max_articles
         self.index_grower        = index_grower
+        self.live_use_llm_query  = live_use_llm_query
 
         # Lazily constructed — only if use_live_fallback=True so the
         # wikipedia import isn't required for normal offline-only use.
@@ -416,13 +418,19 @@ class RAGStrategy(Strategy):
         live_latency_seconds: Optional[float] = None
         live_passages: list[tuple[Chunk, float]] = []
 
+        live_search_query: Optional[str] = None
         if gated and self._live_search is not None:
             _t0 = time.monotonic()
-            # Use the bare question as the live query — cleaner signal than
-            # the multi-query concatenations.
-            live_query = inp.question
+            # Optionally use the LLM to distil the question into focused
+            # Wikipedia keyword terms.  When live_use_llm_query=False (default)
+            # we fall back to the bare question string — identical to the
+            # previous behaviour.
+            if self.live_use_llm_query:
+                live_search_query = self._extract_search_query(inp)
+            else:
+                live_search_query = inp.question
             live_articles = self._live_search.search(
-                live_query,
+                live_search_query,
                 category=inp.category,
             )
             live_latency_seconds = round(time.monotonic() - _t0, 3)
@@ -537,6 +545,7 @@ class RAGStrategy(Strategy):
                 "live_search_fired":    live_fired,
                 "live_search_articles": live_articles_titles,
                 "live_search_latency":  live_latency_seconds,
+                "live_search_query":    live_search_query,
             },
         )
 
@@ -576,3 +585,36 @@ class RAGStrategy(Strategy):
             parse_ok,
             response.text,
         )
+
+    def _extract_search_query(self, inp: StrategyInput) -> str:
+        """Ask the LLM to distil the MCQ into 2-5 focused Wikipedia keywords.
+
+        Uses a minimal system-free chat turn so the model stays in
+        instruction-following mode without any extra context overhead.
+        The response is stripped of Qwen3 ``<think>…</think>`` blocks
+        before being returned; if the result is empty after stripping we
+        fall back to the bare question to guarantee a non-empty query.
+
+        Args:
+            inp: the current question being answered.
+
+        Returns:
+            A short keyword string suitable for ``wikipedia.search()``,
+            e.g. ``"Xenia ancient Greece hospitality"`` instead of the
+            full 30-word question text.
+        """
+        import re
+        prompt = (
+            "Extract 2-5 Wikipedia search keywords from this trivia question. "
+            "Output ONLY the keywords, nothing else.\n\n"
+            f"Question: {inp.question}\n"
+            f"Options: {', '.join(inp.options)}"
+        )
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            resp = self.llm.generate(messages, max_new_tokens=20, temperature=0.0)
+            # Strip Qwen3 thinking traces (<think>…</think>) if present.
+            text = re.sub(r"<think>.*?</think>", "", resp.text, flags=re.DOTALL).strip()
+            return text if text else inp.question
+        except Exception:  # noqa: BLE001 — never crash the answer pipeline
+            return inp.question
