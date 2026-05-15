@@ -104,6 +104,9 @@ def show_trace(sample: "EvalSample", idx: int = 0) -> None:
     if live_fired is not False or e.get("live_search_articles"):
         print(f"{'─' * 72}")
         print("  LIVE SEARCH")
+        live_q = e.get("live_search_query")
+        if live_q is not None:
+            print(f"    Query         : {str(live_q)[:100]}")
         print(f"    Fired         : {live_fired}")
         articles = e.get("live_search_articles") or []
         print(f"    Articles      : {articles if articles else '(none)'}")
