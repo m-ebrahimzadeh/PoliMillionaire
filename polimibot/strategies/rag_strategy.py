@@ -500,8 +500,15 @@ class RAGStrategy(Strategy):
             rationale_text = gen_text if gen_text else context
 
         # Full retrieval triples — kept in extras for recall@k analysis.
+        # text_preview (first 200 chars) lets the user read what the LLM
+        # actually received without opening the full context string.
         passage_triples = [
-            {"source": chunk.source, "chunk_id": chunk.chunk_id, "score": round(score, 4)}
+            {
+                "source":       chunk.source,
+                "chunk_id":     chunk.chunk_id,
+                "score":        round(score, 4),
+                "text_preview": chunk.text[:200],
+            }
             for chunk, score in effective_passages
         ]
 

@@ -105,6 +105,23 @@ class EnsembleStrategy(Strategy):
         t0 = time.monotonic()
         outputs = [s.answer(inp) for s in self.strategies]
 
+        # Build per-arm vote record BEFORE filtering abstains, so the trace
+        # shows every arm including those that were dropped from fusion.
+        arm_votes: dict[str, dict] = {}
+        for s, out in zip(self.strategies, outputs):
+            arm_votes[s.name] = {
+                "chosen_index": out.chosen_index,
+                "confidence":   round(out.confidence, 4),
+                "abstained":    out.is_abstain,
+                # Include the arm's own probability distribution when available.
+                "probs": (
+                    {k: round(v, 4) for k, v in out.extras["probs"].items()}
+                    if isinstance(out.extras, dict)
+                    and isinstance(out.extras.get("probs"), dict)
+                    else None
+                ),
+            }
+
         # Drop strategies that explicitly abstained (e.g. MathsTool on a
         # non-computable question). Redistribute their weight automatically
         # via normalisation inside the fusion methods.
@@ -120,8 +137,8 @@ class EnsembleStrategy(Strategy):
 
         elapsed = time.monotonic() - t0
         if self.mode == "weighted":
-            return self._weighted_fusion(active, elapsed)
-        return self._vote_fusion(active, elapsed)
+            return self._weighted_fusion(active, elapsed, arm_votes)
+        return self._vote_fusion(active, elapsed, arm_votes)
 
     # ── fusion modes ─────────────────────────────────────────────────────────
 
@@ -129,6 +146,7 @@ class EnsembleStrategy(Strategy):
         self,
         active: list[tuple[StrategyOutput, float]],
         elapsed: float,
+        arm_votes: dict,
     ) -> StrategyOutput:
         """Sum per-letter probs, each weighted by strategy trust weight."""
         combined: dict[str, float] = {l: 0.0 for l in _LETTERS}
@@ -150,10 +168,14 @@ class EnsembleStrategy(Strategy):
             chosen_index=best_idx,
             confidence=combined[best_letter],
             extras={
-                "probs":        {k: round(v, 4) for k, v in combined.items()},
-                "margin":       round(margin, 4),
-                "n_active":     len(active),
-                "elapsed_seconds": round(elapsed, 3),
+                "probs":             {k: round(v, 4) for k, v in combined.items()},
+                "fused_probs":       {k: round(v, 4) for k, v in combined.items()},
+                "margin":            round(margin, 4),
+                "n_active":          len(active),
+                "elapsed_seconds":   round(elapsed, 3),
+                # Per-arm diagnostic: every arm's chosen letter, confidence,
+                # abstain flag, and individual probability distribution.
+                "arm_votes":         arm_votes,
             },
         )
 
@@ -161,6 +183,7 @@ class EnsembleStrategy(Strategy):
         self,
         active: list[tuple[StrategyOutput, float]],
         elapsed: float,
+        arm_votes: dict,
     ) -> StrategyOutput:
         """Weighted majority vote over chosen_index."""
         votes: dict[int, float] = {i: 0.0 for i in range(4)}
@@ -175,8 +198,10 @@ class EnsembleStrategy(Strategy):
             chosen_index=best_idx,
             confidence=votes[best_idx] / total_w,
             extras={
-                "votes":        {k: round(v, 3) for k, v in votes.items()},
-                "n_active":     len(active),
+                "votes":           {k: round(v, 3) for k, v in votes.items()},
+                "n_active":        len(active),
                 "elapsed_seconds": round(elapsed, 3),
+                # Per-arm diagnostic — same schema as weighted mode.
+                "arm_votes":       arm_votes,
             },
         )
