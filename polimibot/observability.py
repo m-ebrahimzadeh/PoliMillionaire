@@ -113,8 +113,30 @@ def show_trace(sample: "EvalSample", idx: int = 0) -> None:
         print(f"    Latency       : {_safe(e, 'live_search_latency')}s")
 
     # Passage list
+    # When live search fired but ALL passages were below threshold, the LLM
+    # received no context.  We display the merged offline+live debug pool
+    # (tagged by source) so you can see what was scored and rejected.
+    all_below = e.get("live_all_below_threshold", False)
+    debug_pool = e.get("debug_passages") or []
     passages = e.get("passages") or []
-    if passages:
+
+    if all_below and debug_pool:
+        thresh = e.get("min_score_threshold", "?")
+        print(f"{'─' * 72}")
+        print(f"  TOP PASSAGES  ⚠ ALL below threshold ({thresh}) — NOT sent to LLM")
+        print(f"    (merged offline + live; best scored first)")
+        for i, p in enumerate(debug_pool[:6]):
+            src      = p.get("source", "?")
+            score    = p.get("score", "?")
+            chunk_id = p.get("chunk_id", "?")
+            pool_src = p.get("pool", "?")
+            preview  = p.get("text_preview", "")
+            tag      = "[LIVE]" if pool_src == "live" else "[OFFLINE]"
+            line = f"    [{i + 1}] {src}  (score={score}, chunk={chunk_id})  {tag}"
+            if preview:
+                line += f"\n        ↳ {preview[:120]}"
+            print(line)
+    elif passages:
         print(f"{'─' * 72}")
         print("  TOP PASSAGES")
         for i, p in enumerate(passages[:5]):

@@ -417,6 +417,11 @@ class RAGStrategy(Strategy):
         live_articles_titles: list[str] = []
         live_latency_seconds: Optional[float] = None
         live_passages: list[tuple[Chunk, float]] = []
+        # Pre-filter scored live passages — populated when live search fires and
+        # articles are scored, before the threshold filter is applied.
+        # Used to build the merged debug pool in extras when all passages are
+        # filtered out. Empty list = live search did not fire / no articles.
+        _live_all_scored: list[tuple[Chunk, float]] = []
 
         live_search_query: Optional[str] = None
         if gated and self._live_search is not None:
@@ -504,6 +509,8 @@ class RAGStrategy(Strategy):
                     # ── Filter by the active threshold (same gate as offline) ─
                     # Prevents irrelevant articles (e.g. "Mary Rose" for a
                     # chemistry question) from reaching the LLM prompt.
+                    # Save pre-filter list so we can build the debug pool later.
+                    _live_all_scored = list(live_passages)
                     if active_threshold is not None:
                         live_passages = [
                             (c, s) for c, s in live_passages
@@ -511,6 +518,15 @@ class RAGStrategy(Strategy):
                         ]
 
         # ── 4. Build context from offline passages OR live passages ──────────
+        #
+        # live_all_below: True when live search fired, retrieved articles,
+        # scored them, but ALL scored below the threshold.
+        # In that case the LLM still gets no context (same as fully-gated),
+        # but we record the merged offline+live debug pool in extras for the
+        # trace display.  _live_all_scored was set just before the threshold
+        # filter above; it remains [] when live search never fired.
+        live_all_below = live_fired and bool(_live_all_scored) and not live_passages
+
         if live_fired and live_passages:
             # Live search succeeded — use its passages as context.
             # The format is identical to offline RAG: same _format_context(),
@@ -533,6 +549,28 @@ class RAGStrategy(Strategy):
                 max_total_chars=self.max_total_chars,
             )
             effective_passages = passages
+
+        # ── Build debug pool for the "all below threshold" case ─────────────
+        # Merge offline + live passages sorted by score descending, keep top-k.
+        # Tagged with source ("live" / "offline") for display in show_trace().
+        # This is ONLY for observability — never sent to the LLM.
+        debug_passages: list[dict] = []
+        if live_all_below:
+            merged_pool = (
+                [(c, s, "live")    for c, s in _live_all_scored] +
+                [(c, s, "offline") for c, s in passages]
+            )
+            merged_pool.sort(key=lambda x: x[1], reverse=True)
+            debug_passages = [
+                {
+                    "source":       chunk.source,
+                    "chunk_id":     chunk.chunk_id,
+                    "score":        round(score, 4),
+                    "text_preview": chunk.text[:200],
+                    "pool":         pool_src,
+                }
+                for chunk, score, pool_src in merged_pool[:self.k * 2]
+            ]
 
         # ── 5. Build RAG-augmented prompt (or degraded plain prompt if gated)
         messages = build_messages_with_context(
@@ -592,6 +630,10 @@ class RAGStrategy(Strategy):
                 "live_search_articles": live_articles_titles,
                 "live_search_latency":  live_latency_seconds,
                 "live_search_query":    live_search_query,
+                # Debug pool — populated only when live fired but all passages
+                # scored below threshold.  NOT sent to LLM; trace display only.
+                "live_all_below_threshold": live_all_below,
+                "debug_passages":           debug_passages or None,
             },
         )
 
