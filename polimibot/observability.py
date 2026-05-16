@@ -245,10 +245,24 @@ def retrieval_dashboard(report: "EvalReport") -> None:
         n_success  = sum(1 for s in live_samples
                          if s.extras.get("live_search_fired")
                          and s.extras.get("live_search_articles"))
+        # "No results" = gated questions where the search was attempted but
+        # Wikipedia returned no articles (live_search_fired stays False while
+        # live_search_latency is populated, proving the API call was made).
+        n_no_results = sum(
+            1 for s in live_samples
+            if s.extras.get("gated_by_min_score")
+            and not s.extras.get("live_search_fired")
+            and s.extras.get("live_search_latency") is not None
+        )
+        n_gated_total = sum(1 for s in live_samples if s.extras.get("gated_by_min_score"))
         latencies  = [s.extras["live_search_latency"] for s in live_samples
                       if s.extras.get("live_search_latency") is not None]
         print(f"\n  LIVE SEARCH")
         print(f"    Fired / total : {n_fired}/{len(live_samples)}")
+        if n_no_results:
+            pct = n_no_results / n_gated_total if n_gated_total else 0.0
+            print(f"    No results    : {n_no_results}/{n_gated_total}  "
+                  f"({pct:.1%})  ← gated but Wikipedia returned nothing")
         if n_fired:
             print(f"    Success rate  : {n_success}/{n_fired}  "
                   f"({n_success/n_fired:.1%})")
