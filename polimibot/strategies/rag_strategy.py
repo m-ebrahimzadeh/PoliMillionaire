@@ -443,14 +443,16 @@ class RAGStrategy(Strategy):
                 # confirm them after a correct answer.  question_id is
                 # derived from the level to keep it stable across re-attempts.
                 question_id = f"lvl_{inp.level}"
+
+                # ── Collect all candidate chunks from live articles ──────────
+                # We gather ALL chunks first (no per-article cap), then rank
+                # the full pool and keep the globally best self.k passages.
+                all_live_chunks: list[Chunk] = []
                 if self.index_grower is not None:
                     for article in live_articles:
                         buffered = self.index_grower.buffer(article, question_id)
                         if buffered:
-                            # Assign synthetic score=1.0 — the live article
-                            # is the best available evidence; the score is
-                            # used only for context ordering/gating display.
-                            live_passages.extend((c, 1.0) for c in buffered[:self.k])
+                            all_live_chunks.extend(buffered)
                 else:
                     # No grower — chunk inline for context only.
                     from ..rag.chunker import chunk_text
@@ -460,9 +462,53 @@ class RAGStrategy(Strategy):
                             source=article.title,
                             category=article.category.value if article.category else None,
                         )
-                        live_passages.extend((c, 1.0) for c in chunks[:self.k])
+                        all_live_chunks.extend(chunks)
 
-                live_passages = live_passages[:self.k]
+                # ── Score the candidate chunks with a real relevance signal ──
+                # Priority:
+                #   1. Cross-encoder reranker (highest accuracy, ~50 ms).
+                #   2. Dense cosine similarity via the retriever's embedder.
+                # Both paths produce a proper score in [-1, 1] / logit space
+                # so the gating threshold is meaningful and the display shows
+                # something other than a flat 1.0 for every live passage.
+                if all_live_chunks:
+                    unscored = [(c, 0.0) for c in all_live_chunks]
+                    if self.use_reranker and getattr(self.retriever, "has_reranker", False):
+                        # Cross-encoder rerank over the full live-chunk pool.
+                        live_passages = self.retriever.rerank_pool(
+                            inp.question, unscored, k=self.k
+                        )
+                    else:
+                        # Dense cosine similarity — embed the question once,
+                        # embed all candidate texts, compute dot products.
+                        import numpy as np
+                        embedder = getattr(self.retriever, "_embedder", None)
+                        if embedder is not None:
+                            q_vec = embedder.encode_query(inp.question)        # (1, D)
+                            p_texts = [c.text for c in all_live_chunks]
+                            p_vecs  = embedder.encode_passage(p_texts)         # (N, D)
+                            # Cosine similarity: vectors are already normalised
+                            # by the embedder, so dot product == cosine sim.
+                            sims = (p_vecs @ q_vec.T).squeeze(-1)              # (N,)
+                            scored = sorted(
+                                zip(all_live_chunks, sims.tolist()),
+                                key=lambda x: x[1],
+                                reverse=True,
+                            )
+                            live_passages = scored[:self.k]
+                        else:
+                            # No embedder available — fall back to 1.0 with a
+                            # comment so it's clear why the score is synthetic.
+                            live_passages = [(c, 1.0) for c in all_live_chunks[:self.k]]
+
+                    # ── Filter by the active threshold (same gate as offline) ─
+                    # Prevents irrelevant articles (e.g. "Mary Rose" for a
+                    # chemistry question) from reaching the LLM prompt.
+                    if active_threshold is not None:
+                        live_passages = [
+                            (c, s) for c, s in live_passages
+                            if s >= active_threshold
+                        ]
 
         # ── 4. Build context from offline passages OR live passages ──────────
         if live_fired and live_passages:
