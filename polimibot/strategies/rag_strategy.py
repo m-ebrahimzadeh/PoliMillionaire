@@ -506,7 +506,7 @@ class RAGStrategy(Strategy):
                             # comment so it's clear why the score is synthetic.
                             live_passages = [(c, 1.0) for c in all_live_chunks[:self.k]]
 
-                    # ── Filter by the active threshold (same gate as offline) ─
+                # ── Filter by the active threshold (same gate as offline) ─
                     # Prevents irrelevant articles (e.g. "Mary Rose" for a
                     # chemistry question) from reaching the LLM prompt.
                     # Save pre-filter list so we can build the debug pool later.
@@ -516,6 +516,12 @@ class RAGStrategy(Strategy):
                             (c, s) for c, s in live_passages
                             if s >= active_threshold
                         ]
+
+        # Best live score (pre-filter) — stored in extras for observability.
+        live_top_score: Optional[float] = (
+            round(max(s for _, s in _live_all_scored), 4)
+            if _live_all_scored else None
+        )
 
         # ── 4. Build context from offline passages OR live passages ──────────
         #
@@ -630,6 +636,7 @@ class RAGStrategy(Strategy):
                 "live_search_articles": live_articles_titles,
                 "live_search_latency":  live_latency_seconds,
                 "live_search_query":    live_search_query,
+                "live_top_score":       live_top_score,
                 # Debug pool — populated only when live fired but all passages
                 # scored below threshold.  NOT sent to LLM; trace display only.
                 "live_all_below_threshold": live_all_below,

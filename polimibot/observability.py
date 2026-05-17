@@ -94,6 +94,7 @@ def print_retrieval_summary(extras: dict) -> None:
 
     # live_search_latency being set means the API was called (even if 0 articles)
     live_attempted = live_latency is not None
+    live_top_score = extras.get("live_top_score")
 
     if live_attempted or live_fired:
         lat_str = f"{live_latency:.2f}s" if live_latency is not None else "?"
@@ -110,10 +111,12 @@ def print_retrieval_summary(extras: dict) -> None:
             print(f"     ↳ Wikipedia  : {art_str}  [{lat_str}]")
 
             if all_below:
-                print(f"     ↳ ⚠ all live passages below threshold — no context sent to LLM")
+                score_str = f"  best={live_top_score:.4f}" if live_top_score is not None else ""
+                print(f"     ↳ ⚠ all live passages below threshold{score_str} — no context sent to LLM")
             elif live_fired:
                 live_n = extras.get("n_passages", 0)
-                print(f"     ↳ live passages used: {live_n} ✓")
+                score_str = f"  top_score={live_top_score:.4f}" if live_top_score is not None else ""
+                print(f"     ↳ live passages used: {live_n}{score_str} ✓")
 
     # ── Decoding / parse line ──────────────────────────────────────────────
     decoding  = extras.get("decoding_path", "—")
