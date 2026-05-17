@@ -125,6 +125,241 @@ def print_retrieval_summary(extras: dict) -> None:
     print(f"     decoding={decoding}  {parse_str}")
 
 
+# ── Post-game summary ────────────────────────────────────────────────────
+
+def print_game_summary(result: "GameResult") -> None:
+    """Print a full post-game diagnostic summary from a :class:`GameResult`.
+
+    Covers 6 sections:
+
+    ①  Context source breakdown — how many questions used offline RAG,
+        live search, or got no context (gated + live failed), and the
+        accuracy in each case.
+    ②  Per-category breakdown — question count, accuracy, and context-
+        source split per category (only shown when >1 category present).
+    ③  Difficulty curve — accuracy and mean top_score grouped by level
+        ranges (1-5, 6-10, 11-15) so you can spot where the bot starts
+        failing.
+    ④  Live-search efficiency — gate rate, Wikipedia hit rate, threshold
+        pass rate, wasted searches, mean latency and top score.
+    ⑤  Confidence calibration — quick sanity check (high-conf correct vs.
+        high-conf wrong counts).
+    ⑥  Worst misses — up to 3 wrong answers ordered by confidence (most
+        confidently wrong first), with the context source that was used.
+
+    Sections ②–⑥ only appear when the relevant data exists (e.g. ② is
+    hidden for single-category competitions; ④ is hidden when live search
+    was never attempted).
+
+    Args:
+        result: a :class:`GameResult` returned by :func:`play_game`.
+                Requires ``result.question_records`` to be populated
+                (always the case when using the current runner).
+    """
+    from collections import defaultdict
+
+    records = result.question_records
+    n = len(records)
+    if n == 0:
+        print("print_game_summary: no question records available.")
+        return
+
+    W = 74  # box width
+
+    # ── Classify each question ────────────────────────────────────────────
+    # Three mutually-exclusive context sources:
+    #   offline  — not gated; used offline RAG passages
+    #   live     — gated, live fired, passages above threshold
+    #   none     — gated, live didn't succeed (no articles / all below thresh)
+    def _classify(rec) -> str:
+        e = rec.extras or {}
+        if not e.get("gated_by_min_score", False):
+            return "offline"
+        if e.get("live_search_fired") and not e.get("live_all_below_threshold"):
+            return "live"
+        return "none"
+
+    classes = [_classify(r) for r in records]
+    n_offline = classes.count("offline")
+    n_live    = classes.count("live")
+    n_none    = classes.count("none")
+
+    def _acc(recs):
+        if not recs:
+            return None
+        correct = sum(1 for r in recs if r.correct is True)
+        return correct / len(recs)
+
+    offline_recs = [r for r, c in zip(records, classes) if c == "offline"]
+    live_recs    = [r for r, c in zip(records, classes) if c == "live"]
+    none_recs    = [r for r, c in zip(records, classes) if c == "none"]
+
+    n_correct = sum(1 for r in records if r.correct is True)
+
+    # ── Helpers ───────────────────────────────────────────────────────────
+    def _pct(a, b):
+        return f"{a/b:.0%}" if b else "—"
+
+    def _acc_str(recs):
+        a = _acc(recs)
+        return f"{a:.0%}" if a is not None else "—"
+
+    def _bar(w, filled):
+        """Simple ASCII bar of width w, filled fraction."""
+        n_fill = round(w * filled) if filled else 0
+        return "█" * n_fill + "░" * (w - n_fill)
+
+    print(f"\n{'╔' + '═' * W + '╗'}")
+    print(f"  POST-GAME SUMMARY")
+    print(f"  Strategy : {result.strategy_name}")
+    print(f"  Result   : Level {result.final_level}  |  "
+          f"{n_correct}/{n} correct ({_pct(n_correct, n)})  |  "
+          f"Earned: {result.earned_amount:,.0f}")
+    print(f"  Time     : {result.elapsed_seconds:.1f}s total  |  "
+          f"avg {result.elapsed_seconds/n:.1f}s/question")
+    print(f"{'╠' + '═' * W + '╣'}")
+
+    # ── ① Context source breakdown ────────────────────────────────────────
+    print(f"\n  ① CONTEXT SOURCE BREAKDOWN")
+    header = f"  {'Source':<30} {'N':>3}  {'Correct':>7}  {'Accuracy':>8}"
+    print(header)
+    print(f"  {'-'*60}")
+    rows = [
+        ("📚 Offline RAG",  n_offline, offline_recs),
+        ("🌐 Live search",  n_live,    live_recs),
+        ("⚠️  No context",   n_none,    none_recs),
+    ]
+    for label, count, recs in rows:
+        acc = _acc_str(recs)
+        bar = _bar(12, count / n if n else 0)
+        print(f"  {label:<30} {count:>3}  {_pct(count,n):>7}   {acc:>7}  {bar}")
+
+    # ── ② Per-category breakdown ──────────────────────────────────────────
+    cat_map: dict[str, list] = defaultdict(list)
+    for rec, cls in zip(records, classes):
+        cat = rec.extras.get("category_filter") or "unknown"
+        cat_map[cat].append((rec, cls))
+
+    if len(cat_map) > 1:
+        print(f"\n  ② PER-CATEGORY BREAKDOWN")
+        print(f"  {'Category':<14} {'N':>3}  {'Acc':>5}  {'Offline':>7}  {'Live':>5}  {'No-ctx':>6}")
+        print(f"  {'-'*52}")
+        for cat in sorted(cat_map):
+            recs_cls = cat_map[cat]
+            cat_recs  = [r for r, _ in recs_cls]
+            cat_off   = sum(1 for _, c in recs_cls if c == "offline")
+            cat_live  = sum(1 for _, c in recs_cls if c == "live")
+            cat_none  = sum(1 for _, c in recs_cls if c == "none")
+            cat_acc   = _acc_str(cat_recs)
+            print(f"  {cat:<14} {len(cat_recs):>3}  {cat_acc:>5}  "
+                  f"{cat_off:>7}  {cat_live:>5}  {cat_none:>6}")
+
+    # ── ③ Difficulty curve ────────────────────────────────────────────────
+    bands = [(1, 5), (6, 10), (11, 15)]
+    band_data = []
+    for lo, hi in bands:
+        band_recs = [r for r in records if lo <= r.level <= hi]
+        if not band_recs:
+            continue
+        scores = [r.extras.get("top_score") for r in band_recs
+                  if r.extras.get("top_score") is not None]
+        avg_score = sum(scores) / len(scores) if scores else None
+        band_data.append((lo, hi, band_recs, avg_score))
+
+    if len(band_data) > 1:
+        print(f"\n  ③ DIFFICULTY CURVE  (by level range)")
+        print(f"  {'Levels':<12} {'N':>3}  {'Accuracy':>8}  {'Avg top_score':>14}")
+        print(f"  {'-'*44}")
+        for lo, hi, band_recs, avg_score in band_data:
+            acc = _acc_str(band_recs)
+            sc  = f"{avg_score:.4f}" if avg_score is not None else "—"
+            print(f"  {f'{lo}-{hi}':<12} {len(band_recs):>3}  {acc:>8}  {sc:>14}")
+
+    # ── ④ Live-search efficiency ──────────────────────────────────────────
+    live_attempted = [r for r in records
+                      if r.extras.get("live_search_latency") is not None]
+    if live_attempted:
+        n_gated      = sum(1 for r in records
+                           if r.extras.get("gated_by_min_score"))
+        n_fired      = sum(1 for r in records
+                           if r.extras.get("live_search_fired"))
+        n_above      = len(live_recs)
+        n_all_below  = sum(1 for r in records
+                           if r.extras.get("live_all_below_threshold"))
+        latencies    = [r.extras["live_search_latency"] for r in live_attempted]
+        live_scores  = [r.extras["live_top_score"] for r in live_recs
+                        if r.extras.get("live_top_score") is not None]
+
+        acc_live = _acc_str(live_recs)
+        acc_none = _acc_str(none_recs)
+        boost    = ""
+        a_live   = _acc(live_recs)
+        a_none   = _acc(none_recs)
+        if a_live is not None and a_none is not None:
+            boost = f"  (vs no-context: {a_none:.0%}, boost +{(a_live - a_none)*100:.0f}pp)"
+
+        print(f"\n  ④ LIVE SEARCH EFFICIENCY")
+        print(f"    Gated (offline weak)        : {n_gated}/{n}  ({_pct(n_gated, n)})")
+        print(f"    Wikipedia found articles    : {n_fired}/{n_gated}  ({_pct(n_fired, n_gated)})")
+        if n_fired:
+            print(f"    Passages above threshold    : {n_above}/{n_fired}  ({_pct(n_above, n_fired)})")
+        if n_all_below:
+            print(f"    Wasted (all below thresh)   : {n_all_below}/{n_fired}  ({_pct(n_all_below, n_fired)})")
+        if latencies:
+            print(f"    Mean latency                : {sum(latencies)/len(latencies):.2f}s")
+        if live_scores:
+            print(f"    Mean live top_score (kept)  : {sum(live_scores)/len(live_scores):.4f}")
+        if n_live:
+            print(f"    Live accuracy               : {acc_live}{boost}")
+
+    # ── ⑤ Confidence calibration ──────────────────────────────────────────
+    hi_conf = [r for r in records if r.confidence is not None and r.confidence >= 0.80]
+    lo_conf = [r for r in records if r.confidence is not None and r.confidence < 0.50]
+    if hi_conf or lo_conf:
+        print(f"\n  ⑤ CONFIDENCE CALIBRATION")
+        if hi_conf:
+            hi_correct = sum(1 for r in hi_conf if r.correct is True)
+            hi_wrong   = len(hi_conf) - hi_correct
+            print(f"    High conf (≥80%)  correct : {hi_correct}/{len(hi_conf)}  "
+                  f"({_pct(hi_correct, len(hi_conf))})")
+            if hi_wrong:
+                print(f"    High conf (≥80%)  wrong   : {hi_wrong}/{len(hi_conf)}  "
+                      f"({_pct(hi_wrong, len(hi_conf))})  ← overconfidence")
+        if lo_conf:
+            lo_correct = sum(1 for r in lo_conf if r.correct is True)
+            print(f"    Low conf  (<50%)  correct : {lo_correct}/{len(lo_conf)}  "
+                  f"({_pct(lo_correct, len(lo_conf))})")
+            lo_wrong = len(lo_conf) - lo_correct
+            if lo_wrong:
+                print(f"    Low conf  (<50%)  wrong   : {lo_wrong}/{len(lo_conf)}  "
+                      f"({_pct(lo_wrong, len(lo_conf))})")
+
+    # ── ⑥ Worst misses ────────────────────────────────────────────────────
+    wrong = [r for r in records if r.correct is False]
+    wrong_sorted = sorted(wrong,
+                          key=lambda r: r.confidence if r.confidence is not None else 0.0,
+                          reverse=True)
+    if wrong_sorted:
+        print(f"\n  ⑥ WORST MISSES  (wrong, ordered by confidence)")
+        letters = ("A", "B", "C", "D")
+        for r in wrong_sorted[:3]:
+            cat   = r.extras.get("category_filter") or "?"
+            conf  = f"{r.confidence:.0%}" if r.confidence is not None else "?"
+            pred  = letters[r.chosen_index] if 0 <= r.chosen_index < 4 else "?"
+            src   = _classify(r)
+            src_icon = {"offline": "📚", "live": "🌐", "none": "⚠️"}.get(src, "?")
+            q_short = r.question_text[:70] + ("…" if len(r.question_text) > 70 else "")
+            top_sc = r.extras.get("top_score")
+            ts_str = f"  top_score={top_sc:.4f}" if top_sc is not None else ""
+            live_sc = r.extras.get("live_top_score")
+            lts_str = f"  live_top={live_sc:.4f}" if live_sc is not None else ""
+            print(f"    L{r.level} [{cat}] → {pred} (conf {conf})  {src_icon}")
+            print(f"      Q: {q_short}")
+            print(f"      {ts_str}{lts_str}")
+
+    print(f"\n{'╚' + '═' * W + '╝'}\n")
+
+
 # ── Per-question trace ────────────────────────────────────────────────────
 
 def show_trace(sample: "EvalSample", idx: int = 0) -> None:

@@ -22,7 +22,7 @@ from .strategies import Strategy, StrategyInput, StrategyOutput
 
 # ──────────────────────────── Result type ────────────────────────────
 
-@dataclass(frozen=True)
+@dataclass
 class GameResult:
     """End-of-game snapshot, returned to the caller."""
     competition_id: int
@@ -35,6 +35,14 @@ class GameResult:
     finished_normally: bool
     strategy_name: str
     elapsed_seconds: float
+    # In-memory copy of every QuestionRecord from this game.
+    # Used by print_game_summary() for post-game analysis without
+    # re-reading the JSONL log file.
+    question_records: "list[QuestionRecord]" = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.question_records is None:
+            self.question_records = []
 
     @property
     def accuracy(self) -> float:
@@ -159,6 +167,9 @@ def play_game(
         game = GameAdapter(client, competition_id=competition_id)
         n_q = n_correct = 0
         final_level = game.current_level
+        # In-memory list of every QuestionRecord — passed into GameResult
+        # so callers can run print_game_summary() without re-reading JSONL.
+        all_question_records: list[QuestionRecord] = []
 
         while not game.is_over:
             q: Optional[GameQuestion] = game.current_question
@@ -252,7 +263,7 @@ def play_game(
             if out is not None and out.rationale:
                 record_extras["rationale"] = out.rationale
 
-            log.log_question(QuestionRecord(
+            qrec = QuestionRecord(
                 session_id=game.session_id,
                 competition_id=competition_id,
                 competition_name=competition_name,
@@ -268,7 +279,9 @@ def play_game(
                 confidence=(out.confidence if out is not None else None),
                 probs=(out.extras.get("probs") if out is not None else None),
                 extras=record_extras,
-            ))
+            )
+            log.log_question(qrec)
+            all_question_records.append(qrec)
 
             if verbose:
                 # Print compact retrieval summary (offline/live gate, articles,
@@ -317,4 +330,5 @@ def play_game(
             finished_normally=summary.finished_normally,
             strategy_name=strategy.name,
             elapsed_seconds=round(time.monotonic() - t_game_start, 3),
+            question_records=all_question_records,
         )
