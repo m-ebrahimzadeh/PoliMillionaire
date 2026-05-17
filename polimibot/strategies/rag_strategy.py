@@ -702,15 +702,17 @@ class RAGStrategy(Strategy):
         import re
         prompt = (
             "Extract 2-5 Wikipedia search keywords from this trivia question. "
-            "Do NOT use <think> tags. Output ONLY the keywords, nothing else.\n\n"
+            "Output ONLY the keywords, nothing else.\n\n"
             f"Question: {inp.question}\n"
-            f"Options: {', '.join(inp.options)}"
+            f"Options: {', '.join(inp.options)}\n"
+            "/no_think"
         )
         messages = [{"role": "user", "content": prompt}]
         try:
-            # 50 tokens: enough for the keywords even if the model emits a
-            # short think preamble despite the instruction above.
-            resp = self.llm.generate(messages, max_new_tokens=50, temperature=0.0)
+            # 200 tokens: generous budget so the keywords are never cut off.
+            # /no_think suppresses Qwen3 thinking traces at the model level;
+            # the regex below acts as a safety net for any residual <think> blocks.
+            resp = self.llm.generate(messages, max_new_tokens=200, temperature=0.0)
             # Strip Qwen3 thinking traces — both complete (<think>…</think>)
             # *and* truncated ones (<think>… with no closing tag) that can
             # appear when max_new_tokens cuts off mid-block.
