@@ -1,6 +1,10 @@
 """Retrieval observability utilities.
 
-Two public entry points:
+Three public entry points:
+
+    print_retrieval_summary(extras) — compact 2-4 line per-question summary
+                                      printed during a live game session.
+                                      Called from runner.py after each answer.
 
     show_trace(sample, idx)      — pretty-print every pipeline detail for a
                                    single EvalSample (question, retrieved
@@ -12,7 +16,7 @@ Two public entry points:
                                    top-score distributions, gated vs. ungated
                                    accuracy, category breakdown.
 
-Both functions are no-ops on strategies that don't emit extras (e.g.
+All functions are no-ops on strategies that don't emit extras (e.g.
 BaselineLLMStrategy) — they degrade gracefully to a minimal summary.
 
 Usage in the notebook (after Section 2.2):
@@ -42,6 +46,80 @@ def _safe(d: dict, key: str, default="—"):
     """Return d[key] if present and not None, else default."""
     v = d.get(key)
     return default if v is None else v
+
+
+# ── Live-game per-question retrieval summary ─────────────────────────────
+
+def print_retrieval_summary(extras: dict) -> None:
+    """Print a compact retrieval summary during a live game session.
+
+    Called from ``runner.py`` after each strategy answer when ``verbose=True``.
+    Prints 2-4 indented lines covering:
+
+    - Whether offline RAG was used or gated (and why).
+    - If live search fired: query, articles found, latency, passages kept.
+    - If live search found nothing or all passages were below threshold: warning.
+    - Decoding path and parse status.
+
+    Gracefully no-ops when ``extras`` is empty (non-RAG strategies).
+
+    Args:
+        extras: the ``out.extras`` dict from a :class:`StrategyOutput`.
+    """
+    if not extras:
+        return
+
+    # ── Offline retrieval line ─────────────────────────────────────────────
+    gated      = extras.get("gated_by_min_score", False)
+    top_score  = extras.get("top_score")
+    threshold  = extras.get("min_score_threshold")
+    n_passages = extras.get("n_passages", 0)
+    top_src    = extras.get("top_source")
+
+    if gated:
+        score_str = f"{top_score:.4f}" if top_score is not None else "n/a"
+        thresh_str = f"{threshold}" if threshold is not None else "?"
+        print(f"  🔎 GATED  (offline top_score={score_str} < {thresh_str})")
+    else:
+        score_str = f"{top_score:.4f}" if top_score is not None else "n/a"
+        src_str   = f'  src: "{top_src}"' if top_src else ""
+        print(f"  🔎 OFFLINE  top_score={score_str}  passages={n_passages}{src_str}")
+
+    # ── Live-search block (only shown when live search was considered) ─────
+    live_fired   = extras.get("live_search_fired", False)
+    live_latency = extras.get("live_search_latency")
+    live_articles = extras.get("live_search_articles") or []
+    live_query   = extras.get("live_search_query")
+    all_below    = extras.get("live_all_below_threshold", False)
+
+    # live_search_latency being set means the API was called (even if 0 articles)
+    live_attempted = live_latency is not None
+
+    if live_attempted or live_fired:
+        lat_str = f"{live_latency:.2f}s" if live_latency is not None else "?"
+        if live_query:
+            q_preview = str(live_query)[:80] + ("…" if len(str(live_query)) > 80 else "")
+            print(f"     ↳ live query : \"{q_preview}\"")
+
+        if not live_articles:
+            print(f"     ↳ Wikipedia  : (no articles found)  [{lat_str}]")
+        else:
+            art_str = ", ".join(f'"{a}"' for a in live_articles[:3])
+            if len(live_articles) > 3:
+                art_str += f", +{len(live_articles) - 3} more"
+            print(f"     ↳ Wikipedia  : {art_str}  [{lat_str}]")
+
+            if all_below:
+                print(f"     ↳ ⚠ all live passages below threshold — no context sent to LLM")
+            elif live_fired:
+                live_n = extras.get("n_passages", 0)
+                print(f"     ↳ live passages used: {live_n} ✓")
+
+    # ── Decoding / parse line ──────────────────────────────────────────────
+    decoding  = extras.get("decoding_path", "—")
+    parse_ok  = extras.get("parse_ok")
+    parse_str = "parse OK ✓" if parse_ok else ("parse FAIL ✗" if parse_ok is False else "—")
+    print(f"     decoding={decoding}  {parse_str}")
 
 
 # ── Per-question trace ────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ from . import config as _config
 from .config import CATEGORIES, PATHS, Category
 from .game import GameAdapter, GameQuestion
 from .logging_utils import GameSummaryRecord, NullLogger, QuestionRecord, RunLogger
+from .observability import print_retrieval_summary
 from .strategies import Strategy, StrategyInput, StrategyOutput
 
 
@@ -270,6 +271,12 @@ def play_game(
             ))
 
             if verbose:
+                # Print compact retrieval summary (offline/live gate, articles,
+                # passages, parse status) before the final answer line so you can
+                # see what the strategy used at a glance during a live session.
+                # No-op for strategies that don't emit extras (e.g. baseline).
+                if out is not None and out.extras:
+                    print_retrieval_summary(out.extras)
                 mark = "✓" if outcome.correct else ("·" if outcome.correct is None else "✗")
                 print(f"  → {'ABCD'[chosen_idx]}  {mark}  ({elapsed:.2f}s)")
 
