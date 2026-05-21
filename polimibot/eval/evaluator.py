@@ -129,6 +129,7 @@ def evaluate_strategy(
     gold_set: list[GoldItem],
     *,
     verbose: bool = True,
+    index_grower=None,   # Optional[IndexGrower] — avoids circular import
 ) -> EvalReport:
     """Replay gold_set through strategy offline. No live API calls.
 
@@ -136,6 +137,11 @@ def evaluate_strategy(
         strategy: already warm; caller owns warm_up/shutdown lifecycle.
         gold_set: list of GoldItems from load_gold_set() or harvest_gold_set().
         verbose: print a progress dot every 10 questions.
+        index_grower: optional IndexGrower instance.  When provided, mirrors
+            the online learning loop: confirms live-fetched articles on correct
+            answers and discards them on wrong ones, then flushes to disk after
+            all questions are processed.  Only has an effect when the strategy
+            also has an index_grower attached and live-search fires.
 
     Returns:
         EvalReport with accuracy, ECE, latency, per-category breakdown.
@@ -155,6 +161,14 @@ def evaluate_strategy(
         elapsed = time.monotonic() - t0
 
         correct = (out.chosen_index == item.correct_index)
+
+        if index_grower is not None:
+            _qid = f"lvl_{item.level}"
+            if correct:
+                index_grower.confirm(_qid)
+            else:
+                index_grower.discard(_qid)
+
         samples.append(EvalSample(
             question_text=item.question_text,
             options=item.options,
@@ -171,6 +185,9 @@ def evaluate_strategy(
         if verbose and (i + 1) % 10 == 0:
             running_acc = sum(s.correct for s in samples) / len(samples)
             print(f"  [{i+1}/{len(gold_set)}]  running acc={running_acc:.1%}")
+
+    if index_grower is not None:
+        index_grower.flush()
 
     return _build_report(strategy.name, samples)
 

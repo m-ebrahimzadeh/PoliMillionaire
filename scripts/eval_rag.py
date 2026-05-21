@@ -101,6 +101,7 @@ def main() -> int:
     baseline = BaselineLLMStrategy(llm, style=style, use_score_options=True)
 
     rag_kwargs: dict = dict(k=args.k, style=style)
+    grower = None
     if args.live_fallback:
         rag_kwargs["use_live_fallback"]   = True
         rag_kwargs["live_search_timeout"] = args.live_timeout
@@ -111,6 +112,14 @@ def main() -> int:
             # Sensible default: gate at 0.35 so the fallback can ever fire.
             rag_kwargs["min_score"] = 0.35
             print("  [live-fallback] min_score not set — defaulting to 0.35\n")
+
+        if args.grow_index and not args.mock:
+            from polimibot.rag.index_grower import IndexGrower
+            grower = IndexGrower(index_path)
+            rag_kwargs["index_grower"] = grower
+            print("  [grow-index] IndexGrower attached — confirmed articles will be learned\n")
+    elif args.grow_index:
+        print("  [grow-index] ignored — has no effect without --live-fallback\n")
 
     rag = RAGStrategy(llm, retriever, **rag_kwargs)  # type: ignore[arg-type]
 
@@ -125,8 +134,10 @@ def main() -> int:
     print("\n" + "=" * 55)
     print("Evaluating: RAG")
     # No warm_up() for RAG — LLM already warmed; retriever is CPU-only.
-    report_rag = evaluate_strategy(rag, gold, verbose=True)
+    report_rag = evaluate_strategy(rag, gold, index_grower=grower, verbose=True)
     save_report(report_rag, name=make_report_id(rag, args.model, style, mock=args.mock), eval_dir=PATHS.eval_dir)
+    if grower is not None:
+        print(f"  [grow-index] learned {grower.n_learned} article(s) during eval\n")
 
     baseline.shutdown()
 
@@ -228,6 +239,16 @@ def _parse_args() -> argparse.Namespace:
         default=2,
         dest="live_max_articles",
         help="Maximum Wikipedia articles fetched per live query. Default: 2",
+    )
+    p.add_argument(
+        "--grow-index",
+        action="store_true",
+        dest="grow_index",
+        help=(
+            "Attach an IndexGrower to the RAG strategy so live-fetched articles\n"
+            "are learned when the gold label confirms a correct answer.\n"
+            "Requires --live-fallback. No effect in --mock mode."
+        ),
     )
     return p.parse_args()
 
