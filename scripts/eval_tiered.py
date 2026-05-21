@@ -16,7 +16,7 @@ import sys
 from polimibot.config import PATHS, Category
 from polimibot.eval.evaluator import EvalReport, evaluate_strategy
 from polimibot.eval.gold_set import load_gold_set
-from polimibot.eval.report_io import model_slug, save_report
+from polimibot.eval.report_io import make_report_id, save_report
 from polimibot.models.mock import MockLLM
 from polimibot.prompts.templates import PromptStyle
 from polimibot.strategies.agent_strategy import AgentStrategy
@@ -84,14 +84,6 @@ def main() -> int:
     # Warm once via tiered — it deduplicates internally
     tiered.warm_up()
 
-    mslug = model_slug(args.model, mock=args.mock)
-    slug_for = {
-        baseline: f"baseline_zs__{mslug}",
-        rag:      f"rag__{mslug}",
-        ensemble: f"ensemble__{mslug}",
-        tiered:   f"tiered_final__{mslug}",
-    }
-
     # ── Evaluate ─────────────────────────────────────────────────────────
     strategies_to_eval = [baseline, rag, ensemble, tiered]
     reports: list[EvalReport] = []
@@ -100,7 +92,7 @@ def main() -> int:
         r = evaluate_strategy(strat, gold, verbose=True)
         r.print_summary()
         # Persist immediately — leaderboard builder reads these files.
-        save_report(r, name=slug_for[strat], eval_dir=PATHS.eval_dir)
+        save_report(r, name=make_report_id(strat, args.model, style, mock=args.mock), eval_dir=PATHS.eval_dir)
         reports.append(r)
 
     tiered.shutdown()

@@ -12,7 +12,7 @@ import sys
 from polimibot.config import PATHS, Category
 from polimibot.eval.evaluator import evaluate_strategy
 from polimibot.eval.gold_set import load_gold_set
-from polimibot.eval.report_io import model_slug, save_report
+from polimibot.eval.report_io import make_report_id, save_report
 from polimibot.models.mock import MockLLM
 from polimibot.prompts.templates import PromptStyle
 from polimibot.strategies.llm_baseline import BaselineLLMStrategy
@@ -51,8 +51,6 @@ def main() -> int:
     baseline = BaselineLLMStrategy(llm, style=PromptStyle.ZERO_SHOT, use_score_options=True)
     tool_strat = ToolStrategy(tools=[MathsTool()], fallback=baseline)
 
-    mslug = model_slug(args.model, mock=args.mock)
-
     # ── Evaluate both on the maths subset ──
     print("=" * 55)
     print("Evaluating: BASELINE (maths only)")
@@ -60,14 +58,14 @@ def main() -> int:
     report_base = evaluate_strategy(baseline, maths_gold, verbose=True)
     report_base.print_summary()
     # Persist immediately — leaderboard builder reads these files.
-    save_report(report_base, name=f"baseline_zs_maths__{mslug}", eval_dir=PATHS.eval_dir)
+    save_report(report_base, name=make_report_id(baseline, args.model, PromptStyle.ZERO_SHOT, mock=args.mock), eval_dir=PATHS.eval_dir)
 
     print("=" * 55)
     print("Evaluating: TOOL STRATEGY (maths only)")
     # No warm_up needed: ToolStrategy.warm_up() would re-warm the already-warm LLM
     report_tool = evaluate_strategy(tool_strat, maths_gold, verbose=True)
     report_tool.print_summary()
-    save_report(report_tool, name=f"tools_agent__{mslug}", eval_dir=PATHS.eval_dir)
+    save_report(report_tool, name=make_report_id(tool_strat, args.model, PromptStyle.ZERO_SHOT, mock=args.mock), eval_dir=PATHS.eval_dir)
 
     baseline.shutdown()
 

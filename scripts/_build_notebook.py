@@ -186,7 +186,7 @@ from polimibot.strategies.tiered_strategy import TieredStrategy, TierBreakpoints
 from polimibot.tools.maths_tool import MathsTool
 from polimibot.eval.evaluator import evaluate_strategy, EvalReport
 from polimibot.eval.gold_set import GoldSet, load_gold_set, harvest_gold_set, save_gold_set
-from polimibot.eval.report_io import save_report, model_slug
+from polimibot.eval.report_io import save_report, make_report_id
 from polimibot.eval.calibration import calibration_from_runs, plot_calibration
 
 # Make scripts/_session.py importable for the live-game session helper.
@@ -675,9 +675,7 @@ else:
 # report_id is computed here (Section 1) — Section 2 saves under it, Section 2.6
 # uses it as the live-game run_id. Defining it after the strategy means a student
 # can run live games (2.6) without first running offline eval (2.2 / 2.3).
-mslug      = model_slug(MODEL_ID, mock=USE_MOCK)
-short_tag  = strategy.name.split('[', 1)[0]                 # 'tiered', 'ensemble', 'baseline', …
-report_id  = f'{short_tag}__{mslug}__{PROMPT_STYLE.value}'
+report_id  = make_report_id(strategy, MODEL_ID, PROMPT_STYLE, mock=USE_MOCK)
 
 print(f'Strategy:\\n  {strategy.name}')
 print(f'report_id: {report_id}')
