@@ -20,6 +20,10 @@ def main() -> None:
     p.add_argument("--runs", type=Path, default=PATHS.runs_dir)
     p.add_argument("--out",  type=Path, default=None,
                    help="Output path (default: data/eval/gold_set_YYYYMMDD_HHMMSS.jsonl)")
+    p.add_argument("--exclude-models", nargs="*", metavar="SLUG",
+                   help="Skip runs whose model slug contains any of these substrings (e.g. qwen llama)")
+    p.add_argument("--include-models", nargs="*", metavar="SLUG",
+                   help="Only use runs whose model slug contains any of these substrings")
     args = p.parse_args()
 
     # Compute timestamped default at runtime (not at argparse-definition time)
@@ -27,7 +31,11 @@ def main() -> None:
         PATHS.eval_dir / f"gold_set_{ts()}.jsonl"
     )
 
-    items = harvest_gold_set(args.runs)
+    items = harvest_gold_set(
+        args.runs,
+        exclude_models=args.exclude_models or None,
+        include_models=args.include_models or None,
+    )
 
     # Print breakdown by category
     print(f"\nHarvested {len(items)} gold items from {args.runs}")

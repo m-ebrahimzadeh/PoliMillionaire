@@ -59,12 +59,54 @@ def _category_for(competition_id: int) -> Optional[Category]:
     return info.category if info else None
 
 
-def harvest_gold_set(runs_dir: Path) -> list[GoldItem]:
-    """Mine all *.jsonl run files in runs_dir → GoldItems.
+def _model_from_manifest(manifest: dict) -> str:
+    extra = manifest.get("extra", {})
+    return str(extra.get("model_id") or extra.get("model") or "").lower()
+
+
+def _build_run_filter(
+    exclude_models: list[str] | None,
+    include_models: list[str] | None,
+    run_filter: Callable[[dict], bool] | None,
+) -> Callable[[dict], bool] | None:
+    checks: list[Callable[[dict], bool]] = []
+    if exclude_models:
+        ex = [m.lower() for m in exclude_models]
+        checks.append(lambda m, _ex=ex: not any(s in _model_from_manifest(m) for s in _ex))
+    if include_models:
+        inc = [m.lower() for m in include_models]
+        checks.append(lambda m, _inc=inc: any(s in _model_from_manifest(m) for s in _inc))
+    if run_filter:
+        checks.append(run_filter)
+    if not checks:
+        return None
+    return lambda m: all(c(m) for c in checks)
+
+
+def harvest_gold_set(
+    runs_dir: Path,
+    *,
+    exclude_models: list[str] | None = None,
+    include_models: list[str] | None = None,
+    run_filter: Callable[[dict], bool] | None = None,
+) -> list[GoldItem]:
+    """Mine *.jsonl run files in runs_dir → GoldItems.
 
     Deduplicates by (competition_id, question_text).
     A question is included only when the correct index can be confirmed.
+
+    exclude_models / include_models: substring-match against the model slug
+    in the manifest ``extra`` dict (checks 'model_id' then 'model' key).
+    run_filter: arbitrary predicate on the raw manifest dict; ANDed with the
+    model params.
+
+    Examples::
+        harvest_gold_set(runs_dir, exclude_models=["qwen"])
+        harvest_gold_set(runs_dir, include_models=["gpt"])
+        harvest_gold_set(runs_dir, run_filter=lambda m: m["extra"].get("seed") == 42)
     """
+    _filter = _build_run_filter(exclude_models, include_models, run_filter)
+
     # confirmed[key] = GoldItem
     confirmed: dict[str, GoldItem] = {}
     # wrong_indices[key] = set of indices we've seen answered incorrectly
@@ -73,7 +115,18 @@ def harvest_gold_set(runs_dir: Path) -> list[GoldItem]:
     meta: dict[str, dict] = {}
 
     for fp in sorted(runs_dir.glob("*.jsonl")):
-        for rec in load_jsonl(fp):
+        recs = iter(load_jsonl(fp))
+        first = next(recs, None)
+        if first is None:
+            continue
+        if first.get("run_kind") == "manifest":
+            if _filter and not _filter(first):
+                continue  # skip entire file
+            question_iter: Iterable[dict] = recs
+        else:
+            # no manifest line — treat first record as a question record
+            question_iter = (r for r in [first, *recs])
+        for rec in question_iter:
             if rec.get("run_kind") != "question":
                 continue
             cid = rec.get("competition_id", -1)
