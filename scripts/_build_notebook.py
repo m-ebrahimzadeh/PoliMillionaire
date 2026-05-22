@@ -186,6 +186,7 @@ from polimibot.strategies.tiered_strategy import TieredStrategy, TierBreakpoints
 from polimibot.tools.maths_tool import MathsTool
 from polimibot.eval.evaluator import evaluate_strategy, EvalReport
 from polimibot.eval.gold_set import GoldSet, load_gold_set, harvest_gold_set, save_gold_set
+from polimibot.eval.wrong_set import WrongSet, load_wrong_set, harvest_wrong_set, save_wrong_set
 from polimibot.eval.report_io import save_report, make_report_id
 from polimibot.eval.calibration import calibration_from_runs, plot_calibration
 
@@ -252,12 +253,19 @@ print('helpers ready ✓')
 cells.append(md("### 0.3 Log in (live games only — skip for offline eval)"))
 
 cells.append(code('''
-# Credentials, from env we read. Set in Colab: os.environ["POLIMI_USER"] = "..."
+# Credentials, from Colab Secrets (userdata) or env vars we read.
+# Set in Colab: Secrets panel → POLIMI_USER / POLIMI_PASS  (preferred)
+#            or os.environ['POLIMI_USER'] = '...'  (fallback)
 # Skip this cell entirely if only the offline gold set you intend to evaluate.
 from millionaire_client import MillionaireClient
 
-POLIMI_USER = os.environ.get('POLIMI_USER', '')
-POLIMI_PASS = os.environ.get('POLIMI_PASS', '')
+try:
+    from google.colab import userdata as _userdata
+    POLIMI_USER = _userdata.get('POLIMI_USER') or os.environ.get('POLIMI_USER', '')
+    POLIMI_PASS = _userdata.get('POLIMI_PASS') or os.environ.get('POLIMI_PASS', '')
+except Exception:
+    POLIMI_USER = os.environ.get('POLIMI_USER', '')
+    POLIMI_PASS = os.environ.get('POLIMI_PASS', '')
 
 client = None
 if POLIMI_USER and POLIMI_PASS:
@@ -265,7 +273,7 @@ if POLIMI_USER and POLIMI_PASS:
     client.login(POLIMI_USER, POLIMI_PASS)
     print(f'Logged in as {POLIMI_USER} → {RUNTIME.api_url}')
 else:
-    print('No credentials in env — live games disabled. Offline eval will still work.')
+    print('No credentials found — live games disabled. Offline eval will still work.')
 '''))
 
 cells.append(md("""
@@ -510,6 +518,7 @@ USE_LIVE_FALLBACK      = False                           # True  → enable live
 LIVE_SEARCH_TIMEOUT    = 5.0                             # hard wall-clock limit per live query (s)
 LIVE_MAX_ARTICLES      = 2                               # max Wikipedia articles per live query
 LEARN_FROM_CORRECT     = True                            # grow the index from confirmed-correct answers
+LIVE_USE_LLM_QUERY     = False                           # True → LLM distils question to 2-5 Wikipedia keywords before live search
 
 # Eval
 N_EVAL_QUESTIONS    = None                               # None = all gold items; int = first-N slice
@@ -673,6 +682,7 @@ _rag_kwargs = dict(
     live_search_timeout=LIVE_SEARCH_TIMEOUT,
     live_max_articles=LIVE_MAX_ARTICLES,
     index_grower=_grower if LEARN_FROM_CORRECT else None,
+    live_use_llm_query=LIVE_USE_LLM_QUERY,
 )
 
 if USE_TIERED:
@@ -831,6 +841,10 @@ cells.append(code('''
 # Top up the gold set with items confirmed during live games, this cell does.
 gold_path = PATHS.eval_dir / 'gold_set.jsonl'
 items = harvest_gold_set(PATHS.runs_dir)
+# To filter by model, use keyword args — substring-match on the manifest's extra.model_id / extra.model:
+# items = harvest_gold_set(PATHS.runs_dir, exclude_models=['qwen'])
+# items = harvest_gold_set(PATHS.runs_dir, include_models=['gpt'])
+# items = harvest_gold_set(PATHS.runs_dir, run_filter=lambda m: m['extra'].get('seed') == 42)
 
 print(f'Harvested {len(items)} gold items from {PATHS.runs_dir}')
 for cid, info in CATEGORIES.items():
@@ -842,6 +856,103 @@ if items:
     print(f'\\n✓ Gold set saved → {gold_path}')
 else:
     print('\\nNo items confirmed yet — play more live games first.')
+'''))
+
+cells.append(md("""
+### 2.0.1 Build / top-up the wrong set from run logs
+
+Symmetrical companion to the gold set. Harvests questions the bot answered
+*incorrectly* from all JSONL run logs in `data/runs/` and saves them to
+`data/eval/wrong_set.jsonl`.
+
+**Why collect wrong questions?**
+- Error analysis by category and level — spot systematic weaknesses.
+- Understand *how* the bot fails (which distractors fool it most).
+- Targeted re-evaluation after strategy changes.
+
+The `correct_index` field is filled in when the correct answer can be
+recovered from the same run logs (direct confirmation or elimination);
+otherwise it is `-1`. Safe to re-run at any time.
+"""))
+
+cells.append(code('''
+# Top up the wrong set with incorrectly-answered items from live games.
+wrong_path = PATHS.eval_dir / 'wrong_set.jsonl'
+wrong_items = harvest_wrong_set(PATHS.runs_dir)
+
+print(f'Harvested {len(wrong_items)} wrong items from {PATHS.runs_dir}')
+for cid, info in CATEGORIES.items():
+    n = sum(1 for it in wrong_items if it.competition_id == cid)
+    print(f'  {info.display_name:<35} {n:>4} items')
+
+if wrong_items:
+    n_known = sum(1 for it in wrong_items if it.correct_index >= 0)
+    print(f'\\nCorrect answer recovered: {n_known}/{len(wrong_items)} '
+          f'({n_known / len(wrong_items):.1%})')
+    save_wrong_set(wrong_items, wrong_path)
+    print(f'\\n✓ Wrong set saved → {wrong_path}')
+else:
+    print('\\nNo wrong items found yet — play more live games first.')
+'''))
+
+cells.append(md("""
+### 2.0.2 Load and inspect the wrong set
+
+`WrongSet` is a chainable view over the wrong items — every filter / sampler /
+splitter returns a new `WrongSet`, mirroring the `GoldSet` API exactly.
+
+**Recipes:**
+
+```python
+wrongs        = WrongSet.load(wrong_path)          # everything
+maths         = wrongs.filter_category(Category.MATHS)
+hard          = wrongs.filter_level(min_level=11)
+known         = wrongs.filter_known_correct()      # correct answer is known
+balanced      = wrongs.take_per_level(3, seed=0)   # ≤3 per level 1..15
+train, test   = wrongs.split(0.8, seed=42)
+```
+"""))
+
+cells.append(code('''
+# Wrong set, from data/eval/wrong_set.jsonl we load.
+wrong_path = PATHS.eval_dir / 'wrong_set.jsonl'
+
+if not wrong_path.exists():
+    print(
+        f'Wrong set not found at {wrong_path}.\\n'
+        'Build it by running the cell above, or:\\n'
+        '  python scripts/build_wrong_set.py\\n'
+        'Or play games first to populate data/runs/, then re-build.'
+    )
+else:
+    wrongs = WrongSet.load(wrong_path)
+    print(f'Wrong set: {len(wrongs)} items')
+    wrongs.print_stats()
+
+    # ── Per-category error bar chart ─────────────────────────────────────
+    by_cat = wrongs.counts_by_category()
+    if by_cat:
+        cats = sorted(by_cat)
+        counts = [by_cat[c] for c in cats]
+
+        fig, ax = plt.subplots(figsize=(7, 3.5))
+        bars = ax.bar(cats, counts, color=\'salmon\', edgecolor=\'white\')
+        for bar, cnt in zip(bars, counts):
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.1,
+                    str(cnt), ha=\'center\', fontsize=9)
+        ax.set_ylabel(\'Wrong answers\')
+        ax.set_title(f\'Wrong answers by category  (total={len(wrongs)})\')
+        plt.tight_layout()
+        plt.show()
+
+    # ── Cross-reference: questions both wrong and in the gold set ─────────
+    if wrong_path.exists() and gold_path.exists():
+        gold_keys  = {(g.competition_id, g.question_text) for g in full}
+        overlap    = [w for w in wrongs if (w.competition_id, w.question_text) in gold_keys]
+        print(f\'\\nOverlap (in both gold + wrong set): {len(overlap)} items\')
+        if overlap:
+            print(\'These were answered correctly on at least one run and wrongly on another.\')
 '''))
 
 cells.append(md("""
@@ -937,6 +1048,92 @@ print(f'\\nTotal eval time: {time.monotonic() - t0:.1f}s')
 report.print_summary()
 '''))
 
+cells.append(md("""
+### 2.2.1 Retrieval health dashboard (optional)
+
+Prints aggregate pipeline diagnostics across the entire eval run:
+
+| Section | What you see |
+|---|---|
+| **RETRIEVAL GATING** | How often offline retrieval was gated by `min_score`; mean top-score for correct vs wrong questions; gated-vs-ungated accuracy; per-category gate rates |
+| **LIVE SEARCH** | How many times live Wikipedia fallback fired; success rate; p50/p95 latency |
+| **TIER ROUTING** | Which tier (easy/medium/hard/maths) handled each question; escalation rate |
+| **ENSEMBLE ARMS** | Which arm agreed with the final decision most often |
+
+This cell is a no-op for non-RAG strategies — it degrades gracefully to a single notice line.
+"""))
+
+cells.append(code('''
+# Retrieval health dashboard — shows what happened inside the pipeline.
+# Works with any strategy; silent no-op when extras are absent (e.g. BaselineLLMStrategy).
+from polimibot.observability import retrieval_dashboard
+
+retrieval_dashboard(report)
+'''))
+
+cells.append(md("""
+### 2.2.2 Per-question trace viewer (optional)
+
+Drill into individual questions to see the **full pipeline trace** — exactly what was
+retrieved, whether gating fired, what the live search returned, which tier/arm handled
+the question, and what confidence margin was produced.
+
+**Recipes:**
+
+```python
+# Show the 3 most confidently wrong answers (highest confidence, but wrong)
+wrong = [s for s in report.samples if not s.correct]
+for i, s in enumerate(sorted(wrong, key=lambda x: -x.confidence)[:3]):
+    show_trace(s, idx=i)
+
+# Show the 3 lowest-confidence wrong answers
+for i, s in enumerate(sorted(wrong, key=lambda x: x.confidence)[:3]):
+    show_trace(s, idx=i)
+
+# Show a specific question by index
+show_trace(report.samples[42], idx=42)
+
+# Show all questions where live search fired
+live_fired = [s for s in report.samples if s.extras.get('live_search_fired')]
+for i, s in enumerate(live_fired):
+    show_trace(s, idx=i)
+
+# Show all gated questions that were answered wrong
+gated_wrong = [s for s in report.samples
+               if s.extras.get('gated_by_min_score') and not s.correct]
+for i, s in enumerate(gated_wrong[:5]):
+    show_trace(s, idx=i)
+```
+"""))
+
+cells.append(code('''
+# Per-question trace viewer. Edit the filter below to focus on the cases you care about.
+from polimibot.observability import show_trace
+
+# ── Choose which questions to inspect. ───────────────────────────────────
+# (a) Default: 5 most confidently wrong answers
+wrong = [s for s in report.samples if not s.correct]
+_to_show = sorted(wrong, key=lambda x: -x.confidence)[:5]
+
+# (b) All questions where gating fired and the answer was wrong — uncomment to use:
+# _to_show = [s for s in report.samples
+#             if s.extras.get('gated_by_min_score') and not s.correct]
+
+# (c) All questions where live search fired — uncomment to use:
+# _to_show = [s for s in report.samples if s.extras.get('live_search_fired')]
+
+# (d) A specific index — uncomment to use:
+# _to_show = [report.samples[0]]
+# ─────────────────────────────────────────────────────────────────────────
+
+if not _to_show:
+    print('No matching samples to show.')
+else:
+    print(f'Showing {len(_to_show)} question(s):')
+    for _i, _s in enumerate(_to_show):
+        show_trace(_s, idx=_i)
+'''))
+
 cells.append(md("### 2.3 Save the report"))
 
 cells.append(code('''
@@ -1023,18 +1220,135 @@ else:
 '''))
 
 cells.append(md("""
+### 2.6.1 Post-game retrieval summary (live games only)
+
+After each live game session, this cell prints a full diagnostic breakdown:
+context source used (offline RAG / live search / no context), per-category accuracy,
+difficulty curve, live-search efficiency, confidence calibration, and worst misses.
+
+Requires `RUN_LIVE_GAMES = True` in the cell above.
+"""))
+
+cells.append(code('''
+# Post-game retrieval summary — one report per competition played.
+# Needs RUN_LIVE_GAMES=True above; skips gracefully otherwise.
+from polimibot.observability import print_game_summary
+
+if RUN_LIVE_GAMES and results:
+    for r in results:
+        print_game_summary(r)
+else:
+    print('Skipping post-game summary (RUN_LIVE_GAMES=False or no results).')
+'''))
+
+cells.append(md("""
 ### 2.7 Retrieval diagnostic (optional, RAG only)
 
 Recall@k tells you _whether the right article is in the top-k retrieved chunks_ — independent of whether the LLM then picks the right letter. Without it, you can't tell retrieval failures apart from generation failures.
 
 **Workflow:**
 
-1. **Bootstrap** a labeling stub from your gold set. Each row gets the retriever's current top-5 candidate article titles, so you can pick from a list rather than typing titles from memory.
-2. **Label by hand**: open `data/eval/retrieval_gold.jsonl` in an editor, replace each `"gold_article_title": null` with the Wikipedia article title that should ideally be retrieved (or leave `null` to mean "no article suffices" — that row is skipped in scoring). 50 labels gets you a usable signal; 100+ is comfortable.
-3. **Measure**: re-run the eval cell; recall@1/3/5/10 and per-category breakdown come out.
+1. **Bootstrap** a labeling stub from your gold set — run the diagnostic cell (bottom of this section). Each row gets the retriever's current top-5 candidate article titles.
+2. **Label** — two options:
+   - _(Recommended)_ Run **cell 2.7a** to export to Excel. Fill in the highlighted `gold_article_title` column (pick from the 5 candidate columns or type your own title), then run **cell 2.7b** to import back.
+   - _(Manual)_ Open `data/eval/retrieval_gold.jsonl` directly and replace each `"gold_article_title": null` with the Wikipedia article title that should be retrieved. Leave `null` to mean "no article suffices" — those rows are skipped in scoring.
+   - 50 labels → usable signal; 100+ → comfortable.
+3. **Measure**: re-run the diagnostic cell; recall@1/3/5/10 and per-category breakdown come out.
 
 Skip this section entirely if `retriever is None` (you're not running RAG).
 """))
+
+cells.append(code('''
+# ── 2.7a  Export retrieval_gold stub → Excel for easy labeling ──────────
+# Requires openpyxl: installed below if missing.
+import subprocess, sys
+subprocess.run([sys.executable, '-m', 'pip', 'install', 'openpyxl', '-q'], check=True)
+
+import pandas as pd
+from openpyxl.styles import PatternFill, Font
+
+RETRIEVAL_GOLD_PATH = PATHS.eval_dir / 'retrieval_gold.jsonl'
+EXCEL_PATH          = PATHS.eval_dir / 'retrieval_gold_label.xlsx'
+
+if not RETRIEVAL_GOLD_PATH.exists():
+    print('No stub yet — run the diagnostic cell below first to generate retrieval_gold.jsonl.')
+else:
+    from polimibot.eval.retrieval import load_retrieval_gold
+    items = load_retrieval_gold(RETRIEVAL_GOLD_PATH)
+
+    rows = []
+    for it in items:
+        cands = list(it.candidates) + [''] * 5
+        rows.append({
+            'question_text':      it.question_text,
+            'options':            ' | '.join(it.options),
+            'category':           it.category.value if it.category else '',
+            'level':              it.level,
+            'gold_article_title': it.gold_article_title or '',
+            'candidate_1':        cands[0],
+            'candidate_2':        cands[1],
+            'candidate_3':        cands[2],
+            'candidate_4':        cands[3],
+            'candidate_5':        cands[4],
+        })
+
+    df = pd.DataFrame(rows)
+    gold_col_idx = df.columns.get_loc('gold_article_title')  # 0-indexed
+
+    with pd.ExcelWriter(EXCEL_PATH, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Labels')
+        ws = writer.sheets['Labels']
+        ws.freeze_panes = 'A2'
+
+        yellow = PatternFill(fill_type='solid', fgColor='FFFF00')
+        bold   = Font(bold=True)
+        ws.cell(row=1, column=gold_col_idx + 1).font = bold
+        for r in range(2, ws.max_row + 1):
+            ws.cell(row=r, column=gold_col_idx + 1).fill = yellow
+
+        for col_letter, width in [('A', 60), ('B', 40), ('E', 35),
+                                   ('F', 30), ('G', 30), ('H', 30), ('I', 30), ('J', 30)]:
+            ws.column_dimensions[col_letter].width = width
+
+    n_labeled = sum(1 for it in items if it.is_labeled)
+    print(f'Exported {len(items)} rows ({n_labeled} already labeled) → {EXCEL_PATH}')
+    print('Fill in the yellow "gold_article_title" column, then run the Import cell below.')
+'''))
+
+cells.append(code('''
+# ── 2.7b  Import labeled Excel → retrieval_gold.jsonl ───────────────────
+import pandas as pd
+from dataclasses import replace as dc_replace
+from polimibot.eval.retrieval import load_retrieval_gold, save_retrieval_gold
+
+RETRIEVAL_GOLD_PATH = PATHS.eval_dir / 'retrieval_gold.jsonl'
+EXCEL_PATH          = PATHS.eval_dir / 'retrieval_gold_label.xlsx'
+
+if not EXCEL_PATH.exists():
+    print(f'Excel file not found: {EXCEL_PATH}\\nRun the Export cell above first.')
+elif not RETRIEVAL_GOLD_PATH.exists():
+    print(f'JSONL stub not found: {RETRIEVAL_GOLD_PATH}\\nRun the diagnostic cell below first.')
+else:
+    df = pd.read_excel(EXCEL_PATH, sheet_name='Labels', dtype=str).fillna('')
+    label_map = {
+        row['question_text']: (row['gold_article_title'].strip() or None)
+        for _, row in df.iterrows()
+    }
+
+    items = load_retrieval_gold(RETRIEVAL_GOLD_PATH)
+    n_new = 0
+    updated = []
+    for it in items:
+        new_title = label_map.get(it.question_text, it.gold_article_title)
+        if new_title and new_title != it.gold_article_title:
+            n_new += 1
+        updated.append(dc_replace(it, gold_article_title=new_title))
+
+    save_retrieval_gold(updated, RETRIEVAL_GOLD_PATH)
+    n_total = sum(1 for it in updated if it.is_labeled)
+    print(f'Imported {n_new} new labels. Total labeled: {n_total} / {len(updated)}')
+    print('Re-run the diagnostic cell below to measure Recall@k.')
+'''))
 
 cells.append(code('''
 # Retrieval diagnostic, optional. Skip if no RAG.
@@ -1308,4 +1622,4 @@ if errors:
     for e in errors:
         print(f'    {e}')
     raise SystemExit(1)
-print('  ✓ all code cells parse')
+print('  OK all code cells parse')
