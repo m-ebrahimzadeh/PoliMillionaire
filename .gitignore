@@ -1,22 +1,72 @@
-__pycache__/
+# Compiled and build artifacts
 *.pyc
+__pycache__/
+*.o
+*.obj
+*.class
+*.exe
+*.dll
+*.so
+*.a
+*.out
+
+# Dependencies
+node_modules/
+venv/
 .venv/
-.ipynb_checkpoints/
+.env
+.env.local
+.env.*
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Editors
 .vscode/
 .idea/
-data/runs/*
-data/cache/*
-!data/runs/.gitkeep
-!data/eval/.gitkeep
-!data/cache/.gitkeep
-*.bin
-*.safetensors
-*.env
-*.egg-info/
-*.claude/
 
-NOTEBOOK_CHANGES.md
-PoliMillionaire.legacy.ipynb
-AUDIT.md
+# System files
+.DS_Store
+Thumbs.db
 
-docs/polimillionaire_tracker*
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# Build directories
+dist/
+build/
+target/
+.gradle/
+
+# Python caches
+.mypy_cache/
+.pytest_cache/
+
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
