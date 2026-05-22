@@ -280,6 +280,9 @@ Run this section **once** before the first RAG experiment — or whenever you wa
 | `INDEX_CATEGORIES` | `None` → all four categories; or e.g. `['history', 'science']` to build a partial index |
 | `INDEX_CHUNK_SIZE` / `INDEX_OVERLAP` | Sentence-aware chunking parameters (default 300/50) |
 | `INDEX_SKIP_BM25` | Set `True` to skip the BM25 sidecar (dense-only build — faster but disables hybrid retrieval) |
+| `INDEX_LEGACY_SEEDS` | Set `True` to use the hand-curated `TOPIC_SEEDS` (~95 titles) instead of the MediaWiki category-graph harvest |
+| `INDEX_HARVEST_MAX_PER_CATEGORY` | Cap on titles per seed-category in the harvester (default 500) |
+| `INDEX_HARVEST_MAX_DEPTH` | Subcategory recursion depth (0 = this category only — safe default) |
 
 Skipped automatically when the index already exists and `REBUILD_INDEX=False` — safe to leave in the run-all path.
 """))
@@ -295,6 +298,9 @@ INDEX_CATEGORIES   = None         # None  → all four; or e.g. ['history', 'sci
 INDEX_CHUNK_SIZE   = 300          # words per chunk (sentence-boundary-aware)
 INDEX_OVERLAP      = 50           # word overlap between adjacent chunks
 INDEX_SKIP_BM25    = False        # True  → skip BM25 sidecar (dense-only, faster)
+INDEX_LEGACY_SEEDS = False        # True  → hand-curated TOPIC_SEEDS (~95 titles)
+INDEX_HARVEST_MAX_PER_CATEGORY = 500   # cap per seed-category in the harvester
+INDEX_HARVEST_MAX_DEPTH        = 0     # 0 = no subcategory recursion (safe)
 # ─────────────────────────────────────────────────────────────────────
 
 _index_faiss = RAG_INDEX_PATH.with_suffix('.faiss')
@@ -307,7 +313,8 @@ else:
     import time as _time
     from polimibot.config import Category as _Category
     from polimibot.rag.corpus import (
-        fetch_articles, load_raw_corpus, save_raw_corpus, clean_wikipedia_text,
+        fetch_articles, fetch_articles_from_categories,
+        load_raw_corpus, save_raw_corpus, clean_wikipedia_text,
         CORPUS_VERSION, CLEANUP_VERSION,
     )
     from polimibot.rag.chunker import CHUNKER_VERSION, chunk_text as _chunk_text
@@ -329,8 +336,18 @@ else:
             _articles = [a for a in _articles if a.category in _cats]
         _articles = [_replace(a, text=clean_wikipedia_text(a.text)) for a in _articles]
     else:
-        print('Fetching articles from Wikipedia (this takes several minutes)…')
-        _articles = fetch_articles(categories=_cats, verbose=True)
+        if INDEX_LEGACY_SEEDS:
+            print('Fetching articles from Wikipedia (legacy hand-curated TOPIC_SEEDS)…')
+            _articles = fetch_articles(categories=_cats, verbose=True)
+        else:
+            print('Fetching articles from Wikipedia (category-graph harvest, this takes several minutes)…')
+            _articles = fetch_articles_from_categories(
+                categories=_cats,
+                cache_path=PATHS.cache_dir / 'harvested_titles.json',
+                max_per_category=INDEX_HARVEST_MAX_PER_CATEGORY,
+                max_depth=INDEX_HARVEST_MAX_DEPTH,
+                verbose=True,
+            )
         save_raw_corpus(_articles, _corpus_path)
 
     if not _articles:
@@ -372,6 +389,9 @@ else:
         'chunk_overlap':           INDEX_OVERLAP,
         'chunker_version':         CHUNKER_VERSION,
         'corpus_version':          CORPUS_VERSION,
+        'corpus_source':           'hand_curated' if INDEX_LEGACY_SEEDS else 'category_graph',
+        'max_per_category':        INDEX_HARVEST_MAX_PER_CATEGORY,
+        'max_depth':               INDEX_HARVEST_MAX_DEPTH,
         'n_articles':              len(_articles),
         'text_cleanup_version':    CLEANUP_VERSION,
         'categories':              sorted({a.category.value for a in _articles}),
@@ -446,6 +466,17 @@ USE_TIERED          = False                              # full hybrid: tier-by-
 TIER_EASY_MAX       = 5                                  # levels 1..5  → easy strategy
 TIER_MEDIUM_MAX     = 10                                 # levels 6..10 → medium strategy
 ESCALATION_THRESHOLD = None                              # e.g. 0.15 to escalate on low margin
+
+# Category overrides — per-category specialist strategies that bypass the
+# level-tier dispatch entirely (audit P1). The maths slot is filled below from
+# USE_MATHS_TOOL / USE_AGENT_FOR_MATHS; add more entries here by name to
+# enable a future category-specialist arm (e.g. ENTERTAINMENT → WikidataStrategy).
+# Format: {'history': True, 'science': False, ...}.  Only categories set to True
+# AND with a builder wired in 1.4 get an override; absent categories fall through
+# to easy/medium/hard.
+ENABLE_CATEGORY_OVERRIDES: dict[str, bool] = {
+    'maths': True,    # follows USE_MATHS_TOOL / USE_AGENT_FOR_MATHS
+}
 
 # Retrieval (only used when USE_RAG / USE_ENSEMBLE / USE_TIERED)
 RAG_K                  = 3                               # passages per question
@@ -645,19 +676,30 @@ _rag_kwargs = dict(
 )
 
 if USE_TIERED:
+    from polimibot.config import Category as _Category_tiered
     rag_arm    = RAGStrategy(llm, retriever, **_rag_kwargs)
     ensemble   = EnsembleStrategy([baseline, rag_arm], weights=[1.0, 1.2])
-    maths_arm  = (
-        AgentStrategy(llm, max_iterations=3) if USE_AGENT_FOR_MATHS
-        else (ToolStrategy([MathsTool()], fallback=baseline) if USE_MATHS_TOOL else None)
-    )
+    # Build per-category override arms. None of these have to be present;
+    # absent categories fall through to the level-tier dispatch.
+    _cat_overrides: dict = {}
+    if ENABLE_CATEGORY_OVERRIDES.get('maths', False):
+        _maths_arm = (
+            AgentStrategy(llm, max_iterations=3) if USE_AGENT_FOR_MATHS
+            else (ToolStrategy([MathsTool()], fallback=baseline) if USE_MATHS_TOOL else None)
+        )
+        if _maths_arm is not None:
+            _cat_overrides[_Category_tiered.MATHS] = _maths_arm
+    # Future category-specialist arms slot in here, gated by their own
+    # ENABLE_CATEGORY_OVERRIDES flag. Example (when Wikidata is added):
+    #   if ENABLE_CATEGORY_OVERRIDES.get('entertainment', False):
+    #       _cat_overrides[_Category_tiered.ENTERTAINMENT] = WikidataStrategy(llm, fallback=rag_arm)
     strategy = TieredStrategy(
         easy=baseline, medium=rag_arm, hard=ensemble,
         breakpoints=TierBreakpoints(
             easy_max_level=TIER_EASY_MAX,
             medium_max_level=TIER_MEDIUM_MAX,
         ),
-        maths_override=maths_arm,
+        category_overrides=_cat_overrides,
         escalation_threshold=ESCALATION_THRESHOLD,
     )
 elif USE_ENSEMBLE:

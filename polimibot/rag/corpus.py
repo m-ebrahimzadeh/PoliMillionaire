@@ -32,7 +32,7 @@ CLEANUP_VERSION = 1
 # *selection* logic changes (separate from CLEANUP_VERSION, which tracks the
 # in-place text normalisation only). Surfaced in the index manifest so a
 # retriever can spot a stale corpus even when cleanup didn't change.
-CORPUS_VERSION = 2
+CORPUS_VERSION = 3   # v3 = category-graph harvest (was v2: hand-curated TOPIC_SEEDS)
 
 _CITATION_RE = re.compile(r"\[\d+\](?:\[\d+\])*")
 
@@ -304,6 +304,99 @@ def _fetch_one(title: str, category: Category, *, verbose: bool) -> Optional[Art
             print(f"  ! unexpected error for '{title}': {exc} — skipped")
 
     return None
+
+
+def fetch_articles_from_categories(
+    categories: list[Category] | None = None,
+    *,
+    cache_path: Optional[Path] = None,
+    max_per_category: int = 500,
+    max_depth: int = 0,
+    sleep_seconds: float = 0.3,
+    verbose: bool = True,
+) -> list[Article]:
+    """Fetch Wikipedia articles seeded from the MediaWiki category graph.
+
+    Drop-in alternative to ``fetch_articles()``. Instead of consuming the
+    hand-curated ``TOPIC_SEEDS`` (~95 titles total), this calls the
+    MediaWiki ``categorymembers`` API via ``category_seeds.harvest_titles``
+    and then runs the same per-title ``_fetch_one`` pipeline (retry,
+    disambiguation, citation cleanup) over the resulting ~500-2000 titles
+    per category.
+
+    A title appearing under multiple categories is kept under its first
+    occurrence in ``categories`` order — same dedup policy as
+    ``_dedupe_seeds`` so the corpus never has two copies of the same
+    article wearing different category tags.
+
+    Args:
+        categories: subset of categories to fetch (default: all four).
+        cache_path: optional JSON file for the harvested title list.
+            Cache policy is monotonic — categories present in the file
+            are reused, missing categories are harvested fresh.
+        max_per_category: cap on titles per seed-category before fetching.
+        max_depth: subcategory recursion depth for the harvester. 0 means
+            "this category only" (the safe default — depth >= 2 produces
+            tens of thousands of titles).
+        sleep_seconds: polite delay between Wikipedia article fetches
+            (separate from the harvester's internal API politeness).
+        verbose: print progress.
+
+    Returns:
+        List of Article objects. Failed fetches skipped with a warning.
+    """
+    # Local import keeps the dependency cycle clean: category_seeds is a
+    # leaf module that imports nothing from corpus / chunker / index.
+    from .category_seeds import harvest_titles
+
+    import wikipedia  # lazy — only needed when this function actually runs
+
+    wikipedia.set_lang("en")
+    targets = categories or list(Category)
+
+    # Step 1: title harvest (cache-aware).
+    harvested = harvest_titles(
+        categories=targets,
+        cache_path=cache_path,
+        max_per_category=max_per_category,
+        max_depth=max_depth,
+        verbose=verbose,
+    )
+
+    # Step 2: flatten with cross-category dedup. First category in
+    # ``targets`` wins for any duplicate title.
+    seen: set[str] = set()
+    flat: list[tuple[str, Category]] = []
+    for cat in targets:
+        for title in harvested.get(cat, []):
+            if title in seen:
+                if verbose:
+                    print(f"  ! '{title}' duplicate across categories — kept under earlier topic")
+                continue
+            seen.add(title)
+            flat.append((title, cat))
+
+    if verbose:
+        print(f"\nFetching bodies for {len(flat)} unique articles…")
+        for cat in targets:
+            n = sum(1 for _, c in flat if c == cat)
+            print(f"  [{cat.value}] {n} articles to fetch")
+
+    # Step 3: per-article body fetch with retry / disambiguation, reusing
+    # the existing pipeline so we inherit all of its robustness.
+    articles: list[Article] = []
+    for i, (title, cat) in enumerate(flat, start=1):
+        article = _fetch_one(title, cat, verbose=verbose)
+        if article is not None:
+            articles.append(article)
+        # Progress dot every 50 fetches so a multi-thousand crawl shows life.
+        if verbose and i % 50 == 0:
+            print(f"  ... fetched {i}/{len(flat)} ({len(articles)} successes)")
+        time.sleep(sleep_seconds)
+
+    if verbose:
+        print(f"\nFetched {len(articles)} / {len(flat)} articles successfully.")
+    return articles
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────

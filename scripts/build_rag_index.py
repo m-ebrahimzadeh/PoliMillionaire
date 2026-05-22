@@ -26,7 +26,8 @@ from polimibot.rag.bm25 import BM25Index
 from polimibot.rag.chunker import CHUNKER_VERSION, chunk_text
 from polimibot.rag.corpus import (
     CLEANUP_VERSION, CORPUS_VERSION, clean_wikipedia_text,
-    fetch_articles, load_raw_corpus, save_raw_corpus,
+    fetch_articles, fetch_articles_from_categories,
+    load_raw_corpus, save_raw_corpus,
 )
 from polimibot.rag.embedder import Embedder, EmbedderSpec
 from polimibot.rag.index import FAISSIndex
@@ -59,8 +60,18 @@ def main() -> None:
         from dataclasses import replace
         articles = [replace(a, text=clean_wikipedia_text(a.text)) for a in articles]
     else:
-        print("Fetching articles from Wikipedia…")
-        articles = fetch_articles(categories=categories, verbose=True)
+        if args.legacy_seeds:
+            print("Fetching articles from Wikipedia (legacy hand-curated TOPIC_SEEDS)…")
+            articles = fetch_articles(categories=categories, verbose=True)
+        else:
+            print("Fetching articles from Wikipedia (category-graph harvest)…")
+            articles = fetch_articles_from_categories(
+                categories=categories,
+                cache_path=PATHS.cache_dir / "harvested_titles.json",
+                max_per_category=args.max_per_category,
+                max_depth=args.max_depth,
+                verbose=True,
+            )
         save_raw_corpus(articles, corpus_path)
 
     if not articles:
@@ -108,6 +119,9 @@ def main() -> None:
         "chunk_overlap":           args.overlap,
         "chunker_version":         CHUNKER_VERSION,
         "corpus_version":          CORPUS_VERSION,
+        "corpus_source":           "hand_curated" if args.legacy_seeds else "category_graph",
+        "max_per_category":        args.max_per_category,
+        "max_depth":               args.max_depth,
         "n_articles":              len(articles),
         "text_cleanup_version":    CLEANUP_VERSION,
         "categories":              sorted({a.category.value for a in articles}),
@@ -141,6 +155,15 @@ def _parse_args() -> argparse.Namespace:
                    help="Exit early if the FAISS index already exists on disk")
     p.add_argument("--no-bm25", action="store_true", dest="no_bm25",
                    help="Skip building the BM25 sidecar (dense-only build)")
+    p.add_argument("--legacy-seeds", action="store_true", dest="legacy_seeds",
+                   help="Use the hand-curated TOPIC_SEEDS (~95 articles) instead of "
+                        "the category-graph harvest. Useful for fast iteration / tests.")
+    p.add_argument("--max-per-category", type=int, default=500,
+                   dest="max_per_category",
+                   help="Cap on titles per seed-category during harvest (default 500)")
+    p.add_argument("--max-depth", type=int, default=0, dest="max_depth",
+                   help="Subcategory recursion depth for the harvester. 0 = this "
+                        "category only (safe default); 1 = one level of subcats.")
     return p.parse_args()
 
 
