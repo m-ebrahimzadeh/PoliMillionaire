@@ -123,3 +123,58 @@ def test_parse_answer_returns_none_on_garbage():
 def test_parse_answer_priority_most_specific_wins():
     # "Answer: B" contains lone "A" too — should match "B", not "A"
     assert parse_answer("Answer: B, not A") == 1
+
+
+# ── Regression coverage for ELIMINATION-style outputs (audit P10.4) ─────────
+# Locks in the current behaviour where structured patterns (\boxed, "Answer:",
+# line-leading "X." / "X)") win over bare letters anywhere in the text, AND
+# where the bare-letter LAST-match rule picks the right answer for CoT outputs
+# whose reasoning trace mentions other letters earlier.
+
+
+def test_parse_answer_elimination_with_boxed_wins_over_letter_setup():
+    """ELIMINATION style: per-option lines start with 'A.'/'B.'/... — the
+    \\boxed{X} marker at the end must override the earlier line-start matches.
+    """
+    text = (
+        "A. not correct because X.\n"
+        "B. correct! Newton's second law applies here.\n"
+        "C. incorrect, that's a different theorem.\n"
+        "D. misreads the question.\n"
+        "\\boxed{B}"
+    )
+    assert parse_answer(text) == 1
+
+
+def test_parse_answer_elimination_line_start_picks_first_per_option():
+    """Without a structured terminator, the line-start 'X.' pattern still
+    wins (first match) — useful when the model produces only the per-option
+    lines and no final 'Answer:' marker.
+    """
+    text = (
+        "A. correct: this is the canonical definition.\n"
+        "B. wrong.\n"
+        "C. wrong.\n"
+        "D. wrong.\n"
+    )
+    # Structured patterns are tried first; the line-leading "A." matches.
+    assert parse_answer(text) == 0
+
+
+def test_parse_answer_cot_setup_then_answer_picks_last_bare_letter():
+    """CoT-style reasoning: the trace can mention several letters; the
+    final 'Therefore C.' must win via the bare-letter LAST-match rule.
+    """
+    text = "Let A be the area, then by symmetry the answer is C."
+    assert parse_answer(text) == 2
+
+
+def test_parse_answer_cot_trailing_therefore_letter():
+    """No structured marker, just a bare 'Therefore D.' at the tail —
+    the last bare letter wins."""
+    text = (
+        "We rule out A because the dates don't match. "
+        "B is plausible but B's reign was earlier. "
+        "C is a distractor. Therefore D."
+    )
+    assert parse_answer(text) == 3
