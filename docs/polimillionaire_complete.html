@@ -1097,6 +1097,7 @@ code:not([class*="language-"]) {
             <div class="section-group" data-chapter="rag">
                 <div class="section-group-title">RAG Pipeline</div>
                 <li><a href="#rag-what">What is RAG?</a></li>
+                <li><a href="#rag-corpus">Corpus Construction</a></li>
                 <li><a href="#rag-faiss">FAISS Semantic Search</a></li>
                 <li><a href="#rag-bm25">BM25 Lexical Search</a></li>
                 <li><a href="#rag-hybrid">Hybrid &amp; RRF Fusion</a></li>
@@ -1175,6 +1176,7 @@ code:not([class*="language-"]) {
         <span class="tag">FAISS</span>
         <span class="tag">BM25</span>
         <span class="tag">RAG</span>
+        <span class="tag">Wikipedia Category Graph</span>
         <span class="tag">ReAct Agent</span>
         <span class="tag">Strategy Pattern</span>
         <span class="tag">Offline Evaluation</span>
@@ -2199,6 +2201,91 @@ flowchart LR
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════════
+     SECTION: RAG — CORPUS CONSTRUCTION
+     ═══════════════════════════════════════════════════════════════════════ -->
+<section class="section" id="rag-corpus" data-chapter="rag">
+    <div class="section-label">RAG Pipeline</div>
+    <h2>Corpus Construction — Seeding the Index</h2>
+
+    <div class="callout analogy">
+        <p><strong>From hand-picked reading list to library card catalog.</strong> The first version of this project shipped with a ~95-article seed list — every title chosen by hand. That's fine until the question is "Who discovered penicillin?" and Fleming isn't in the list. The current version points the system at ~20 Wikipedia <code>Category:*</code> pages per topic (e.g. <code>Category:Roman_emperors</code>, <code>Category:Chemical_elements</code>) and asks the MediaWiki API to enumerate every member article. The result is a corpus 5–20× larger with much better entity coverage.</p>
+    </div>
+
+    <p>The harvester lives in a small standalone module so it has no compile-time dependency on the rest of the RAG pipeline — it just emits article titles, which the existing fetch / clean / chunk machinery consumes unchanged.</p>
+
+    <table class="comparison-table">
+        <tr><th>Aspect</th><th>Before (hand-curated)</th><th>After (category-graph)</th></tr>
+        <tr><td>Seeds</td><td>~25 article titles per topic, hand-listed</td><td>~20 <code>Category:*</code> names per topic</td></tr>
+        <tr><td>Articles indexed</td><td>~95 total</td><td>500–2000 per topic</td></tr>
+        <tr><td>Coverage</td><td>Famous people / events only</td><td>Long tail of entities (elements, laureates, films)</td></tr>
+        <tr><td>Manifest field</td><td><code>corpus_source: "hand_curated"</code></td><td><code>corpus_source: "category_graph"</code></td></tr>
+        <tr><td>Module</td><td><code>corpus.TOPIC_SEEDS</code></td><td><code>category_seeds.CATEGORY_SEEDS</code> + <code>harvest_titles()</code></td></tr>
+    </table>
+
+    <div class="code-block">
+        <div class="filename">polimibot/rag/category_seeds.py — excerpt</div>
+        <pre><code class="language-python"># ~20 well-chosen seed categories per topic. Tuple entries override the
+# default per-category cap when a category is genuinely large.
+CATEGORY_SEEDS: dict[Category, list] = {
+    Category.HISTORY: [
+        "Roman_emperors", "Pharaohs", "Ancient_Greek_generals",
+        ("Battles_of_World_War_II", 300),
+        "Presidents_of_the_United_States", "Byzantine_emperors", ...
+    ],
+    Category.SCIENCE: [
+        "Chemical_elements", "Nobel_laureates_in_Physics",
+        "Planets_of_the_Solar_System", "Constellations",
+        ("Mammals", 300), "Infectious_diseases", ...
+    ],
+    Category.ENTERTAINMENT: [
+        ("Best_Picture_Academy_Award_winners", 200),
+        "Grammy_Award_for_Album_of_the_Year", "James_Bond_films", ...
+    ],
+    Category.MATHS: [
+        "Fields_Medalists", "Abel_Prize_laureates",
+        ("Mathematical_constants", 100), "Mathematicians_by_century",
+    ],
+}
+
+def harvest_titles(
+    categories: Iterable[Category] | None = None,
+    *,
+    cache_path: Path | None = None,
+    max_per_category: int = 500,   # default cap per seed-category
+    max_depth: int = 0,            # 0 = no subcategory recursion
+    verbose: bool = True,
+) -> dict[Category, list[str]]:
+    """Resolve CATEGORY_SEEDS to a deduplicated title list per topic."""</code></pre>
+    </div>
+
+    <div class="callout tip">
+        <p><strong>Polite by default.</strong> Wikimedia's API:Etiquette guideline requires an identifying <code>User-Agent</code> (an anonymous IP can be silently rate-limited). The harvester sends a project-specific UA with a contact email, sleeps <code>0.2 s</code> between paginated requests, and retries transient failures with the same exponential backoff schedule as <code>corpus._page_with_retry</code> (<code>(1, 2, 4)</code> seconds, up to 3 attempts). HTTP 4xx errors are NOT retried — those won't fix themselves.</p>
+    </div>
+
+    <div class="callout tip">
+        <p><strong>Monotonic cache.</strong> Harvested titles are written to <code>data/cache/harvested_titles.json</code>. Re-runs reuse whatever categories are already in the cache and only hit the API for missing ones, then merge the result back. Wikipedia categories change slowly, so this cuts rebuild time from minutes to seconds and is friendly to the Wikimedia servers. Delete the file to force a full refresh.</p>
+    </div>
+
+    <p><strong>Design defaults worth knowing:</strong></p>
+    <ul style="margin: 12px 0 24px 24px; color: var(--text-secondary); line-height: 2;">
+        <li><code>cmtype=page</code> — subcategories are filtered out. <code>Category:World_War_II</code> contains 50+ subcategories; recursing into them by default would balloon the corpus into the tens of thousands and most of that material is off-topic for trivia. Pass <code>--max-depth 1</code> to opt in.</li>
+        <li><code>max_per_category=500</code> — even with <code>cmtype=page</code>, large categories have thousands of members and the long tail is rarely on-topic. Per-seed tuple entries (e.g. <code>("Battles_of_World_War_II", 300)</code>) override the global default where appropriate.</li>
+        <li>Cross-topic dedup is deterministic — a title appearing under multiple categories is kept under its first occurrence in the iteration order, matching the legacy <code>_dedupe_seeds</code> policy.</li>
+    </ul>
+
+    <p><strong>Manifest fields</strong> recorded by <code>scripts/build_rag_index.py</code>:</p>
+    <ul style="margin: 12px 0 24px 24px; color: var(--text-secondary); line-height: 2;">
+        <li><code>corpus_version: 3</code> — bumped from <code>2</code>; <code>retriever._check_manifest_compat</code> warns when an old index is loaded against the new code.</li>
+        <li><code>corpus_source: "category_graph" | "hand_curated"</code> — distinguishes the two seeding paths.</li>
+        <li><code>max_per_category</code>, <code>max_depth</code> — record the harvest knobs as actually used.</li>
+    </ul>
+
+    <div class="callout tip">
+        <p><strong>Escape hatch.</strong> Pass <code>--legacy-seeds</code> to <code>scripts/build_rag_index.py</code> (or set <code>INDEX_LEGACY_SEEDS=True</code> in the notebook) to use the original <code>TOPIC_SEEDS</code> list. Useful for fast iteration / tests where the smaller corpus is the point.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
      SECTION: RAG — FAISS
      ═══════════════════════════════════════════════════════════════════════ -->
 <section class="section" id="rag-faiss" data-chapter="rag">
@@ -2306,7 +2393,7 @@ flowchart LR
     <h2>IndexGrower — Live Learning During Games</h2>
 
     <div class="callout analogy">
-        <p><strong>Like a student adding flashcards during the exam.</strong> When the bot encounters a question it can't answer, it fetches the relevant Wikipedia article right then. If the server confirms the answer was correct, that article gets permanently added to the knowledge base. Wrong answers are discarded — never pollute the index with misinformation.</p>
+        <p><strong>Like a student adding flashcards during the exam.</strong> When the bot encounters a question the <strong>category-graph-seeded offline index</strong> can't answer, it fetches the relevant Wikipedia article right then. If the server confirms the answer was correct, that article gets permanently added to the knowledge base. Wrong answers are discarded — never pollute the index with misinformation.</p>
     </div>
 
     <div class="code-block">
