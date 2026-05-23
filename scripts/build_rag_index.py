@@ -208,7 +208,7 @@ def main() -> None:
             all_chunks_for_bm25 = list(retriever._index._chunks)
             bm25 = BM25Index(all_chunks_for_bm25)
             bm25.save(index_path)
-            print(f"   built {bm25.n_docs} docs in {time.monotonic()-t0:.1f}s")
+            print(f"   built {bm25.n_chunks} docs in {time.monotonic()-t0:.1f}s")
 
 
 def _parse_args() -> argparse.Namespace:
