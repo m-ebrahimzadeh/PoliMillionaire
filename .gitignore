@@ -1,22 +1,2 @@
-__pycache__/
-*.pyc
-.venv/
-.ipynb_checkpoints/
-.vscode/
-.idea/
-data/runs/*
-data/cache/*
-!data/runs/.gitkeep
-!data/eval/.gitkeep
-!data/cache/.gitkeep
-*.bin
-*.safetensors
-*.env
-*.egg-info/
-*.claude/
-
-NOTEBOOK_CHANGES.md
-PoliMillionaire.legacy.ipynb
-AUDIT.md
-
-docs/polimillionaire_tracker*
+# Documentation
+RAG_SYSTEM_AUDIT.md
