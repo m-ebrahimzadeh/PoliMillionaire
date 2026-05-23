@@ -61,7 +61,20 @@ def _category_for(competition_id: int) -> Optional[Category]:
 
 def _model_from_manifest(manifest: dict) -> str:
     extra = manifest.get("extra", {})
-    return str(extra.get("model_id") or extra.get("model") or "").lower()
+    # First check standard keys
+    model = extra.get("model_id") or extra.get("model")
+    if model:
+        return str(model).lower()
+    # Fallback: extract model from strategy string like "rag[model|...]"
+    strategy = extra.get("strategy", "")
+    if strategy and "[" in strategy:
+        # Extract text between [ and first |
+        start = strategy.index("[") + 1
+        end = strategy.index("|", start) if "|" in strategy[start:] else len(strategy)
+        model = strategy[start:end]
+        if model:
+            return model.lower()
+    return ""
 
 
 def _build_run_filter(
