@@ -315,6 +315,7 @@ code:not([class*="language-"]) {
         <span class="tag">Cross-Encoder</span>
         <span class="tag">IndexGrower</span>
         <span class="tag">Wikipedia API</span>
+        <span class="tag">Category Graph</span>
     </div>
 </div>
 
@@ -456,8 +457,8 @@ flowchart TD
     <div class="pipeline-step">
         <div class="step-num">1</div>
         <div class="step-content">
-            <strong>Download Wikipedia articles</strong> for all 4 categories
-            <div class="step-example">Entertainment, History, Science, Maths → corpus.jsonl</div>
+            <strong>Harvest article titles from Wikipedia categories</strong> (one query per seed category via the MediaWiki API), then fetch each article
+            <div class="step-example">Category:Roman_emperors, Category:Chemical_elements, … → ~500–2000 titles per topic → corpus.jsonl</div>
         </div>
     </div>
     <div class="pipeline-step">
@@ -487,6 +488,14 @@ flowchart TD
             <strong>Build BM25 index</strong> (keyword lookup table from the same chunks)
             <div class="step-example">knowledge.bm25.json — word → which chunks contain it</div>
         </div>
+    </div>
+
+    <div class="card analogy">
+        <p><strong>Where do the article titles come from?</strong> Rather than hand-picking ~95 articles per topic (the old approach), the system now asks Wikipedia: "give me every article in <code>Category:Roman_emperors</code>, <code>Category:Chemical_elements</code>, …" via the MediaWiki <code>categorymembers</code> API. ~20 well-chosen seed categories per topic yield ~500–2000 candidate titles. Each title is then fetched, cleaned, and chunked exactly like before. <strong>Result:</strong> 5–20× more articles in the index, so the right answer is far more likely to be retrievable — particularly for entity-specific trivia (who discovered X, which film won Y).</p>
+    </div>
+
+    <div class="card warning">
+        <p><strong>For engineers ablating the change:</strong> pass <code>--legacy-seeds</code> to <code>scripts/build_rag_index.py</code> (or set <code>INDEX_LEGACY_SEEDS=True</code> in the notebook) to fall back to the original hand-curated <code>TOPIC_SEEDS</code> list. The FAISS <code>.manifest.json</code> records which path was used as <code>corpus_source: "category_graph" | "hand_curated"</code>, so a re-loader can tell which index they're working with.</p>
     </div>
 
     <div class="code-block">

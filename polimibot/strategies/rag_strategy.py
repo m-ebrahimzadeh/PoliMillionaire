@@ -192,7 +192,10 @@ class RAGStrategy(Strategy):
         live_search_timeout: float = 5.0,
         live_max_articles: int = 2,
         index_grower=None,   # Optional[IndexGrower] — avoids circular import
-        live_use_llm_query: bool = False,
+        live_use_llm_query: bool = True,
+        # ── HyDE ────────────────────────────────────────────────────────
+        use_hyde: bool = False,
+        hyde_max_new_tokens: int = 80,
     ) -> None:
         """
         Args:
@@ -301,6 +304,20 @@ class RAGStrategy(Strategy):
         self.live_max_articles   = live_max_articles
         self.index_grower        = index_grower
         self.live_use_llm_query  = live_use_llm_query
+        # Per-instance LLM-rewrite cache for live search queries.
+        # Intentionally instance-scoped: a different RAGStrategy in a
+        # different experiment shouldn't reuse rewrites tuned by a
+        # different config — experiments stay isolated.
+        self._live_query_cache: dict[str, str] = {}
+
+        # ── HyDE ───────────────────────────────────────────────────────
+        # When use_hyde=True we ask the LLM to write a passage-shaped
+        # hypothesis and use THAT as the dense query, while keeping the
+        # raw question for BM25 (lexical signal). Pays one extra LLM
+        # forward per question; off by default.
+        self.use_hyde            = use_hyde
+        self.hyde_max_new_tokens = hyde_max_new_tokens
+        self._hyde_cache: dict[str, str] = {}
 
         # Lazily constructed — only if use_live_fallback=True so the
         # wikipedia import isn't required for normal offline-only use.
@@ -318,10 +335,11 @@ class RAGStrategy(Strategy):
         rer_tag  = "|rerank" if use_reranker else ""
         hyb_tag  = "|hybrid" if use_hybrid else ""
         mq_tag   = "|mq"     if use_multi_query else ""
+        hyde_tag = "|hyde"   if use_hyde else ""
         live_tag = "|live"   if use_live_fallback else ""
         self.name = (
             f"rag[{getattr(llm, 'name', 'llm')}"
-            f"|k={k}|{style.value}{path_tag}{cat_tag}{hyb_tag}{mq_tag}{rer_tag}{gate_tag}{live_tag}]"
+            f"|k={k}|{style.value}{path_tag}{cat_tag}{hyb_tag}{mq_tag}{hyde_tag}{rer_tag}{gate_tag}{live_tag}]"
         )
 
     def warm_up(self) -> None:
@@ -348,6 +366,15 @@ class RAGStrategy(Strategy):
         if self.use_hybrid:
             common_kwargs["hybrid"] = True
 
+        # HyDE: produce a passage-shaped hypothesis once per question and
+        # use it as the dense query. BM25 always gets the raw question so
+        # its lexical signal (proper nouns, dates) is preserved.
+        hyde_hypothesis: Optional[str] = None
+        if self.use_hyde:
+            hyde_hypothesis = self._hypothesize(inp)
+            if self.use_hybrid:
+                common_kwargs["bm25_query"] = inp.question
+
         if self.use_multi_query:
             # Correct pipeline for multi-query + optional rerank (audit §5):
             #   1. Retrieve top-N per query (no cross-encoder — rerank=False).
@@ -356,7 +383,15 @@ class RAGStrategy(Strategy):
             #      fused pool — not once per query (5× wasteful, narrow pools).
             # The retriever's own internal fusion (hybrid) still happens
             # inside each per-query retrieve() call.
-            queries = _build_multi_queries(inp)
+            if hyde_hypothesis is not None:
+                # Anchor the multi-query fan-out on the hypothesis; per-option
+                # queries combine the hypothesis with each option string so the
+                # answer-entity gets fair lexical weight in passage-space.
+                queries = [hyde_hypothesis] + [
+                    f"{hyde_hypothesis} {opt}" for opt in inp.options
+                ]
+            else:
+                queries = _build_multi_queries(inp)
 
             # Strip rerank and k from per-query kwargs; k is passed
             # explicitly as pool_k below and reranking is handled after fusion.
@@ -387,7 +422,7 @@ class RAGStrategy(Strategy):
             # ``query`` for logging is a preview of the first queries.
             query = " | ".join(queries[:3]) + (" | …" if len(queries) > 3 else "")
         else:
-            query = _build_query(inp)
+            query = hyde_hypothesis if hyde_hypothesis is not None else _build_query(inp)
             passages = self.retriever.retrieve(query, **common_kwargs)
 
         # 2. Path-aware low-score gate (audit §4).
@@ -691,6 +726,9 @@ class RAGStrategy(Strategy):
         before being returned; if the result is empty after stripping we
         fall back to the bare question to guarantee a non-empty query.
 
+        Per-instance cached on the question text — repeat questions (e.g.
+        live evaluation re-runs) reuse the rewrite without a fresh LLM call.
+
         Args:
             inp: the current question being answered.
 
@@ -699,6 +737,10 @@ class RAGStrategy(Strategy):
             e.g. ``"Xenia ancient Greece hospitality"`` instead of the
             full 30-word question text.
         """
+        cached = self._live_query_cache.get(inp.question)
+        if cached is not None:
+            return cached
+
         import re
         prompt = (
             "Extract 2-5 Wikipedia search keywords from this trivia question. "
@@ -719,6 +761,46 @@ class RAGStrategy(Strategy):
             text = re.sub(
                 r"<think>.*?(?:</think>|$)", "", resp.text, flags=re.DOTALL
             ).strip()
-            return text if text else inp.question
+            result = text if text else inp.question
         except Exception:  # noqa: BLE001 — never crash the answer pipeline
-            return inp.question
+            result = inp.question
+        self._live_query_cache[inp.question] = result
+        return result
+
+    def _hypothesize(self, inp: StrategyInput) -> str:
+        """One LLM forward pass to produce a passage-shaped hypothesis (HyDE).
+
+        Returns a single Wikipedia-style sentence that would answer the
+        question. Used as the dense-retrieval query so the embedding sits
+        in passage-space alongside the corpus, not in question-space.
+
+        Cached per-instance on the question text so the multi-query
+        fan-out only pays the LLM cost once.
+        """
+        cached = self._hyde_cache.get(inp.question)
+        if cached is not None:
+            return cached
+
+        import re
+        prompt = (
+            "Write one factual sentence that would appear in a Wikipedia article "
+            "and would answer this question. Do not refuse, do not hedge — write "
+            "your best guess as if you knew. One sentence only.\n\n"
+            f"Question: {inp.question}\n"
+            "Sentence:"
+        )
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            resp = self.llm.generate(
+                messages,
+                max_new_tokens=self.hyde_max_new_tokens,
+                temperature=0.0,
+            )
+            text = re.sub(
+                r"<think>.*?(?:</think>|$)", "", resp.text, flags=re.DOTALL
+            ).strip()
+            result = text if text else inp.question
+        except Exception:  # noqa: BLE001
+            result = inp.question
+        self._hyde_cache[inp.question] = result
+        return result

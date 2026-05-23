@@ -31,7 +31,7 @@ Usage
 """
 from __future__ import annotations
 
-import threading
+import concurrent.futures as _cf
 from typing import Optional
 
 from ..config import Category
@@ -41,9 +41,10 @@ from .corpus import Article, clean_wikipedia_text
 class LiveSearchFallback:
     """Query Wikipedia API in real-time and return Article objects.
 
-    Thread-safety: ``search()`` is re-entrant — each call runs its own
-    daemon thread for the timeout guard, so multiple concurrent callers
-    (e.g. in an evaluation loop) do not interfere.
+    Thread-safety: ``search()`` is re-entrant — each call uses its own
+    one-worker ``ThreadPoolExecutor`` for the timeout guard, so multiple
+    concurrent callers (e.g. in an evaluation loop) do not interfere and
+    no leaked daemon threads pile up across calls.
 
     Args:
         timeout_seconds: hard wall-clock limit per ``search()`` call.
@@ -86,8 +87,8 @@ class LiveSearchFallback:
     ) -> list[Article]:
         """Search Wikipedia live for articles relevant to ``query``.
 
-        The call is guarded by a daemon-thread timeout so it never blocks
-        the game loop beyond ``self.timeout_seconds``.
+        The call is guarded by a ``concurrent.futures`` executor timeout
+        so it never blocks the game loop beyond ``self.timeout_seconds``.
 
         Args:
             query: free-text query string (typically the question text, or
@@ -105,27 +106,20 @@ class LiveSearchFallback:
         if not query or not query.strip():
             return []
 
-        box: dict[str, object] = {}
-
-        def _worker() -> None:
+        # ``future.cancel()`` can't preempt an in-flight HTTP call (Python
+        # offers no cross-thread interrupt for native code), but the
+        # executor's context-manager exit cleans up references promptly
+        # and a fresh worker is created on the next call — no leaked
+        # daemon threads as in the prior implementation.
+        with _cf.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self._fetch, query, category=category)
             try:
-                box["result"] = self._fetch(query, category=category)
-            except Exception as exc:  # noqa: BLE001
-                box["error"] = exc
-
-        th = threading.Thread(target=_worker, daemon=True)
-        th.start()
-        th.join(self.timeout_seconds)
-
-        if th.is_alive():
-            # Thread is still running — timeout.  It will eventually finish
-            # in the background; we just discard the result.
-            return []
-
-        if "error" in box:
-            return []
-
-        return box.get("result", [])  # type: ignore[return-value]
+                return future.result(timeout=self.timeout_seconds)
+            except _cf.TimeoutError:
+                future.cancel()
+                return []
+            except Exception:   # noqa: BLE001
+                return []
 
     # ── Internal fetch logic ──────────────────────────────────────────────
 

@@ -96,6 +96,12 @@ def _make_retriever(dim: int = DIM) -> MagicMock:
         retriever._bm25._chunks.extend(chunks)
 
     retriever.append_chunks.side_effect = _append_chunks
+    # Mirror the real Retriever.iter_sources() so IndexGrower's dedup
+    # works against the mock (the live impl reads {c.source for c in
+    # self._index._chunks}).
+    retriever.iter_sources.side_effect = lambda: {
+        c.source for c in retriever._index._chunks
+    }
     retriever._appended_chunks = appended_chunks
     return retriever
 

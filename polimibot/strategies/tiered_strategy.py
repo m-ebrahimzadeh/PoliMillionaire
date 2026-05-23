@@ -1,7 +1,9 @@
 """TieredStrategy — dispatch questions by difficulty tier, with escalation.
 
 Routing logic (evaluated in order):
-  1. Category == MATHS  → maths_override (if provided), else medium tier
+  1. category in category_overrides → that strategy (e.g. Wikidata for ENTERTAINMENT,
+     ToolStrategy/AgentStrategy for MATHS). ``maths_override`` is folded into
+     this map for back-compat.
   2. level <= easy_max  → easy strategy
   3. level <= medium_max → medium strategy
   4. else               → hard strategy
@@ -37,7 +39,11 @@ class TieredStrategy(Strategy):
         medium: strategy for mid-difficulty questions  (e.g. RAGStrategy)
         hard:   strategy for high-difficulty questions (e.g. EnsembleStrategy)
         breakpoints: level thresholds separating tiers.
-        maths_override: if set, ALL maths-category questions go here regardless of level.
+        maths_override: legacy shortcut for ``category_overrides[Category.MATHS]``.
+            Kept for back-compat; ``category_overrides`` wins on conflict.
+        category_overrides: per-category strategy override map. A category present
+            in this map bypasses the level-tier dispatch entirely. Empty by
+            default — categories not in the map fall through to easy/medium/hard.
         escalation_threshold: if extras["margin"] < this after the routed answer,
             escalate to the next tier. None disables escalation.
     """
@@ -50,41 +56,59 @@ class TieredStrategy(Strategy):
         *,
         breakpoints: TierBreakpoints = TierBreakpoints(),
         maths_override: Optional[Strategy] = None,
+        category_overrides: Optional[dict[Category, Strategy]] = None,
         escalation_threshold: Optional[float] = None,
     ) -> None:
         self.easy = easy
         self.medium = medium
         self.hard = hard
         self.breakpoints = breakpoints
-        self.maths_override = maths_override
         self.escalation_threshold = escalation_threshold
+
+        # Merge the legacy maths_override into the new map. The new map
+        # wins on conflict so callers migrating to the new API can replace
+        # the legacy behaviour without removing the old kwarg from their
+        # config.
+        overrides: dict[Category, Strategy] = {}
+        if maths_override is not None:
+            overrides[Category.MATHS] = maths_override
+        if category_overrides:
+            overrides.update(category_overrides)
+        self.category_overrides = overrides
+        # Preserve the legacy attribute so external code that still reads
+        # ``.maths_override`` (e.g. logging) keeps working.
+        self.maths_override = self.category_overrides.get(Category.MATHS)
+
+        override_tag = ""
+        if self.category_overrides:
+            parts = [f"{cat.value}={s.name}" for cat, s in self.category_overrides.items()]
+            override_tag = "|" + ",".join(parts)
         self.name = (
             f"tiered["
             f"easy={easy.name}|"
             f"med={medium.name}|"
             f"hard={hard.name}"
-            + (f"|maths={maths_override.name}" if maths_override else "")
+            + override_tag
             + (f"|esc={escalation_threshold}" if escalation_threshold else "")
             + "]"
         )
 
+    def _all_substrategies(self) -> list[Strategy]:
+        out: list[Strategy] = [self.easy, self.medium, self.hard]
+        out.extend(self.category_overrides.values())
+        return out
+
     def warm_up(self) -> None:
         """Warm up all unique sub-strategies."""
         seen: set[int] = set()
-        candidates = [self.easy, self.medium, self.hard]
-        if self.maths_override:
-            candidates.append(self.maths_override)
-        for s in candidates:
+        for s in self._all_substrategies():
             if id(s) not in seen:
                 seen.add(id(s))
                 s.warm_up()
 
     def shutdown(self) -> None:
         seen: set[int] = set()
-        candidates = [self.easy, self.medium, self.hard]
-        if self.maths_override:
-            candidates.append(self.maths_override)
-        for s in candidates:
+        for s in self._all_substrategies():
             if id(s) not in seen:
                 seen.add(id(s))
                 s.shutdown()
@@ -139,8 +163,9 @@ class TieredStrategy(Strategy):
 
     def _tier_label(self, strategy: Strategy) -> str:
         """Return a short label for which tier slot this strategy occupies."""
-        if strategy is self.maths_override:
-            return "maths"
+        for cat, s in self.category_overrides.items():
+            if strategy is s:
+                return f"override:{cat.value}"
         if strategy is self.easy:
             return "easy"
         if strategy is self.medium:
@@ -151,9 +176,14 @@ class TieredStrategy(Strategy):
 
     def _route(self, inp: StrategyInput) -> tuple[Strategy, Optional[Strategy]]:
         """Return (primary_strategy, next_tier_or_None)."""
-        # Maths override always wins on category
-        if inp.category == Category.MATHS and self.maths_override is not None:
-            return self.maths_override, None
+        # Category override wins over the level-tier dispatch. Escalation
+        # is intentionally disabled when an override fires — overrides are
+        # category-specialist paths whose answers shouldn't be second-
+        # guessed by a generic ensemble.
+        if inp.category is not None:
+            override = self.category_overrides.get(inp.category)
+            if override is not None:
+                return override, None
 
         bp = self.breakpoints
         if inp.level <= bp.easy_max_level:

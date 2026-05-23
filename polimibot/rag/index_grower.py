@@ -315,7 +315,7 @@ class IndexGrower:
         Builds a set of ``Chunk.source`` values so ``buffer()`` can do O(1)
         dedup without iterating all chunks every call.
         """
-        return {c.source for c in self._retriever._index._chunks}
+        return self._retriever.iter_sources()
 
     def _append_to_corpus(self, articles: list[Article]) -> None:
         """Append ``articles`` to the raw corpus JSONL.

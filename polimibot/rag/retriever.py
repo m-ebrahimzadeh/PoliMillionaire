@@ -135,6 +135,7 @@ class Retriever:
         *,
         reranker: Optional[CrossEncoderReranker] = None,
         bm25: Optional[BM25Index] = None,
+        rrf_weights: Optional[tuple[float, float]] = None,
     ) -> None:
         if index.dim != embedder.dim:
             raise ValueError(
@@ -145,6 +146,10 @@ class Retriever:
         self._embedder = embedder
         self._reranker = reranker
         self._bm25 = bm25
+        # Optional (dense_w, bm25_w) weighting for RRF fusion in hybrid
+        # mode. None ⇒ classic 1:1 symmetric fusion. Bump bm25_w for
+        # entity-heavy queries; bump dense_w for conceptual ones.
+        self._rrf_weights = rrf_weights
 
     @property
     def has_reranker(self) -> bool:
@@ -172,6 +177,7 @@ class Retriever:
         query: str,
         k: int = 3,
         *,
+        bm25_query: Optional[str] = None,
         category: Optional[str] = None,
         hybrid: bool = False,
         rerank: bool = False,
@@ -181,8 +187,14 @@ class Retriever:
         """Return top-k (Chunk, score) for the given query string.
 
         Args:
-            query: free-text query.
+            query: free-text query used for DENSE retrieval (and BM25 too
+                when ``bm25_query`` is None — the symmetric default).
             k: number of passages to return.
+            bm25_query: optional LEXICAL query string used only for the
+                BM25 path inside ``hybrid``. Useful when the dense path
+                wants a hypothesis (HyDE) but the BM25 path needs the
+                user's original lexical signal (proper nouns, dates).
+                Ignored when ``hybrid=False``.
             category: when set, restrict results to chunks whose
                 ``Chunk.category`` matches this string.
             hybrid: when True, query BOTH the dense index AND the
@@ -234,12 +246,14 @@ class Retriever:
 
         # 2. Optional BM25 retrieval + RRF fusion.
         if hybrid:
+            lex_query = bm25_query if bm25_query is not None else query
             bm25_hits = self._bm25.search(  # type: ignore[union-attr]
-                query, k=target_pool, category=category,
+                lex_query, k=target_pool, category=category,
             )
             pool = reciprocal_rank_fusion(
                 [dense_hits, bm25_hits],
                 k=target_pool,
+                weights=self._rrf_weights,
             )
         else:
             pool = dense_hits[:target_pool]
@@ -345,6 +359,14 @@ class Retriever:
     def n_chunks(self) -> int:
         """How many chunks are indexed."""
         return self._index.n_chunks
+
+    def iter_sources(self) -> set[str]:
+        """Return the set of source article titles currently indexed.
+
+        Exposed so callers (notably IndexGrower) can dedup new articles
+        without reaching into ``_index._chunks`` directly.
+        """
+        return {c.source for c in self._index._chunks}
 
     @classmethod
     def from_saved(
