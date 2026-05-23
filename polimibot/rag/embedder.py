@@ -13,12 +13,24 @@ from __future__ import annotations
 
 import numpy as np
 from dataclasses import dataclass
+from typing import Optional
 
 
-# Model-specific instruction prefix used on QUERIES (not passages).
-# Switching model? Update both ``model_name`` and ``query_prefix`` on the
-# EmbedderSpec; using the wrong prefix silently degrades cosine scores.
-_BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+def _prefixes_for_model(model_name: str) -> tuple[str, str]:
+    """Return ``(query_prefix, passage_prefix)`` for a model family.
+
+    Asymmetric retrievers (BGE, E5) corrupt cosine scores when the
+    query/passage prefixes don't match what the model was trained with.
+    This map keeps the prefixes in sync with the model_name so callers
+    only need to specify the model.
+    """
+    name = model_name.lower()
+    if "bge" in name:
+        return ("Represent this sentence for searching relevant passages: ", "")
+    if "e5" in name:
+        return ("query: ", "passage: ")
+    # MiniLM, mpnet, and other symmetric models — no prefixes.
+    return ("", "")
 
 
 @dataclass(frozen=True)
@@ -26,17 +38,25 @@ class EmbedderSpec:
     """Config for the embedding model. Frozen → safe to share across objects.
 
     ``query_prefix`` / ``passage_prefix`` are prepended before encoding.
-    For BGE: query prefix is the instruction string above, passage prefix
-    is empty. For E5: ``"query: "`` / ``"passage: "``. For MiniLM: both
-    empty. Mismatches between indexer and retriever corrupt scores — the
-    manifest carries both values and ``_check_manifest_compat`` hard-fails
-    on drift.
+    Leave them as ``None`` to let :func:`_prefixes_for_model` derive the
+    right values from ``model_name`` (BGE → instruction prefix; E5 →
+    ``"query: "/"passage: "``; MiniLM/mpnet → empty). Mismatches between
+    indexer and retriever corrupt scores — the manifest carries both
+    values and ``_check_manifest_compat`` hard-fails on drift.
     """
     model_name: str = "BAAI/bge-small-en-v1.5"   # 384-dim, ~130 MB, CPU-friendly
     batch_size: int = 64
     normalize: bool = True   # L2-normalize → cosine sim becomes dot product
-    query_prefix: str = _BGE_QUERY_PREFIX
-    passage_prefix: str = ""
+    query_prefix: Optional[str] = None    # None → auto-derive from model_name
+    passage_prefix: Optional[str] = None  # None → auto-derive from model_name
+
+    def __post_init__(self) -> None:
+        if self.query_prefix is None or self.passage_prefix is None:
+            q, p = _prefixes_for_model(self.model_name)
+            if self.query_prefix is None:
+                object.__setattr__(self, "query_prefix", q)
+            if self.passage_prefix is None:
+                object.__setattr__(self, "passage_prefix", p)
 
 
 class Embedder:

@@ -374,8 +374,8 @@ else:
           f'(avg {len(_all_chunks) // max(len(_articles), 1)} per article)')
 
     # ── Step 3: embed ────────────────────────────────────────────────
-    print('\\nLoading embedding model (bge-small-en-v1.5)…')
-    _spec = _EmbedderSpec()        # uses default: BAAI/bge-small-en-v1.5
+    print(f'\\nLoading embedding model ({EMBEDDER_MODEL})…')
+    _spec = _EmbedderSpec(model_name=EMBEDDER_MODEL)
     _embedder = _Embedder(_spec)
     print(f'  dim={_embedder.dim}  batch={_spec.batch_size}')
 
@@ -499,6 +499,12 @@ RAG_USE_RERANKER       = False                           # set True to load + us
 RERANKER_MODEL         = 'BAAI/bge-reranker-base'        # trivia-friendly, ~100 MB
 RERANK_OVERSEARCH      = 5                               # dense pool size = k × this
 
+# Embedding model — single source of truth for index build (Section 0.4),
+# index load (Section 1.3), and the IndexGrower embedder (Section 1.4).
+# Switching models requires rebuilding the index (REBUILD_INDEX=True in 0.4).
+# Prefixes auto-derive from the model name (BGE / E5 / symmetric MiniLM-style).
+EMBEDDER_MODEL         = 'BAAI/bge-small-en-v1.5'        # 384-dim, asymmetric
+
 # Hybrid + multi-query (lexical complement + per-option queries, both via RRF)
 RAG_USE_HYBRID         = False                           # dense + BM25 fused per query
 RAG_USE_MULTI_QUERY    = True                            # 1 question + 4 per-option queries (default on per audit §3)
@@ -604,7 +610,7 @@ if need_retriever:
         from polimibot.rag.retriever import Retriever
         from polimibot.rag.embedder import EmbedderSpec
         retriever = Retriever.from_saved(
-            RAG_INDEX_PATH, embedder_spec=EmbedderSpec(),
+            RAG_INDEX_PATH, embedder_spec=EmbedderSpec(model_name=EMBEDDER_MODEL),
         )
         if reranker_obj is not None:
             retriever._reranker = reranker_obj   # late-attach
@@ -650,8 +656,8 @@ baseline = BaselineLLMStrategy(
 _grower = None
 if USE_LIVE_FALLBACK and need_retriever and not USE_MOCK:
     from polimibot.rag.index_grower import IndexGrower
-    from polimibot.rag.embedder import Embedder, EmbedderSpec
-    _embedder_for_grower = Embedder(EmbedderSpec())   # same spec as retriever build
+    from polimibot.rag.embedder import Embedder
+    _embedder_for_grower = Embedder(retriever._embedder.spec)   # exact spec used to load retriever
     _grower = IndexGrower(
         retriever, _embedder_for_grower, RAG_INDEX_PATH,
         corpus_path=PATHS.cache_dir / 'corpus.jsonl',

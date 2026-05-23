@@ -223,8 +223,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--chunk-size", type=int, default=300,
                    dest="chunk_size")
     p.add_argument("--overlap", type=int, default=50)
-    p.add_argument("--model", default="all-MiniLM-L6-v2",
-                   help="Sentence-transformers model name")
+    p.add_argument("--model", default=EmbedderSpec().model_name,
+                   help="Sentence-transformers model name (default matches EmbedderSpec)")
     p.add_argument("--skip-if-exists", action="store_true", dest="skip_if_exists",
                    help="Exit early if the FAISS index already exists on disk")
     p.add_argument("--no-bm25", action="store_true", dest="no_bm25",
