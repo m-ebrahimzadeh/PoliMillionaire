@@ -717,25 +717,27 @@ class RAGStrategy(Strategy):
         )
 
     def _extract_search_query(self, inp: StrategyInput) -> str:
-        """Ask the LLM to distil the MCQ into 2-5 focused Wikipedia keywords.
+        """Ask the LLM to name the single Wikipedia article that answers the question.
 
-        Uses a minimal system-free chat turn so the model stays in
-        instruction-following mode without any extra context overhead.
-        The response is stripped of Qwen3 ``<think>…</think>`` blocks —
-        including *truncated* blocks that were cut off by the token budget —
-        before being returned; if the result is empty after stripping we
-        fall back to the bare question to guarantee a non-empty query.
+        Rather than extracting a bag of keywords (the older shape, which mixed
+        question terms with option terms and pulled Wikipedia toward umbrella
+        articles), this prompt asks for a single entity-specific article title —
+        the most direct mapping to a Wikipedia URL. Three few-shot examples
+        anchor the output shape (short, capitalised-as-title, no commas).
 
-        Per-instance cached on the question text — repeat questions (e.g.
-        live evaluation re-runs) reuse the rewrite without a fresh LLM call.
+        Crucially, the four MCQ options are NOT shown to the LLM. The options
+        contain distractor entities; when the LLM saw them in the prior prompt
+        it dutifully extracted keywords from them, broadening the query.
+
+        Returns the question text as a safe fallback when generation fails or
+        produces empty output.
 
         Args:
             inp: the current question being answered.
 
         Returns:
-            A short keyword string suitable for ``wikipedia.search()``,
-            e.g. ``"Xenia ancient Greece hospitality"`` instead of the
-            full 30-word question text.
+            A short article-title-shaped string suitable for ``wikipedia.search()``,
+            e.g. ``"Greek fire"`` instead of the full 30-word question text.
         """
         cached = self._live_query_cache.get(inp.question)
         if cached is not None:
@@ -743,24 +745,41 @@ class RAGStrategy(Strategy):
 
         import re
         prompt = (
-            "Extract 2-5 Wikipedia search keywords from this trivia question. "
-            "Output ONLY the keywords, nothing else.\n\n"
+            "Output the single most specific Wikipedia article title that would "
+            "answer this trivia question. Output ONLY the title — 1 to 4 words, "
+            "no commas, no lists, no explanations.\n\n"
+            "Examples:\n"
+            "Question: How did the Byzantines use Greek fire during land battles?\n"
+            "Title: Greek fire\n\n"
+            "Question: In which year did Julius Caesar cross the Rubicon?\n"
+            "Title: Crossing of the Rubicon\n\n"
+            "Question: What is the chemical symbol for gold?\n"
+            "Title: Gold\n\n"
             f"Question: {inp.question}\n"
-            f"Options: {', '.join(inp.options)}\n"
+            "Title:"
             "/no_think"
         )
         messages = [{"role": "user", "content": prompt}]
         try:
-            # 200 tokens: generous budget so the keywords are never cut off.
-            # /no_think suppresses Qwen3 thinking traces at the model level;
-            # the regex below acts as a safety net for any residual <think> blocks.
-            resp = self.llm.generate(messages, max_new_tokens=200, temperature=0.0)
-            # Strip Qwen3 thinking traces — both complete (<think>…</think>)
-            # *and* truncated ones (<think>… with no closing tag) that can
-            # appear when max_new_tokens cuts off mid-block.
+            # 40 tokens: titles are short; tight budget discourages the model
+            # from drifting into multi-line explanations even with /no_think.
+            # The regex below still strips any <think>…</think> residue from
+            # models that ignore the directive.
+            resp = self.llm.generate(messages, max_new_tokens=40, temperature=0.0)
+            # Strip Qwen3 thinking traces — complete and truncated.
             text = re.sub(
                 r"<think>.*?(?:</think>|$)", "", resp.text, flags=re.DOTALL
             ).strip()
+            # Defensive shaping: if the model produced multiple lines despite
+            # instructions, keep only the first non-empty line (the actual title).
+            # Trim leading "Title:" if the model echoed the prompt label.
+            for line in text.splitlines():
+                line = line.strip()
+                if line.lower().startswith("title:"):
+                    line = line[len("title:"):].strip()
+                if line:
+                    text = line
+                    break
             result = text if text else inp.question
         except Exception:  # noqa: BLE001 — never crash the answer pipeline
             result = inp.question
