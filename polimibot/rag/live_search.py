@@ -117,8 +117,17 @@ class LiveSearchFallback:
                 return future.result(timeout=self.timeout_seconds)
             except _cf.TimeoutError:
                 future.cancel()
+                print(f"[live_search] TIMEOUT after {self.timeout_seconds}s on query={query!r}")
                 return []
-            except Exception:   # noqa: BLE001
+            except Exception as _exc:   # noqa: BLE001
+                # Diagnostic: surface the real exception class so we can
+                # distinguish HTTPError / ChunkedEncodingError / SSL blip /
+                # library bug / true no-result from each other. Otherwise
+                # every failure looks like "no articles found", in distinguishable, this is not.
+                print(
+                    f"[live_search] EXCEPTION in search() wrapper: "
+                    f"{type(_exc).__name__}: {_exc}  | query={query!r}"
+                )
                 return []
 
     # ── Internal fetch logic ──────────────────────────────────────────────
@@ -152,10 +161,20 @@ class LiveSearchFallback:
 
         try:
             titles = wikipedia.search(query, results=self.search_results)
-        except Exception:  # noqa: BLE001
+        except Exception as _exc:  # noqa: BLE001
+            # Diagnostic: name the real exception (HTTPError, SSLError, JSON
+            # parse, ChunkedEncodingError, library internal …) so we can
+            # decide whether to retry, bypass, or accept as no-result.
+            print(
+                f"[live_search] EXCEPTION in wikipedia.search(): "
+                f"{type(_exc).__name__}: {_exc}  | query={query!r}"
+            )
             return []
 
         if not titles:
+            # Empty but no exception — Wikipedia legitimately found nothing.
+            # Logged so we can distinguish "real empty" from "exception-as-empty".
+            print(f"[live_search] EMPTY (no exception) for query={query!r}")
             return []
 
         articles: list[Article] = []
@@ -207,5 +226,13 @@ class LiveSearchFallback:
                 url=url,
             )
 
-        except Exception:  # noqa: BLE001 — PageError, DisambiguationError, network
+        except Exception as _exc:  # noqa: BLE001 — PageError, DisambiguationError, network
+            # Diagnostic: per-article failure. Most common expected types are
+            # PageError (article moved/deleted) and DisambiguationError
+            # (ambiguous title) — both are normal. HTTPError or network
+            # errors point at the same root cause as in _fetch above.
+            print(
+                f"[live_search] EXCEPTION in _fetch_one({title!r}): "
+                f"{type(_exc).__name__}: {_exc}"
+            )
             return None
