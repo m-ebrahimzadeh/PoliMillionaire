@@ -164,18 +164,42 @@ class LiveSearchFallback:
         # project UA gets the standard quota — a free quality improvement
         # at zero engineering risk it is.
         wikipedia.set_user_agent("PoliMillionaire-NLP-2025-26/1.0")
+        # Client-side throttle: stay under Wikipedia's burst rate-limit at
+        # the source. Diagnostic measurement (direct ``requests`` call):
+        # ~10 unauthenticated requests in <4 s triggers HTTP 429 with
+        # ``Retry-After: 55``. A 1 s min_wait keeps us under that threshold
+        # while adding only ~3 s of cumulative latency per question
+        # (1 search + up to 2 article fetches). Polite Wikipedia citizen,
+        # this makes us.
+        import datetime as _dt
+        wikipedia.set_rate_limiting(
+            rate_limit=True,
+            min_wait=_dt.timedelta(seconds=1),
+        )
 
-        # Single-retry on transient failures of ``wikipedia.search()``.
-        # The diagnostic logs identified ``JSONDecodeError`` clusters
-        # (empty HTTP body on rate-limit) as the dominant search-call
-        # failure mode. A 1 s sleep typically refills Wikipedia's token
-        # bucket enough to let the retry through. Truly bad queries (no
-        # such article) reach the ``EMPTY`` branch below, not this one.
+        # Retry policy for ``wikipedia.search()``:
+        #   * ``JSONDecodeError`` is the library's manifestation of HTTP 429
+        #     (Wikipedia returns a 429 with a 228-byte error body that the
+        #     library fails to surface as such). Retry-After on those
+        #     responses is ~55 s — a short retry is wasted time and bad
+        #     citizenship. Give up immediately; the natural inter-question
+        #     gap allows the cooldown to elapse organically.
+        #   * Other transient exceptions (ConnectionError, timeouts, SSL
+        #     blips) get one retry after a sleep — those are genuinely
+        #     recoverable on fresh attempt.
+        import json as _json
         titles: list = []
         for attempt in range(2):
             try:
                 titles = wikipedia.search(query, results=self.search_results)
                 break
+            except _json.JSONDecodeError as _exc:
+                print(
+                    f"[live_search] RATE LIMIT in wikipedia.search() "
+                    f"(429-equivalent, not retrying): {_exc}  "
+                    f"| query={query!r}"
+                )
+                return []
             except Exception as _exc:  # noqa: BLE001
                 is_last = (attempt == 1)
                 if is_last:
@@ -233,6 +257,7 @@ class LiveSearchFallback:
         Returns ``None`` on terminal failure; caller skips to next title.
         """
         import time
+        import json as _json
         try:
             import wikipedia
         except ImportError:
@@ -282,6 +307,17 @@ class LiveSearchFallback:
             except wikipedia.exceptions.PageError as _exc:
                 # Page truly doesn't exist — terminal, retry won't help.
                 print(f"[live_search] PageError on {fetched_title!r}: {_exc}")
+                return None
+            except _json.JSONDecodeError as _exc:
+                # Rate-limit signal (HTTP 429 manifesting as empty-body
+                # JSON parse failure). Retry-After is ~55 s — a 1 s retry
+                # is wasted. Skip immediately so we don't pile on calls
+                # to an already-throttled endpoint.
+                print(
+                    f"[live_search] RATE LIMIT in _fetch_one"
+                    f"({fetched_title!r}) (429-equivalent, not retrying): "
+                    f"{_exc}"
+                )
                 return None
             except Exception as _exc:  # noqa: BLE001
                 is_last = (attempt == 1)
