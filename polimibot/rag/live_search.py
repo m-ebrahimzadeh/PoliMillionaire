@@ -152,6 +152,7 @@ class LiveSearchFallback:
         list; ``PageError`` is skipped.  Any single-article failure does not
         abort the whole batch.
         """
+        import time
         try:
             import wikipedia  # lazy — only needed at game time when triggered
         except ImportError:
@@ -159,17 +160,31 @@ class LiveSearchFallback:
 
         wikipedia.set_lang("en")
 
-        try:
-            titles = wikipedia.search(query, results=self.search_results)
-        except Exception as _exc:  # noqa: BLE001
-            # Diagnostic: name the real exception (HTTPError, SSLError, JSON
-            # parse, ChunkedEncodingError, library internal …) so we can
-            # decide whether to retry, bypass, or accept as no-result.
-            print(
-                f"[live_search] EXCEPTION in wikipedia.search(): "
-                f"{type(_exc).__name__}: {_exc}  | query={query!r}"
-            )
-            return []
+        # Single-retry on transient failures of ``wikipedia.search()``.
+        # The diagnostic logs identified ``JSONDecodeError`` clusters
+        # (empty HTTP body on rate-limit) as the dominant search-call
+        # failure mode. A 1 s sleep typically refills Wikipedia's token
+        # bucket enough to let the retry through. Truly bad queries (no
+        # such article) reach the ``EMPTY`` branch below, not this one.
+        titles: list = []
+        for attempt in range(2):
+            try:
+                titles = wikipedia.search(query, results=self.search_results)
+                break
+            except Exception as _exc:  # noqa: BLE001
+                is_last = (attempt == 1)
+                if is_last:
+                    print(
+                        f"[live_search] EXCEPTION in wikipedia.search() "
+                        f"(after retry): {type(_exc).__name__}: {_exc}  "
+                        f"| query={query!r}"
+                    )
+                    return []
+                print(
+                    f"[live_search] RETRY wikipedia.search() after "
+                    f"{type(_exc).__name__}: {_exc}  | query={query!r}"
+                )
+                time.sleep(1.0)
 
         if not titles:
             # Empty but no exception — Wikipedia legitimately found nothing.
@@ -195,44 +210,98 @@ class LiveSearchFallback:
     ) -> Optional[Article]:
         """Fetch a single Wikipedia article (summary or full page).
 
-        Returns ``None`` on any failure — the caller skips and tries the next
-        candidate title.
+        Two recovery mechanisms, beyond bare try/except, this method has:
+
+        1. ``DisambiguationError``: the library's exception exposes
+           ``exc.options`` — a list of candidate titles. Retry with the
+           first option (MediaWiki's relevance-sorted top choice). Saves
+           common cases like ``"Achaeans"`` → ``"Achaeans (Homer)"``,
+           ``"Temple of Olympian Zeus"`` → ``"Temple of Olympian Zeus, Athens"``.
+
+        2. Transient network/parse failures (``JSONDecodeError`` on empty
+           body when rate-limited, ``HTTPError``, ``ConnectionError``):
+           sleep 1 s and retry once. Most rate-limit clusters refill
+           within a couple of seconds, so a single short retry recovers
+           the majority. ``PageError`` is treated as terminal — retrying
+           a non-existent page won't conjure it into existence.
+
+        Returns ``None`` on terminal failure; caller skips to next title.
         """
+        import time
         try:
             import wikipedia
         except ImportError:
             return None
 
-        try:
+        def _do_summary(t: str):
             if self.use_summary_only:
                 # ``auto_suggest=False`` prevents Wikipedia from silently
                 # redirecting to a different article (e.g. typo correction
                 # that picks a completely different entity).
-                text = wikipedia.summary(title, auto_suggest=False)
-                url  = f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
+                txt = wikipedia.summary(t, auto_suggest=False)
+                u   = f"https://en.wikipedia.org/wiki/{t.replace(' ', '_')}"
             else:
-                page = wikipedia.page(title, auto_suggest=False)
-                text = page.content
-                url  = page.url
+                page = wikipedia.page(t, auto_suggest=False)
+                txt  = page.content
+                u    = page.url
+            return txt, u
 
-            text = clean_wikipedia_text(text)
-            if not text.strip():
+        fetched_title = title
+        text: Optional[str] = None
+        url: Optional[str] = None
+        for attempt in range(2):
+            try:
+                text, url = _do_summary(fetched_title)
+                break
+            except wikipedia.exceptions.DisambiguationError as _exc:
+                # Pick the first option from the disambiguation list and
+                # retry. The for-loop's attempt counter still advances, so
+                # we cap at one disambig hop before giving up — prevents
+                # infinite loops on pathological titles.
+                options = list(_exc.options) if _exc.options else []
+                if not options:
+                    print(
+                        f"[live_search] DisambiguationError on "
+                        f"{fetched_title!r} with no options — giving up"
+                    )
+                    return None
+                new_title = options[0]
+                print(
+                    f"[live_search] DisambiguationError on {fetched_title!r}; "
+                    f"retrying with {new_title!r}"
+                )
+                fetched_title = new_title
+                # Fall through to next iteration; no sleep needed (this
+                # isn't a rate-limit failure, just a redirect).
+                continue
+            except wikipedia.exceptions.PageError as _exc:
+                # Page truly doesn't exist — terminal, retry won't help.
+                print(f"[live_search] PageError on {fetched_title!r}: {_exc}")
                 return None
+            except Exception as _exc:  # noqa: BLE001
+                is_last = (attempt == 1)
+                if is_last:
+                    print(
+                        f"[live_search] EXCEPTION in _fetch_one"
+                        f"({fetched_title!r}) (after retry): "
+                        f"{type(_exc).__name__}: {_exc}"
+                    )
+                    return None
+                print(
+                    f"[live_search] RETRY _fetch_one({fetched_title!r}) "
+                    f"after {type(_exc).__name__}: {_exc}"
+                )
+                time.sleep(1.0)
 
-            return Article(
-                title=title,
-                text=text,
-                category=category if category is not None else Category.HISTORY,
-                url=url,
-            )
-
-        except Exception as _exc:  # noqa: BLE001 — PageError, DisambiguationError, network
-            # Diagnostic: per-article failure. Most common expected types are
-            # PageError (article moved/deleted) and DisambiguationError
-            # (ambiguous title) — both are normal. HTTPError or network
-            # errors point at the same root cause as in _fetch above.
-            print(
-                f"[live_search] EXCEPTION in _fetch_one({title!r}): "
-                f"{type(_exc).__name__}: {_exc}"
-            )
+        if text is None:
             return None
+        text = clean_wikipedia_text(text)
+        if not text.strip():
+            return None
+
+        return Article(
+            title=fetched_title,
+            text=text,
+            category=category if category is not None else Category.HISTORY,
+            url=url,
+        )
