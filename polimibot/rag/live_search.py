@@ -159,6 +159,11 @@ class LiveSearchFallback:
             return []
 
         wikipedia.set_lang("en")
+        # Set a descriptive User-Agent per Wikipedia's UA policy. The default
+        # ``python-requests/2.x`` UA is throttled more aggressively. A named
+        # project UA gets the standard quota — a free quality improvement
+        # at zero engineering risk it is.
+        wikipedia.set_user_agent("PoliMillionaire-NLP-2025-26/1.0")
 
         # Single-retry on transient failures of ``wikipedia.search()``.
         # The diagnostic logs identified ``JSONDecodeError`` clusters
@@ -184,7 +189,7 @@ class LiveSearchFallback:
                     f"[live_search] RETRY wikipedia.search() after "
                     f"{type(_exc).__name__}: {_exc}  | query={query!r}"
                 )
-                time.sleep(1.0)
+                time.sleep(2.0)
 
         if not titles:
             # Empty but no exception — Wikipedia legitimately found nothing.
