@@ -13,17 +13,44 @@ dependencies = ["requests>=2.31"]
 include = ["polimibot*"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = [
+    "pytest>=8",
+]
+
+# Heavy model dependencies — install together, they share torch.
 llm = [
+    "torch>=2.1",
     "transformers>=4.44",
     "accelerate>=0.33",
-    "bitsandbytes>=0.43",
+    "bitsandbytes>=0.43",    # 4-bit NF4 quantisation
 ]
+
 rag = [
+    "numpy>=1.26",
     "faiss-cpu>=1.7",
     "sentence-transformers>=2.7",
     "wikipedia>=1.4",
 ]
+
+speech = [
+    "openai-whisper>=20231117",
+    "scipy>=1.11",           # WAV decoding (scipy.io.wavfile)
+    "numpy>=1.26",
+]
+
 tools = [
-    "sympy>=1.13",   # optional upgrade for MathsTool; safe_eval works without it
+    "sympy>=1.13",           # optional upgrade for MathsTool; safe_eval works without it
+]
+
+# Notebook / analysis extras (used in PoliMillionaire.ipynb and eval scripts).
+notebook = [
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "matplotlib>=3.8",
+    "openpyxl>=3.1",         # retrieval_gold Excel export/import (Section 2.7)
+]
+
+# Everything at once — convenient for a full local dev environment.
+all = [
+    "polimibot[llm,rag,speech,tools,notebook,dev]",
 ]

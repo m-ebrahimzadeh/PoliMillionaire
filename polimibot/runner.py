@@ -122,6 +122,8 @@ def play_game(
     logger: Optional[LoggerLike] = None,
     fallback_index: int = 0,
     verbose: bool = True,
+    mode: Optional[str] = None,
+    transcriber: Optional[Any] = None,
 ) -> GameResult:
     """Play one full game with the given strategy.
 
@@ -137,6 +139,10 @@ def play_game(
             silent data loss has bitten us before.**
         fallback_index: option submitted on timeout / exception.
         verbose: print per-question status to stdout.
+        mode: game mode — ``"text"`` (default) or ``"speech"``. When ``None``
+            the value from ``RUNTIME.game_mode`` is used.
+        transcriber: a :class:`~polimibot.models.speech.SpeechTranscriber`
+            instance. Required when ``mode="speech"``.
 
     Returns:
         :class:`GameResult` with totals.
@@ -164,7 +170,13 @@ def play_game(
         if verbose:
             print(f"\n=== {competition_name} | strategy={strategy.name} ===")
 
-        game = GameAdapter(client, competition_id=competition_id)
+        _mode = mode if mode is not None else _config.RUNTIME.game_mode
+        game = GameAdapter(
+            client,
+            competition_id=competition_id,
+            mode=_mode,
+            transcriber=transcriber,
+        )
         n_q = n_correct = 0
         final_level = game.current_level
         # In-memory list of every QuestionRecord — passed into GameResult
