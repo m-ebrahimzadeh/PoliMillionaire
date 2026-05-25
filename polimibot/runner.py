@@ -291,7 +291,19 @@ def play_game(
                 if out is not None and out.extras:
                     print_retrieval_summary(out.extras)
                 mark = "✓" if outcome.correct else ("·" if outcome.correct is None else "✗")
-                print(f"  → {'ABCD'[chosen_idx]}  {mark}  ({elapsed:.2f}s)")
+                # Include the strategy's reported confidence in the summary so
+                # low-confidence answers stand out at a glance — useful for
+                # spotting cases where the gate threshold might want tuning,
+                # or where the model committed shakily and got lucky.
+                conf_str = (
+                    f"  conf={out.confidence:.1%}"
+                    if out is not None and out.confidence is not None
+                    else ""
+                )
+                print(
+                    f"  → {'ABCD'[chosen_idx]}  {mark}{conf_str}  "
+                    f"({elapsed:.2f}s)"
+                )
 
             if outcome.game_over:
                 break
