@@ -5,7 +5,7 @@ from .logging_utils import GameSummaryRecord, QuestionRecord, RunLogger, RunMani
 from .strategies import RandomStrategy, Strategy, StrategyInput, StrategyOutput
 from .runner import GameResult, play_game
 from .logging_utils import NullLogger
-from .models import LLM, LLMSpec, AnswerProbabilities
+from .models import LLM, LLMSpec, AnswerProbabilities, SpeechTranscriber, TranscriberSpec
 
 __version__ = "0.1.0"
 __all__ = [
@@ -15,5 +15,5 @@ __all__ = [
     "RunLogger", "RunManifest", "NullLogger", "QuestionRecord", "GameSummaryRecord", "load_jsonl",
     "Strategy", "StrategyInput", "StrategyOutput", "RandomStrategy",
     "GameResult", "play_game",
-    "LLM", "LLMSpec", "AnswerProbabilities"
+    "LLM", "LLMSpec", "AnswerProbabilities", "SpeechTranscriber", "TranscriberSpec"
 ]

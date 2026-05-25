@@ -4,16 +4,19 @@ Anywhere else in polimibot importing `millionaire_client` directly is a
 code smell. Add a method here instead.
 """
 from __future__ import annotations
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from millionaire_client import MillionaireClient
 from millionaire_client.models import Question as ApiQuestion
 
 from .types import AnswerOutcome, GameQuestion, SessionRecord
 
+if TYPE_CHECKING:
+    from ..models.speech import SpeechTranscriber
+
 
 def _to_game_question(q: Optional[ApiQuestion]) -> Optional[GameQuestion]:
-    """API question → our frozen DTO. None passes through (game over)."""
+    """API question → our frozen DTO (text mode). None passes through (game over)."""
     if q is None:
         return None
     return GameQuestion(
@@ -26,13 +29,31 @@ def _to_game_question(q: Optional[ApiQuestion]) -> Optional[GameQuestion]:
 class GameAdapter:
     """Thin wrapper over a MillionaireClient game session.
 
-    One adapter == one game. Construct via `GameAdapter.start(...)`.
+    One adapter == one game. Construct via GameAdapter(...).
+
+    In speech mode, pass a SpeechTranscriber. The adapter will fetch WAV
+    audio for the question and each option, transcribe them, and expose the
+    same GameQuestion DTO to the rest of polimibot. The strategy layer sees
+    only text regardless of the underlying game mode.
     """
 
-    def __init__(self, client: MillionaireClient, competition_id: int) -> None:
-        self._client = client
+    def __init__(
+        self,
+        client: MillionaireClient,
+        competition_id: int,
+        *,
+        mode: str = "text",
+        transcriber: Optional["SpeechTranscriber"] = None,
+    ) -> None:
+        if mode == "speech" and transcriber is None:
+            raise ValueError(
+                "mode='speech' requires a SpeechTranscriber. "
+                "Pass transcriber=SpeechTranscriber.load(...)."
+            )
         self._competition_id = competition_id
-        self._session = client.game.start(competition_id=competition_id)
+        self._mode = mode
+        self._transcriber = transcriber
+        self._session = client.game.start(competition_id=competition_id, mode=mode)
         self._competition_name = self._session.state.competition.name
 
     # --- read-only state ---
@@ -54,6 +75,10 @@ class GameAdapter:
 
     @property
     def current_question(self) -> Optional[GameQuestion]:
+        # In speech mode we ignore the server's text payload and fetch+transcribe fresh audio for every question.
+        if self._mode == "speech":
+            return self._fetch_and_transcribe_question()
+        
         q = _to_game_question(self._session.current_question)
         if q is None:
             return None
@@ -75,13 +100,43 @@ class GameAdapter:
             raise ValueError(f"option_index {option_index} out of range 0..{len(options)-1}")
 
         result = self._session.answer(option_id=options[option_index].id)
+
+        # In speech mode the server returns a Question with text=None
+        api_q = None if self._mode == "speech" else result.question
+        
         return AnswerOutcome(
             correct=result.correct,
             timed_out=result.timed_out,
             game_over=result.game_over,
             earned_amount=result.earned_amount,
-            next_question=_to_game_question(result.question),
+            next_question=_to_game_question(api_q),
             reached_level=result.reached_level,
+        )
+
+    # --- speech helpers ---
+
+    def _fetch_and_transcribe_question(self) -> Optional[GameQuestion]:
+        """Fetch audio for the current question + all 4 options and transcribe.
+
+        We collect all four options before returning so the caller always 
+        receives a complete GameQuestion.
+        """
+        if self._session.is_game_over:
+            return None
+
+        question_wav = self._session.fetch_audio_question()
+        question_text = self._transcriber.transcribe(question_wav).text
+
+        option_texts = []
+        for _ in range(4):
+            option_wav = self._session.fetch_audio_option_next()
+            option_texts.append(self._transcriber.transcribe(option_wav).text)
+
+        level = self._session.current_level or 1
+        return GameQuestion(
+            text=question_text,
+            options=tuple(option_texts),
+            level=level,
         )
 
     def summary(self) -> SessionRecord:

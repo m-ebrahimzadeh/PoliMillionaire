@@ -100,6 +100,9 @@ class RuntimeConfig:
     # Politeness toward the proof-of-concept server.
     api_min_delay_seconds: float = 1.5
 
+    # Game mode: "text" (default) or "speech".
+    game_mode: str = "text"
+
 
 # ──────────────────────────── Singletons ────────────────────────────
 

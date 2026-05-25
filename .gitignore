@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+uv.lock
 .ipynb_checkpoints/
 .vscode/
 .idea/
