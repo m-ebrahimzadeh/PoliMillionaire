@@ -124,6 +124,26 @@ TOPIC_SEEDS: dict[Category, list[str]] = {
         "Number theory", "Logarithm", "Trigonometry",
         "Set theory", "Graph theory", "Cryptography",
     ],
+    Category.PHILOSOPHY: [
+        "Philosophy", "Psychology", "Socrates", "Plato", "Aristotle",
+        "Immanuel Kant", "René Descartes", "David Hume",
+        "Friedrich Nietzsche", "Jean-Paul Sartre", "Stoicism",
+        "Existentialism", "Epistemology", "Metaphysics", "Ethics",
+        "Sigmund Freud", "Carl Jung", "B. F. Skinner",
+        "Ivan Pavlov", "Cognitive psychology", "Behaviorism",
+        "Psychoanalysis", "Cognitive bias", "Classical conditioning",
+        "Operant conditioning",
+    ],
+    Category.NEWS: [
+        "News", "Journalism", "Pulitzer Prize", "Time Person of the Year",
+        "Nobel Peace Prize", "United Nations",
+        "Secretary-General of the United Nations", "European Union",
+        "G7", "G20", "Brexit", "September 11 attacks",
+        "COVID-19 pandemic", "Watergate scandal",
+        "Russian invasion of Ukraine", "Arab Spring",
+        "Fall of the Berlin Wall", "Reuters", "Associated Press",
+        "BBC News",
+    ],
 }
 
 

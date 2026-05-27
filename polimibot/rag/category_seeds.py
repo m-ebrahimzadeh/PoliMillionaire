@@ -176,6 +176,45 @@ CATEGORY_SEEDS: dict[Category, list] = {
         "Mathematicians_by_century",
         "Number_systems",
     ],
+    Category.PHILOSOPHY: [
+        "Ancient_Greek_philosophers",
+        "Ancient_Roman_philosophers",
+        "Medieval_philosophers",
+        "Modern_philosophers",
+        "Continental_philosophers",
+        "Analytic_philosophers",
+        "Existentialist_philosophers",
+        "Stoicism",
+        "Branches_of_philosophy",
+        "Ethical_theories",
+        "Metaphysics",
+        "Epistemology",
+        "Schools_of_psychology",
+        "Cognitive_scientists",
+        "Psychoanalysts",
+        "Behaviorism",
+        ("Cognitive_biases", 200),
+        ("Psychological_experiments", 200),
+        "Founders_of_psychology",
+        "Theories_in_psychology",
+    ],
+    # NEWS is the weakest category for Wikipedia: recent events are sparse,
+    # late, and POV-flagged. Seed a small static corpus of long-running
+    # news anchors (prize winners, "person of the year" lists, major events
+    # by decade) and lean on the live-search fallback in
+    # rag/live_search.py for anything time-sensitive.
+    Category.NEWS: [
+        ("Pulitzer_Prize_for_Public_Service_winners", 200),
+        ("Pulitzer_Prize_winners", 200),
+        "Time_Persons_of_the_Year",
+        "Nobel_Peace_Prize_laureates",
+        ("Major_news_events_of_the_21st_century", 200),
+        ("Years_in_politics", 200),
+        "G7_summits",
+        "United_Nations_Secretaries-General",
+        "Heads_of_state_of_the_European_Union",
+        "Political_scandals",
+    ],
 }
 
 

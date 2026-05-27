@@ -16,11 +16,13 @@ from pathlib import Path
 # ──────────────────────────── Categories ────────────────────────────
 
 class Category(str, Enum):
-    """The four flavours of the game. JSON-friendly string-valued enum."""
+    """The flavours of the game. JSON-friendly string-valued enum."""
     ENTERTAINMENT = "entertainment"
     HISTORY = "history"
     SCIENCE = "science"
     MATHS = "maths"
+    PHILOSOPHY = "philosophy"   # server label: "Philosophy and Psychology"
+    NEWS = "news"
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,8 @@ CATEGORIES: dict[int, CompetitionInfo] = {
     1: CompetitionInfo(1, Category.HISTORY,       "Ancient History and Politics"),
     2: CompetitionInfo(2, Category.SCIENCE,       "Science and Nature"),
     3: CompetitionInfo(3, Category.MATHS,         "Maths"),
+    4: CompetitionInfo(4, Category.PHILOSOPHY,    "Philosophy and Psychology"),
+    5: CompetitionInfo(5, Category.NEWS,          "News"),
 }
 
 

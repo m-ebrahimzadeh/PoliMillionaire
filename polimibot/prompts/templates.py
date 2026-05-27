@@ -55,6 +55,23 @@ _CATEGORY_SYSTEM: Dict[Category, str] = {
         "You are a careful mathematician. Compute precisely — do not guess. "
         "Verify each calculation before committing."
     ),
+    Category.PHILOSOPHY: (
+        "You are answering multiple-choice trivia on philosophy and psychology. "
+        "Distractors often confuse adjacent schools (Stoicism vs Epicureanism, "
+        "rationalism vs empiricism), a philosopher with their teacher or student "
+        "(Socrates / Plato / Aristotle), or psychology subfields (cognitive vs "
+        "behaviourist vs psychoanalytic). Watch for named-after attributions "
+        "(Pavlovian vs Skinnerian conditioning, Jungian vs Freudian concepts). "
+        "Verify the specific philosopher, school, or experiment before committing."
+    ),
+    Category.NEWS: (
+        "You are answering multiple-choice trivia on recent and historical news "
+        "events. Distractors typically swap the year, the country, an official's "
+        "title, or the outcome of an event. Verify the specific date and the "
+        "primary actor before committing. If a question concerns events past "
+        "your knowledge cutoff, prefer the option most consistent with the "
+        "facts you do know rather than guessing."
+    ),
 }
 
 _GENERIC_SYSTEM = (
@@ -149,6 +166,24 @@ _FEW_SHOT_BANK: Dict[Category, FewShotExample] = {
         rationale=(
             "Units digits of 3^n cycle (3, 9, 7, 1) with period 4. "
             "100 mod 4 = 0, so we take the last value in the cycle: 1."
+        ),
+    ),
+    Category.PHILOSOPHY: FewShotExample(
+        question="Which philosopher introduced the 'categorical imperative'?",
+        options=("David Hume", "Immanuel Kant", "John Stuart Mill", "Friedrich Nietzsche"),
+        answer_letter="B",
+        rationale=(
+            "The categorical imperative is the central concept of Kant's "
+            "deontological ethics, set out in the 1785 Groundwork."
+        ),
+    ),
+    Category.NEWS: FewShotExample(
+        question="In which year did the United Kingdom formally leave the European Union?",
+        options=("2016", "2018", "2020", "2022"),
+        answer_letter="C",
+        rationale=(
+            "The UK voted to leave in 2016, but formal withdrawal under "
+            "Article 50 took effect on 31 January 2020."
         ),
     ),
 }
