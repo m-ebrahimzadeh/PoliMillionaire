@@ -134,58 +134,114 @@ class FewShotExample:
     rationale: Optional[str] = None   # only used in CoT styles
 
 
-# One hand-curated example per category. Picked to:
+# Hand-curated examples per category. Picked to:
 #   - exercise the kind of reasoning the real gold set demands
 #     (not just answer recall — modular arithmetic, dates, units…)
 #   - avoid word-overlap between the question and the correct option
 #     (otherwise the model learns "pick the option that mentions the
 #     question's noun" — a brittle heuristic that misfires on distractors).
-_FEW_SHOT_BANK: Dict[Category, FewShotExample] = {
-    Category.ENTERTAINMENT: FewShotExample(
-        question="Which director directed both 'Jaws' and 'Schindler's List'?",
-        options=("Martin Scorsese", "Steven Spielberg", "Francis Ford Coppola", "Stanley Kubrick"),
-        answer_letter="B",
-        rationale="Steven Spielberg directed Jaws (1975) and Schindler's List (1993).",
-    ),
-    Category.HISTORY: FewShotExample(
-        question="In which year did Julius Caesar cross the Rubicon?",
-        options=("63 BC", "49 BC", "44 BC", "31 BC"),
-        answer_letter="B",
-        rationale="Caesar crossed the Rubicon in 49 BC, triggering the Roman civil war.",
-    ),
-    Category.SCIENCE: FewShotExample(
-        question="What is the chemical symbol for gold?",
-        options=("Ag", "Fe", "Au", "Cu"),
-        answer_letter="C",
-        rationale="Gold's symbol Au comes from the Latin 'aurum'.",
-    ),
-    Category.MATHS: FewShotExample(
-        question="What is the units digit of 3^100?",
-        options=("1", "3", "7", "9"),
-        answer_letter="A",
-        rationale=(
-            "Units digits of 3^n cycle (3, 9, 7, 1) with period 4. "
-            "100 mod 4 = 0, so we take the last value in the cycle: 1."
+#   - balance the correct-answer letter across A/B/C/D to avoid
+#     majority-label bias from a single in-context example.
+#
+# History gets multiple examples spanning distinct periods so the few-shot
+# signal generalises across the gold set rather than anchoring on Roman
+# antiquity. The other categories carry a single example wrapped in a
+# 1-element list for uniform API.
+_FEW_SHOT_BANK: Dict[Category, List["FewShotExample"]] = {
+    Category.ENTERTAINMENT: [
+        FewShotExample(
+            question="Which director directed both 'Jaws' and 'Schindler's List'?",
+            options=("Martin Scorsese", "Steven Spielberg", "Francis Ford Coppola", "Stanley Kubrick"),
+            answer_letter="B",
+            rationale="Steven Spielberg directed Jaws (1975) and Schindler's List (1993).",
         ),
-    ),
-    Category.PHILOSOPHY: FewShotExample(
-        question="Which philosopher introduced the 'categorical imperative'?",
-        options=("David Hume", "Immanuel Kant", "John Stuart Mill", "Friedrich Nietzsche"),
-        answer_letter="B",
-        rationale=(
-            "The categorical imperative is the central concept of Kant's "
-            "deontological ethics, set out in the 1785 Groundwork."
+    ],
+    Category.HISTORY: [
+        # Ancient — Caesar crossing the Rubicon, single-event date.
+        FewShotExample(
+            question="In which year did Julius Caesar cross the Rubicon?",
+            options=("63 BC", "49 BC", "44 BC", "31 BC"),
+            answer_letter="B",
+            rationale="Caesar crossed the Rubicon in 49 BC, triggering the Roman civil war.",
         ),
-    ),
-    Category.NEWS: FewShotExample(
-        question="In which year did the United Kingdom formally leave the European Union?",
-        options=("2016", "2018", "2020", "2022"),
-        answer_letter="C",
-        rationale=(
-            "The UK voted to leave in 2016, but formal withdrawal under "
-            "Article 50 took effect on 31 January 2020."
+        # Medieval — Norman Conquest, single-event date.
+        FewShotExample(
+            question="In what year did William the Conqueror defeat King Harold at the Battle of Hastings?",
+            options=("1066", "1086", "1099", "1054"),
+            answer_letter="A",
+            rationale=(
+                "The Battle of Hastings took place on 14 October 1066, leading to "
+                "the Norman conquest of England."
+            ),
         ),
-    ),
+        # Early modern — French Revolution, distinguishing trigger event from later phases.
+        FewShotExample(
+            question="Which event marked the beginning of the French Revolution in 1789?",
+            options=(
+                "The Reign of Terror",
+                "The execution of Louis XVI",
+                "The storming of the Bastille",
+                "Napoleon's coup",
+            ),
+            answer_letter="C",
+            rationale=(
+                "The storming of the Bastille on 14 July 1789 is conventionally "
+                "regarded as the beginning of the French Revolution; the Reign of "
+                "Terror and the execution of Louis XVI came years later."
+            ),
+        ),
+        # 20th-century — Cold War end, date precision across nearby years.
+        FewShotExample(
+            question="In which year did the Berlin Wall fall, signalling the end of the Cold War in Europe?",
+            options=("1985", "1989", "1991", "1993"),
+            answer_letter="B",
+            rationale=(
+                "The Berlin Wall fell on 9 November 1989, two years before the "
+                "formal dissolution of the Soviet Union in 1991."
+            ),
+        ),
+    ],
+    Category.SCIENCE: [
+        FewShotExample(
+            question="What is the chemical symbol for gold?",
+            options=("Ag", "Fe", "Au", "Cu"),
+            answer_letter="C",
+            rationale="Gold's symbol Au comes from the Latin 'aurum'.",
+        ),
+    ],
+    Category.MATHS: [
+        FewShotExample(
+            question="What is the units digit of 3^100?",
+            options=("1", "3", "7", "9"),
+            answer_letter="A",
+            rationale=(
+                "Units digits of 3^n cycle (3, 9, 7, 1) with period 4. "
+                "100 mod 4 = 0, so we take the last value in the cycle: 1."
+            ),
+        ),
+    ],
+    Category.PHILOSOPHY: [
+        FewShotExample(
+            question="Which philosopher introduced the 'categorical imperative'?",
+            options=("David Hume", "Immanuel Kant", "John Stuart Mill", "Friedrich Nietzsche"),
+            answer_letter="B",
+            rationale=(
+                "The categorical imperative is the central concept of Kant's "
+                "deontological ethics, set out in the 1785 Groundwork."
+            ),
+        ),
+    ],
+    Category.NEWS: [
+        FewShotExample(
+            question="In which year did the United Kingdom formally leave the European Union?",
+            options=("2016", "2018", "2020", "2022"),
+            answer_letter="C",
+            rationale=(
+                "The UK voted to leave in 2016, but formal withdrawal under "
+                "Article 50 took effect on 31 January 2020."
+            ),
+        ),
+    ],
 }
 
 
@@ -240,9 +296,13 @@ def build_messages(
     ]
 
     if style in (PromptStyle.FEW_SHOT, PromptStyle.FEW_SHOT_COT):
-        example = _FEW_SHOT_BANK.get(category) if category else None
-        if example:
-            messages.extend(_few_shot_turns(example, style=style))
+        examples = _FEW_SHOT_BANK.get(category) if category else None
+        if examples:
+            # All curated examples are emitted in sequence — one user+assistant
+            # pair each. Categories with a single example produce one pair;
+            # History produces four diverse priming cases spanning ancient → modern.
+            for example in examples:
+                messages.extend(_few_shot_turns(example, style=style))
 
     messages.append({"role": "user", "content": _user_turn(question, options, style=style)})
     return messages

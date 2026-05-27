@@ -21,7 +21,10 @@ def test_zero_shot_has_system_and_one_user_turn():
 
 
 def test_few_shot_inserts_example_turns():
-    msgs = _build(PromptStyle.FEW_SHOT, category=Category.HISTORY)
+    # Use a single-example category (Science) so this regression test stays
+    # locked to the minimal expected shape regardless of how many examples
+    # any given category later carries.
+    msgs = _build(PromptStyle.FEW_SHOT, category=Category.SCIENCE)
     roles = [m["role"] for m in msgs]
     # system, user (example), assistant (example), user (real question)
     assert roles == ["system", "user", "assistant", "user"]
@@ -89,13 +92,47 @@ def test_entertainment_few_shot_avoids_word_leakage():
     """The Jaws/Schindler's-List example tests the model's recall, not its
     ability to pattern-match question words to option text."""
     from polimibot.prompts.templates import _FEW_SHOT_BANK
-    ex = _FEW_SHOT_BANK[Category.ENTERTAINMENT]
+    # Bank now holds a list per category — take the first (only) Entertainment example.
+    ex = _FEW_SHOT_BANK[Category.ENTERTAINMENT][0]
     correct_text = ex.options[ord(ex.answer_letter) - ord("A")]
     # No word in the correct option's text appears verbatim in the question.
     q_words = {w.lower().strip(".,'\"") for w in ex.question.split()}
     a_words = {w.lower().strip(".,'\"") for w in correct_text.split()}
     overlap = q_words & a_words
     assert not overlap, f"few-shot leaks answer: overlap={overlap}"
+
+
+def test_history_bank_has_multiple_examples_spanning_periods():
+    """History few-shot should span multiple historical periods so the
+    in-context priming generalises beyond Roman antiquity. The correct-answer
+    letter should also vary across examples — a single dominant letter
+    introduces majority-label bias."""
+    from polimibot.prompts.templates import _FEW_SHOT_BANK
+    examples = _FEW_SHOT_BANK[Category.HISTORY]
+    assert len(examples) >= 3, (
+        f"History bank should have >=3 examples for period diversity, "
+        f"got {len(examples)}"
+    )
+    letters = {ex.answer_letter for ex in examples}
+    assert len(letters) >= 2, (
+        f"All History few-shot examples share the same correct letter — "
+        f"this primes majority-label bias. Letters: {letters}"
+    )
+
+
+def test_few_shot_history_emits_all_examples():
+    """build_messages with FEW_SHOT + History should emit one user+assistant
+    pair per example in the bank."""
+    from polimibot.prompts.templates import _FEW_SHOT_BANK
+    n_examples = len(_FEW_SHOT_BANK[Category.HISTORY])
+    msgs = _build(PromptStyle.FEW_SHOT, category=Category.HISTORY)
+    # Each example produces one user + one assistant turn before the real question;
+    # plus the system turn at index 0 and the final real user turn at the end.
+    assistant_count = sum(1 for m in msgs if m["role"] == "assistant")
+    assert assistant_count == n_examples, (
+        f"Expected {n_examples} assistant turns (one per example), "
+        f"got {assistant_count}"
+    )
 
 
 def test_wrong_option_count_raises():
