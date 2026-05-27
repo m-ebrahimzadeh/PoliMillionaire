@@ -63,12 +63,15 @@ class FakeAdapter:
 @pytest.fixture
 def patched_adapter(monkeypatch):
     holder: dict = {}
-    def factory(client, competition_id):
+    def factory(client, competition_id, **_kwargs):
+        # **_kwargs swallows the new mode= / transcriber= keyword args the
+        # runner passes through for speech-mode support.
         return holder["adapter"]
     monkeypatch.setattr("polimibot.runner.GameAdapter", factory)
     monkeypatch.setattr("polimibot.config.RUNTIME",
                         type("R", (), {"api_min_delay_seconds": 0.0,
-                                       "hard_cutoff_seconds": 5.0})())
+                                       "hard_cutoff_seconds": 5.0,
+                                       "game_mode": "text"})())
     return holder
 
 
@@ -105,7 +108,8 @@ def test_runner_falls_back_on_timeout(patched_adapter, monkeypatch):
     # Tighten the cutoff to force a timeout.
     monkeypatch.setattr("polimibot.config.RUNTIME",
                         type("R", (), {"api_min_delay_seconds": 0.0,
-                                       "hard_cutoff_seconds": 0.2})())
+                                       "hard_cutoff_seconds": 0.2,
+                                       "game_mode": "text"})())
     patched_adapter["adapter"] = FakeAdapter(_qs(), correct_indices=[1, 1])
     res = play_game(client=None, competition_id=0, strategy=_Slow(),
                     logger=NullLogger(), verbose=False, fallback_index=0)
