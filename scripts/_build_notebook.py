@@ -143,9 +143,10 @@ cells.append(md("### 0.1 Install"))
 cells.append(code("""
 # Install the project as an editable package, this cell does. Once per session, run it.
 %pip install -q -e .
-%pip install -q "transformers>=4.44" "accelerate>=0.33" "bitsandbytes>=0.43"
+%pip install -q "transformers>=4.46,<4.50" "accelerate>=1.0,<1.5" "bitsandbytes>=0.45"
 %pip install -q "faiss-cpu>=1.7" "sentence-transformers>=2.7" "wikipedia>=1.4"
 %pip install -q matplotlib pandas
+%pip install -q "openai-whisper>=20231117" "scipy>=1.11"
 """))
 
 cells.append(md("### 0.2 Imports and helpers"))
@@ -461,7 +462,14 @@ STOP_STRINGS          = None                             # None → boxed-stops 
 
 # Per-question deadline (server gives 30s; 25s leaves margin for submit roundtrip)
 HARD_CUTOFF_SECONDS = 25.0                               # strategy must return by this
-update_runtime(hard_cutoff_seconds=HARD_CUTOFF_SECONDS)  # rebinds RUNTIME singleton, this does
+
+# Speech mode
+GAME_MODE           = "text"                               # "text" or "speech"
+SPEECH_MODEL        = "small"                             # whisper model: "tiny", "base", "small", "medium"
+SPEECH_DEVICE       = "cuda" if not USE_MOCK else "cpu"  # "cuda" or "cpu"
+
+# Rebinds RUNTIME singleton, this does
+update_runtime(hard_cutoff_seconds=HARD_CUTOFF_SECONDS)
 
 # Strategy composition (highest USE_TIERED wins; otherwise stack from baseline up)
 USE_RAG             = False                              # RAG over Wikipedia
@@ -469,6 +477,8 @@ USE_MATHS_TOOL      = False                              # deterministic arithme
 USE_AGENT_FOR_MATHS = False                              # ReAct agent on maths Qs
 USE_ENSEMBLE        = False                              # weighted-prob fusion of baseline + RAG
 USE_TIERED          = False                              # full hybrid: tier-by-level with all the above
+USE_CONFIDENCE_GATED  = True                            # primary → fallback-on-uncertainty
+MARGIN_THRESHOLD      = 0.30                             # commit primary when (top1 - top2) prob ≥ this
 
 # Tier knobs (only used when USE_TIERED=True)
 TIER_EASY_MAX       = 5                                  # levels 1..5  → easy strategy
@@ -495,7 +505,7 @@ RAG_MAX_PASSAGE_CHARS  = 800                             # per-passage truncatio
 RAG_MAX_TOTAL_CHARS    = 2400                            # joined context budget
 
 # Reranker (cross-encoder over the dense pool — precision win, +~30 ms/query)
-RAG_USE_RERANKER       = False                           # set True to load + use
+RAG_USE_RERANKER       = True                           # set True to load + use
 RERANKER_MODEL         = 'BAAI/bge-reranker-base'        # trivia-friendly, ~100 MB
 RERANK_OVERSEARCH      = 5                               # dense pool size = k × this
 
@@ -506,30 +516,31 @@ RERANK_OVERSEARCH      = 5                               # dense pool size = k �
 EMBEDDER_MODEL         = 'BAAI/bge-small-en-v1.5'        # 384-dim, asymmetric
 
 # Hybrid + multi-query (lexical complement + per-option queries, both via RRF)
-RAG_USE_HYBRID         = False                           # dense + BM25 fused per query
+RAG_USE_HYBRID         = True                           # dense + BM25 fused per query
 RAG_USE_MULTI_QUERY    = True                            # 1 question + 4 per-option queries (default on per audit §3)
 
 # Path-aware min_score gates (audit §4): calibrate each threshold on its own
 # score scale — never apply a cosine threshold to an RRF or reranker score.
 RAG_MIN_SCORE          = None                            # dense-only cosine ∈ [-1,1]; e.g. 0.30
-RAG_MIN_SCORE_RRF      = None                            # hybrid RRF ∈ ~0–0.03;      e.g. 0.010
-RAG_MIN_SCORE_RERANK   = None                            # cross-encoder logit;        e.g. -2.0
+RAG_MIN_SCORE_RRF      = None                            # hybrid RRF ∈ ~0–0.03;      e.g. 0.010 (no-rerank path only)
+RAG_MIN_SCORE_RERANK   = None                            # sigmoid-mapped cross-encoder ∈ [0,1]; e.g. 0.5  (set 1.0 to force-gate offline → live-only mode)
 
 # Live-search fallback + self-growing index (fires only when offline RAG is gated)
 # When USE_LIVE_FALLBACK=True and the top offline retrieval score is below the
 # min_score threshold, a real-time Wikipedia API query is fired instead of
 # degrading to a bare-LLM prompt.  Confirmed-correct articles are added to
 # the offline index permanently so future questions benefit.
-USE_LIVE_FALLBACK      = False                           # True  → enable live Wikipedia fallback
-LIVE_SEARCH_TIMEOUT    = 5.0                             # hard wall-clock limit per live query (s)
+USE_LIVE_FALLBACK      = True                           # True  → enable live Wikipedia fallback
+LIVE_SEARCH_TIMEOUT    = 7.0                             # hard wall-clock limit per live query (s)
 LIVE_MAX_ARTICLES      = 2                               # max Wikipedia articles per live query
 LEARN_FROM_CORRECT     = True                            # grow the index from confirmed-correct answers
-LIVE_USE_LLM_QUERY     = False                           # True → LLM distils question to 2-5 Wikipedia keywords before live search
+LIVE_USE_LLM_QUERY     = True                           # True → LLM distils question to 2-5 Wikipedia keywords before live search
 
 # Eval
 N_EVAL_QUESTIONS    = None                               # None = all gold items; int = first-N slice
 
 print(f'mock={USE_MOCK}  model={MODEL_ID}  style={PROMPT_STYLE.value}')
+print(f'game_mode={GAME_MODE}  speech_model={SPEECH_MODEL if GAME_MODE == "speech" else "n/a"}')
 print(f'rag={USE_RAG}  maths_tool={USE_MATHS_TOOL}  agent={USE_AGENT_FOR_MATHS}')
 print(f'ensemble={USE_ENSEMBLE}  tiered={USE_TIERED}')
 print(f'hard_cutoff={HARD_CUTOFF_SECONDS}s  direct_max_new_tokens={DIRECT_MAX_NEW_TOKENS}  cot_max_new_tokens={COT_MAX_NEW_TOKENS}')
@@ -561,6 +572,26 @@ if 'llm' not in globals():
     LOADED_MODEL_ID = MODEL_ID
 else:
     print(f'Reusing already-loaded LLM: {llm.name}')
+'''))
+
+cells.append(md('#### 1.2.1 Build the Speech Transcriber (if "speech" game mode is on)'))
+
+cells.append(code('''
+transcriber = None
+if GAME_MODE == "speech":
+    from polimibot.models.speech import SpeechTranscriber, TranscriberSpec
+    prev_speech = globals().get('LOADED_SPEECH_MODEL', None)
+    if 'transcriber' not in globals() or transcriber is None or prev_speech != SPEECH_MODEL:
+        transcriber = SpeechTranscriber.load(TranscriberSpec(
+            model_name=SPEECH_MODEL,
+            device=SPEECH_DEVICE,
+        ))
+        LOADED_SPEECH_MODEL = SPEECH_MODEL
+        print(f'SpeechTranscriber ready: whisper-{SPEECH_MODEL} on {SPEECH_DEVICE}')
+    else:
+        print(f'Reusing already-loaded transcriber: {transcriber.name}')
+else:
+    print('Speech mode off — transcriber not loaded.')
 '''))
 
 cells.append(md("### 1.3 Build the retriever (only if RAG-related knobs are on)"))
@@ -691,7 +722,20 @@ _rag_kwargs = dict(
     live_use_llm_query=LIVE_USE_LLM_QUERY,
 )
 
-if USE_TIERED:
+if USE_CONFIDENCE_GATED:
+    from polimibot.strategies.confidence_gated_strategy import ConfidenceGatedStrategy
+    # Primary: bare LLM, logit-scored. Uses the `baseline` object built at
+    # the top of this cell. No RAG, no live — fast and well-calibrated.
+    # Fallback: live-Wikipedia-only RAG (offline auto-skipped when
+    # RAG_MIN_SCORE_RERANK >= 1.0). Only fires when primary's margin is
+    # below MARGIN_THRESHOLD — reduces Wikipedia API load ~95%.
+    fallback_rag = RAGStrategy(llm, retriever, **_rag_kwargs)
+    strategy = ConfidenceGatedStrategy(
+        primary=baseline,
+        fallback=fallback_rag,
+        margin_threshold=MARGIN_THRESHOLD,
+    )
+elif USE_TIERED:
     from polimibot.config import Category as _Category_tiered
     rag_arm    = RAGStrategy(llm, retriever, **_rag_kwargs)
     ensemble   = EnsembleStrategy([baseline, rag_arm], weights=[1.0, 1.2])
@@ -1198,7 +1242,8 @@ cells.append(code('''
 # Live play, opt-in this is. Skip if no client. Each game writes a JSONL run log.
 RUN_LIVE_GAMES         = False                         # ← flip to True to play
 GAMES_PER_COMPETITION  = 1
-COMPS_TO_PLAY          = list(CATEGORIES.keys())       # all four; subset for shorter runs
+COMPS_TO_PLAY          = list(CATEGORIES.keys())       # [0, 2, 3] for specific categories
+# 0 = entertainment, 1= history, 2=science, 3=math, 4=philosohpy, 5=current_news
 
 if RUN_LIVE_GAMES:
     if client is None:
@@ -1211,16 +1256,24 @@ if RUN_LIVE_GAMES:
         run_id=report_id,
         verbose=True,
     )
-    df_live = pd.DataFrame([{
-        'competition'   : r.competition_name,
-        'final_level'   : r.final_level,
-        'earned'        : r.earned_amount,
-        'accuracy'      : r.accuracy,
-        'elapsed_s'     : r.elapsed_seconds,
-        'n_questions'   : r.n_questions,
-    } for r in results])
-    save_results(df_live, f'live__{report_id}')
-    df_live
+
+    if GAME_MODE != "speech":
+        df_live = pd.DataFrame([{
+            'competition'   : r.competition_name,
+            'final_level'   : r.final_level,
+            'earned'        : r.earned_amount,
+            'accuracy'      : r.accuracy,
+            'elapsed_s'     : r.elapsed_seconds,
+            'n_questions'   : r.n_questions,
+        } for r in results])
+
+        from datetime import datetime
+        _ts  = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        save_results(df_live, f'live__{report_id}__{_ts}')
+        df_live
+    else:
+        print(f'GAME_MODE = {GAME_MODE}. Results not saved to the gold set.')
 else:
     print('RUN_LIVE_GAMES=False — skipping live play.')
 '''))
