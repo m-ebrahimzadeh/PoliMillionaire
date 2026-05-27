@@ -229,11 +229,21 @@ class RAGStrategy(Strategy):
                 retrieval calls.
             rerank_oversearch: passes through to Retriever.retrieve. None
                 = use Retriever's default (5×).
-            min_score: if set, drop the retrieval context entirely when the
-                top score is below this threshold — the prompt then degrades
-                to the no-RAG baseline shape. None = never gate. Calibrate
-                empirically from the score distribution (~0.30–0.45 for
-                normalised cosine on Wikipedia trivia).
+            min_score: dense-only cosine threshold ∈ [-1, 1]; if set, drop the
+                retrieval context entirely when the top dense cosine score is
+                below this value. Applied only on the pure-dense path (no
+                hybrid, no reranker). Typical calibrated values: 0.30–0.45
+                for normalised cosine on Wikipedia trivia. None = never gate.
+            min_score_rrf: hybrid-path RRF threshold (no reranker). RRF scores
+                live in ~[0, 0.03]; calibrated values typical in 0.005–0.015.
+                None = never gate.
+            min_score_rerank: rerank-path threshold on the sigmoid-mapped
+                cross-encoder score ∈ [0, 1]. Calibrated values typical in
+                0.3–0.6. Setting this to 1.0 forces 100% gating — pairs well
+                with use_live_fallback=True to route everything through live
+                Wikipedia retrieval (and skips the offline FAISS+BM25+rerank
+                pass entirely via the short-circuit at the top of answer()).
+                None = never gate.
             max_passage_chars: cap per individual passage. Tighten when
                 context-length pressure is high; loosen to retain detail.
             max_total_chars: cap on the joined context block.
@@ -358,6 +368,30 @@ class RAGStrategy(Strategy):
             if (self.use_category_filter and inp.category is not None)
             else None
         )
+
+        # Compute the active gate threshold UP-FRONT (audit §4: path-aware).
+        # We need it both to short-circuit offline retrieval (below) and to
+        # decide whether to fire live fallback (later). Computing it once
+        # here keeps the two decisions consistent.
+        if self.use_reranker:
+            active_threshold = self.min_score_rerank
+        elif self.use_hybrid:
+            active_threshold = self.min_score_rrf
+        else:
+            active_threshold = self.min_score
+
+        # Short-circuit: if the threshold is set at-or-above its score ceiling
+        # (1.0 on the sigmoid-reranker and cosine-dense scales), the offline
+        # path would always gate. Skip the ~50-100 ms FAISS+BM25+rerank pass
+        # and go straight to the gate logic so live fallback can take over.
+        # Only meaningful when live fallback is wired up; otherwise we still
+        # need offline so the bare-LLM path has *some* trace data to log.
+        skip_offline = (
+            active_threshold is not None
+            and active_threshold >= 1.0
+            and self._live_search is not None
+        )
+
         common_kwargs: dict = {"k": self.k, "category": category_filter}
         if self.use_reranker:
             common_kwargs["rerank"] = True
@@ -370,12 +404,17 @@ class RAGStrategy(Strategy):
         # use it as the dense query. BM25 always gets the raw question so
         # its lexical signal (proper nouns, dates) is preserved.
         hyde_hypothesis: Optional[str] = None
-        if self.use_hyde:
+        if not skip_offline and self.use_hyde:
             hyde_hypothesis = self._hypothesize(inp)
             if self.use_hybrid:
                 common_kwargs["bm25_query"] = inp.question
 
-        if self.use_multi_query:
+        if skip_offline:
+            # Always-gated path: empty passage list, question text for logging.
+            # Live search will fire below since `gated` will be True.
+            passages = []
+            query = inp.question
+        elif self.use_multi_query:
             # Correct pipeline for multi-query + optional rerank (audit §5):
             #   1. Retrieve top-N per query (no cross-encoder — rerank=False).
             #   2. RRF-fuse the per-query lists (across queries).
@@ -428,20 +467,17 @@ class RAGStrategy(Strategy):
         # 2. Path-aware low-score gate (audit §4).
         #
         # Score units differ by retrieval path:
-        #   dense-only  → cosine ∈ [-1, 1]         use min_score
-        #   hybrid RRF  → RRF ∈ ~0–0.03            use min_score_rrf
-        #   reranker    → cross-encoder logit       use min_score_rerank
+        #   dense-only  → cosine ∈ [-1, 1]               use min_score
+        #   hybrid RRF  → RRF ∈ ~0–0.03                  use min_score_rrf
+        #   reranker    → sigmoid-mapped cross-encoder    use min_score_rerank
+        #                 score ∈ [0, 1]
         #
         # Applying a cosine-calibrated threshold on an RRF or cross-encoder
         # score is meaningless (gates every question or none). Each path
-        # selects its own threshold; None = never gate on this path.
+        # selects its own threshold; None = never gate on this path. The
+        # threshold itself was computed at the top of answer() so the same
+        # value drives both short-circuit and gate decisions.
         top_score = float(passages[0][1]) if passages else 0.0
-        if self.use_reranker:
-            active_threshold = self.min_score_rerank
-        elif self.use_hybrid:
-            active_threshold = self.min_score_rrf
-        else:
-            active_threshold = self.min_score
         gated = (
             active_threshold is not None
             and (not passages or top_score < active_threshold)
@@ -541,16 +577,16 @@ class RAGStrategy(Strategy):
                             # comment so it's clear why the score is synthetic.
                             live_passages = [(c, 1.0) for c in all_live_chunks[:self.k]]
 
-                # ── Filter by the active threshold (same gate as offline) ─
-                    # Prevents irrelevant articles (e.g. "Mary Rose" for a
-                    # chemistry question) from reaching the LLM prompt.
-                    # Save pre-filter list so we can build the debug pool later.
+                # ── Live passages bypass the offline gate threshold ───────
+                    # By design live search is the fallback when offline retrieval
+                    # already gated out. Applying the SAME threshold to live
+                    # passages defeats the purpose — when min_score_rerank is set
+                    # high (e.g. 1.0 to force live-only mode), every live passage
+                    # gets filtered too and the model receives no context at all.
+                    # Relevance filtering is the reranker's job: top-k ordering
+                    # already keeps only the strongest matches. Keep the full
+                    # pre-rerank list around for trace/debug visibility, this we do.
                     _live_all_scored = list(live_passages)
-                    if active_threshold is not None:
-                        live_passages = [
-                            (c, s) for c, s in live_passages
-                            if s >= active_threshold
-                        ]
 
         # Best live score (pre-filter) — stored in extras for observability.
         live_top_score: Optional[float] = (
