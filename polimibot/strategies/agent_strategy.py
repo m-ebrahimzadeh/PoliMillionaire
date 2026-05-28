@@ -27,6 +27,39 @@ from .base import Strategy, StrategyInput, StrategyOutput
 
 _AnyLLM = LLM | MockLLM
 
+# ── Worked demonstration exchanges ───────────────────────────────────────────
+# Two fake prior turns injected before every real question.
+# Purpose: show the exact tool-call protocol in action so the model copies the
+# pattern rather than ignoring the system-prompt description and generating a
+# full prose reasoning trace (which consumes the entire token budget).
+#
+# calc demo — percentage arithmetic, options are numeric.
+_DEMO_CALC_Q = (
+    "Question: What is 15% of 200?\n\n"
+    "Options:\n"
+    "A. 25\nB. 30\nC. 35\nD. 40\n\n"
+    "Think step by step. Use CALL: calc(...) for arithmetic or "
+    "CALL: solve(...) for algebra/equations/modular problems, "
+    "then write your Answer."
+)
+_DEMO_CALC_A1 = "15% of 200 means 15/100 * 200.\nCALL: calc(15/100 * 200)"
+_DEMO_CALC_OBS = "Tool result: 30.0\nNow give your final answer."
+_DEMO_CALC_A2 = "Answer: B"
+
+# solve demo — modular arithmetic / cycle pattern, options are numeric.
+_DEMO_SOLVE_Q = (
+    "Question: What is the units digit of 3^100?\n\n"
+    "Options:\n"
+    "A. 1\nB. 3\nC. 7\nD. 9\n\n"
+    "Think step by step. Use CALL: calc(...) for arithmetic or "
+    "CALL: solve(...) for algebra/equations/modular problems, "
+    "then write your Answer."
+)
+_DEMO_SOLVE_A1 = "The units digit of 3^100 is 3^100 mod 10.\nCALL: solve(Mod(3**100, 10))"
+_DEMO_SOLVE_OBS = "Tool result: 1\nNow give your final answer."
+_DEMO_SOLVE_A2 = "Answer: A"
+
+
 # ── System prompt ─────────────────────────────────────────────────────────────
 # The protocol the model must follow is described concisely.
 # One CALL per turn; wait for result; final line must be "Answer: <letter>".
@@ -239,6 +272,21 @@ class AgentStrategy(Strategy):
             "then write your Answer."
         )
         return [
-            {"role": "system", "content": _AGENT_SYSTEM},
-            {"role": "user",   "content": user},
+            {"role": "system",    "content": _AGENT_SYSTEM},
+            # ── Worked examples ───────────────────────────────────────────
+            # These fake prior exchanges show the exact tool-call protocol
+            # the model must follow. Without them, chat-tuned models ignore
+            # the tool description and generate a full reasoning trace instead,
+            # consuming the entire token budget before emitting an answer.
+            # One calc example + one solve example covers both tool paths.
+            {"role": "user",      "content": _DEMO_CALC_Q},
+            {"role": "assistant", "content": _DEMO_CALC_A1},
+            {"role": "user",      "content": _DEMO_CALC_OBS},
+            {"role": "assistant", "content": _DEMO_CALC_A2},
+            {"role": "user",      "content": _DEMO_SOLVE_Q},
+            {"role": "assistant", "content": _DEMO_SOLVE_A1},
+            {"role": "user",      "content": _DEMO_SOLVE_OBS},
+            {"role": "assistant", "content": _DEMO_SOLVE_A2},
+            # ── Real question ─────────────────────────────────────────────
+            {"role": "user",      "content": user},
         ]
