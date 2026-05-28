@@ -182,9 +182,87 @@ def test_extract_expression_extended_prefixes(question, contains):
     from polimibot.tools.maths_tool import _extract_expression
     expr = _extract_expression(question)
     if contains is None:
-        # These questions reach the prefix match but may still return None
-        # if no arithmetic is extractable — that is correct behaviour.
         pass
     else:
         assert expr is not None, f"Expected expression from: {question!r}"
         assert contains in expr
+
+
+# ── SympyDirectTool ───────────────────────────────────────────────────────────
+
+from polimibot.tools.sympy_direct_tool import SympyDirectTool
+
+
+def _maths_inp_direct(q: str, opts: tuple[str, ...]) -> StrategyInput:
+    return StrategyInput(question=q, options=opts, level=3, category=Category.MATHS)
+
+
+def test_sympy_direct_modular_remainder():
+    tool = SympyDirectTool()
+    inp = _maths_inp_direct(
+        "What is the remainder when 2^87 is divided by 7?",
+        ("0", "4", "1", "2"),
+    )
+    out = tool.use(inp)
+    # 2^3 = 8 ≡ 1 (mod 7), 87 = 3*29, so 2^87 ≡ 1 → option "1" at index 2
+    assert out is not None
+    assert out.chosen_index == 2
+    assert out.confidence >= 0.95
+
+
+def test_sympy_direct_binomial():
+    tool = SympyDirectTool()
+    inp = _maths_inp_direct(
+        r"Compute $\dbinom{85}{82}$.",
+        ("252", "4680", "98770", "101170"),
+    )
+    out = tool.use(inp)
+    # C(85,82) = C(85,3) = 85*84*83/6 = 98770
+    assert out is not None
+    assert out.chosen_index == 2   # "98770"
+    assert out.confidence >= 0.95
+
+
+def test_sympy_direct_permutation():
+    tool = SympyDirectTool()
+    inp = _maths_inp_direct(
+        "In how many ways can 4 different books be arranged on a shelf?",
+        ("12", "16", "24", "48"),
+    )
+    out = tool.use(inp)
+    assert out is not None
+    assert out.chosen_index == 2   # 4! = 24
+
+
+def test_sympy_direct_area_square_vertices():
+    tool = SympyDirectTool()
+    inp = _maths_inp_direct(
+        "Points (1, 2) and (5, 6) are opposite vertices of a square. What is the area?",
+        ("8", "16", "32", "4"),
+    )
+    out = tool.use(inp)
+    # diagonal² = (5-1)²+(6-2)² = 32, area = 32/2 = 16
+    assert out is not None
+    assert out.chosen_index == 1   # "16"
+
+
+def test_sympy_direct_abstains_on_abstract_algebra():
+    tool = SympyDirectTool()
+    inp = _maths_inp_direct(
+        "Statement 1 | Every free abelian group is torsion free. "
+        "Statement 2 | Every finitely generated torsion-free abelian group is free.",
+        ("True, True", "False, False", "True, False", "False, True"),
+    )
+    out = tool.use(inp)
+    assert out is None   # no pattern fires → correct abstention
+
+
+def test_sympy_direct_abstains_on_wrong_category():
+    tool = SympyDirectTool()
+    inp = StrategyInput(
+        question="What is the remainder when 2^10 is divided by 3?",
+        options=("0", "1", "2", "3"),
+        level=1,
+        category=Category.SCIENCE,
+    )
+    assert not tool.can_handle(inp)
