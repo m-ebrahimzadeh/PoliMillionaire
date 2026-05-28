@@ -52,8 +52,14 @@ _CATEGORY_SYSTEM: Dict[Category, str] = {
         "from sufficient conditions in causal claims."
     ),
     Category.MATHS: (
-        "You are a careful mathematician. Compute precisely — do not guess. "
-        "Verify each calculation before committing."
+        "You are a careful mathematician. Before answering, identify which type "
+        "of problem you are facing:\n"
+        "  - Direct computation (percentage, power, area): compute step by step.\n"
+        "  - Equation or unknown variable: solve algebraically.\n"
+        "  - Pattern or cycle (units digits, remainders): find the period explicitly.\n"
+        "  - Factual recall (a theorem name, a mathematician): recall directly.\n"
+        "Never perform multi-step arithmetic in your head — use the available tools. "
+        "Verify your result against the options before committing."
     ),
     Category.PHILOSOPHY: (
         "You are answering multiple-choice trivia on philosophy and psychology. "
@@ -89,7 +95,8 @@ _DIRECT = (
 _COT = (
     "Solve step by step using this structure:\n"
     "  Step 1: Restate what the question asks.\n"
-    "  Step 2: Compute, eliminate, or recall the relevant fact.\n"
+    "  Step 2: Compute exactly (using tools if available), eliminate, or recall "
+    "the relevant fact.\n"
     "  Step 3: End with \\boxed{X} on its own line, where X is one of "
     "A, B, C, D."
 )
@@ -210,6 +217,7 @@ _FEW_SHOT_BANK: Dict[Category, List["FewShotExample"]] = {
         ),
     ],
     Category.MATHS: [
+        # Cycle / modular pattern — teaches period detection, not just arithmetic.
         FewShotExample(
             question="What is the units digit of 3^100?",
             options=("1", "3", "7", "9"),
@@ -217,6 +225,25 @@ _FEW_SHOT_BANK: Dict[Category, List["FewShotExample"]] = {
             rationale=(
                 "Units digits of 3^n cycle (3, 9, 7, 1) with period 4. "
                 "100 mod 4 = 0, so we take the last value in the cycle: 1."
+            ),
+        ),
+        # Algebra — teaches unknown-variable reasoning (solve tool path).
+        FewShotExample(
+            question="If 3x + 7 = 22, what is the value of x?",
+            options=("3", "5", "7", "9"),
+            answer_letter="B",
+            rationale=(
+                "Subtract 7 from both sides: 3x = 15. "
+                "Divide by 3: x = 5."
+            ),
+        ),
+        # Combinatorics — teaches factorial/permutation reasoning.
+        FewShotExample(
+            question="In how many ways can 4 different books be arranged on a shelf?",
+            options=("12", "16", "24", "48"),
+            answer_letter="C",
+            rationale=(
+                "The number of arrangements of 4 distinct items is 4! = 4×3×2×1 = 24."
             ),
         ),
     ],

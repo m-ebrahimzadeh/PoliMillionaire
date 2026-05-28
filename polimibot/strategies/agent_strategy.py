@@ -3,11 +3,14 @@
 Protocol (per question, bounded by max_iterations + time_budget):
   1. Prompt the LLM with a tool-aware system message.
   2. Generate free text.
-  3a. If output contains   CALL: calc(<expr>)   → execute, inject result, re-prompt.
-  3b. If output contains   Answer: <letter>     → done.
+  3a. If output contains   CALL: calc(<expr>)    → execute via safe_eval, inject result, re-prompt.
+  3b. If output contains   CALL: solve(<expr>)   → execute via sympy_solve, inject result, re-prompt.
+  3c. If output contains   Answer: <letter>      → done.
   4. If iterations exhausted → parse last text; if still unparseable, abstain.
 
-Only `calc` is wired. Sympy / Python sandbox deferred to Stage 9.
+Two tools are wired:
+  calc  — fast arithmetic (safe_eval AST sandbox); use for direct numeric computation.
+  solve — symbolic math (SymPy); use for equations, modular arithmetic, exact combinatorics.
 """
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ from ..models.llm import LLM
 from ..models.mock import MockLLM
 from ..prompts.templates import parse_answer
 from ..tools.calculator import safe_eval
+from ..tools.sympy_tool import sympy_solve
 from .base import Strategy, StrategyInput, StrategyOutput
 
 _AnyLLM = LLM | MockLLM
@@ -28,19 +32,29 @@ _AnyLLM = LLM | MockLLM
 # One CALL per turn; wait for result; final line must be "Answer: <letter>".
 
 _AGENT_SYSTEM = """\
-You are a careful quiz contestant. You have one tool:
+You are a careful quiz contestant. You have two tools:
 
   CALL: calc(<expression>)
-  Evaluates a Python arithmetic expression and returns the numeric result.
-  Example: CALL: calc(15/100 * 400)
+    Fast arithmetic. Use for direct numeric computation.
+    Example: CALL: calc(15/100 * 400)
+
+  CALL: solve(<expression>)
+    Symbolic math via SymPy. Use for:
+      - equations with an unknown   e.g. solve("3*x + 7 - 22", "x")
+      - modular / exact arithmetic  e.g. solve("Mod(3**100, 10)")
+      - exact combinatorics         e.g. solve("binomial(10, 3)")
+      - geometric / trig formulas   e.g. solve("pi * 5**2")
+    Example: CALL: solve(Mod(3**100, 10))
 
 Rules:
   1. Think step by step in at most 3 sentences.
-  2. If computation is needed, emit EXACTLY one line: CALL: calc(<expression>)
-     Then STOP — you will receive the result.
+  2. If computation is needed, emit EXACTLY one tool call on its own line, then STOP.
+     Choose calc for plain arithmetic, solve for algebra or exact symbolic results.
   3. When you know the final answer, write EXACTLY: Answer: <letter>
      where <letter> is one of A, B, C, D.
-  4. Never guess a number — use the tool if unsure.
+  4. Never guess a number — use the appropriate tool if unsure.
+  5. If the question is purely factual (a name, a theorem, a definition), skip
+     the tools and answer directly.
 """
 
 # ── Call-detection helpers ────────────────────────────────────────────────────
@@ -72,6 +86,14 @@ def _run_calc(expression: str) -> str:
     try:
         result = safe_eval(expression)
         return str(result)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+def _run_solve(expression: str) -> str:
+    """Execute expression via sympy_solve. Returns result string or error message."""
+    try:
+        return sympy_solve(expression)
     except Exception as exc:
         return f"Error: {exc}"
 
@@ -142,8 +164,10 @@ class AgentStrategy(Strategy):
                 tool_name, expression = call
                 if tool_name == "calc":
                     observation = _run_calc(expression)
+                elif tool_name == "solve":
+                    observation = _run_solve(expression)
                 else:
-                    observation = f"Unknown tool '{tool_name}' — only 'calc' is available."
+                    observation = f"Unknown tool '{tool_name}' — available tools: calc, solve."
                 n_tool_calls += 1
                 trace.append(f"[obs {iteration}] {tool_name}({expression}) → {observation}")
 
@@ -208,7 +232,8 @@ class AgentStrategy(Strategy):
         user = (
             f"Question: {inp.question}\n\n"
             f"Options:\n{options_text}\n\n"
-            "Think step by step. Use CALL: calc(...) if computation helps, "
+            "Think step by step. Use CALL: calc(...) for arithmetic or "
+            "CALL: solve(...) for algebra/equations/modular problems, "
             "then write your Answer."
         )
         return [

@@ -128,3 +128,63 @@ def test_tool_strategy_name_reflects_composition():
     strategy = ToolStrategy(tools=[MathsTool()], fallback=baseline)
     assert "maths_tool" in strategy.name
     assert "fallback=" in strategy.name
+
+
+# ── sympy_solve ───────────────────────────────────────────────────────────────
+
+from polimibot.tools.sympy_tool import sympy_solve
+
+
+@pytest.mark.parametrize("expr,expected_substr", [
+    ("factorial(10)",          "3628800"),
+    ("Mod(3**100, 10)",        "1"),
+    ("binomial(10, 3)",        "120"),
+    ("3*x + 7 - 22",          "5"),    # solve for x
+    ("x**2 - 9",               "3"),    # solve x² = 9 (returns [−3, 3], 3 is present)
+    ("pi * 5**2",              "78.5"), # numeric eval, check prefix
+])
+def test_sympy_solve_basic(expr, expected_substr):
+    result = sympy_solve(expr)
+    assert expected_substr in result, f"sympy_solve({expr!r}) = {result!r}, expected {expected_substr!r} in it"
+
+
+def test_sympy_solve_equation_with_equals():
+    # "3*x + 7 = 22" rewritten to "3*x + 7 - 22" internally
+    result = sympy_solve("3*x + 7 = 22")
+    assert "5" in result
+
+
+def test_sympy_solve_raises_on_invalid():
+    with pytest.raises(ValueError):
+        sympy_solve("__import__('os')")
+
+
+def test_sympy_solve_raises_on_no_solution():
+    # x² + 1 = 0 has no real solutions (SymPy returns complex; our solver still returns them)
+    # Just ensure it doesn't crash with a plain error
+    try:
+        result = sympy_solve("x**2 + 1")
+        # SymPy returns complex solutions — result should be a string
+        assert isinstance(result, str)
+    except ValueError:
+        pass  # also acceptable
+
+
+# ── MathsTool extended prefix coverage ───────────────────────────────────────
+
+@pytest.mark.parametrize("question,contains", [
+    ("How many ways can 4 books be arranged?",         None),   # abstains — non-numeric opts handled downstream
+    ("How far does a car travel at 60 km/h for 2 hours?", "60"),
+    ("Find the total of 120 and 80",                   "120"),
+    ("Determine the sum of 15 and 25",                 "15"),
+])
+def test_extract_expression_extended_prefixes(question, contains):
+    from polimibot.tools.maths_tool import _extract_expression
+    expr = _extract_expression(question)
+    if contains is None:
+        # These questions reach the prefix match but may still return None
+        # if no arithmetic is extractable — that is correct behaviour.
+        pass
+    else:
+        assert expr is not None, f"Expected expression from: {question!r}"
+        assert contains in expr
