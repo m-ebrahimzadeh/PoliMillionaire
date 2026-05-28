@@ -113,8 +113,8 @@ class AgentStrategy(Strategy):
         self,
         llm: _AnyLLM,
         *,
-        max_iterations: int = 3,
-        per_turn_tokens: int = 200,
+        max_iterations: int = 2,
+        per_turn_tokens: int = 150,
     ) -> None:
         self.llm = llm
         self.max_iterations = max_iterations

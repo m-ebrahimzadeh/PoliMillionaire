@@ -246,6 +246,18 @@ _FEW_SHOT_BANK: Dict[Category, List["FewShotExample"]] = {
                 "The number of arrangements of 4 distinct items is 4! = 4×3×2×1 = 24."
             ),
         ),
+        # Algebraic geometry — teaches discriminant/tangency condition via solve tool.
+        # Directly addresses the parabola-meets-line question type seen in live games.
+        FewShotExample(
+            question="If the line y = 4x + b is tangent to the parabola y = x^2 + 1, what is the value of b?",
+            options=("-3", "-1", "0", "3"),
+            answer_letter="A",
+            rationale=(
+                "Tangency means exactly one intersection: set x^2 + 1 = 4x + b, "
+                "so x^2 - 4x + (1 - b) = 0. For one solution the discriminant must be zero: "
+                "16 - 4(1 - b) = 0 → 4b = -12 → b = -3."
+            ),
+        ),
     ],
     Category.PHILOSOPHY: [
         FewShotExample(
