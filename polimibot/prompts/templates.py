@@ -258,6 +258,17 @@ _FEW_SHOT_BANK: Dict[Category, List["FewShotExample"]] = {
                 "16 - 4(1 - b) = 0 → 4b = -12 → b = -3."
             ),
         ),
+        # Coordinate geometry — teaches immediate tool use for distance/area calculations.
+        # Directly addresses the opposite-vertices square area question type seen in live games.
+        FewShotExample(
+            question="Points (1, 2) and (5, 6) are opposite vertices of a square. What is the area of the square?",
+            options=("8", "16", "32", "4"),
+            answer_letter="B",
+            rationale=(
+                "The diagonal length is sqrt((5-1)^2 + (6-2)^2) = sqrt(32). "
+                "Area of a square = diagonal^2 / 2 = 32 / 2 = 16."
+            ),
+        ),
     ],
     Category.PHILOSOPHY: [
         FewShotExample(
