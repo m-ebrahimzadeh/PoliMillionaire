@@ -1470,6 +1470,222 @@ else:
 
 cells.append(obs("Run observations"))
 
+# ────────────────────────── Section 2.8 — Tune RAG hyperparameters ──────
+cells.append(md("""
+### 2.8 Tune RAG hyperparameters (optional, RAG only)
+
+Sweep a small grid of recipe knobs (`k`, hybrid, reranker, multi-query,
+oversearch), measure downstream accuracy on a gold-set slice, then calibrate
+one `min_score` threshold **per retrieval path** (`dense` / `rrf` / `rerank`)
+from the same sweep — reusing the already-loaded `llm` and `retriever`.
+
+The three threshold knobs are path-aware (one wins per recipe):
+
+| recipe (hybrid, rerank) | path     | knob                        | score scale on `extras.top_score`        |
+|-------------------------|----------|-----------------------------|------------------------------------------|
+| `(False, False)`        | `dense`  | `RAG_MIN_SCORE`             | cosine ∈ [-1, 1]                         |
+| `(True,  False)`        | `rrf`    | `RAG_MIN_SCORE_RRF`         | RRF ∈ ~[0, 0.03]                         |
+| `(_,     True)`         | `rerank` | `RAG_MIN_SCORE_RERANK`      | raw cross-encoder logit, model-dependent |
+
+`RAGStrategy` records `extras.top_score` on whichever scale was active, so one
+sweep covers all three.
+
+**Workflow**: edit the grid in **cell 2.8a** → run **cell 2.8b** (sweep) →
+run **cell 2.8c** (calibrate τ per path) → copy the winner's knob + τ back
+into **Section 1.1** and re-run Sections 1.3-1.4 before re-evaluating in 2.2.
+
+Skipped silently when `retriever is None` (no RAG configured) or `USE_MOCK=True`.
+"""))
+
+cells.append(md("#### 2.8a Sweep grid"))
+
+cells.append(code('''
+# Keep the grid small to start; expand once you've seen the leaderboard.
+# Each combo runs evaluate_strategy on a gold slice — wall time scales as
+# (n_combos × SWEEP_N × per-question latency). For a quick first pass:
+# SWEEP_N=30, default grid → ~30 valid combos, ~10–20 minutes on Colab T4.
+SWEEP_KS                = [3, 5, 8]
+SWEEP_HYBRID            = [False, True]      # dense vs hybrid RRF
+SWEEP_RERANK            = [False, True]      # off vs cross-encoder
+SWEEP_MULTI_QUERY       = [False, True]      # 1 query vs 1+4 queries
+SWEEP_RERANK_OVERSEARCH = [3, 5]             # only varied when rerank=True
+SWEEP_N                 = 50                  # gold-set slice size
+'''))
+
+cells.append(md("#### 2.8b Run the sweep"))
+
+cells.append(code('''
+import itertools
+import time as _time
+import pandas as pd
+from polimibot.eval.evaluator import evaluate_strategy
+from polimibot.strategies.rag_strategy import RAGStrategy
+
+if retriever is None or USE_MOCK:
+    print('Tuning sweep skipped (retriever is None or USE_MOCK=True).')
+    sweep_df = None
+    sweep_samples_by_combo = {}
+else:
+    # Deterministic slice — same prefix every time so reruns are comparable.
+    _gold_slice = list(gold)[:SWEEP_N]
+    sweep_samples_by_combo: dict[tuple, list] = {}
+
+    rows = []
+    combos = list(itertools.product(
+        SWEEP_KS, SWEEP_HYBRID, SWEEP_RERANK,
+        SWEEP_MULTI_QUERY, SWEEP_RERANK_OVERSEARCH,
+    ))
+    n_valid = 0
+    n_total = 0
+    for k_, hyb, rer, mq, os_ in combos:
+        n_total += 1
+        # Skip combos that can't compose under the current retriever.
+        if rer and not retriever.has_reranker:
+            continue
+        if hyb and not retriever.has_bm25:
+            continue
+        # rerank_oversearch is a no-op when rerank=False — pick one canonical
+        # value so we don't double-count identical recipes.
+        if not rer and os_ != SWEEP_RERANK_OVERSEARCH[0]:
+            continue
+        n_valid += 1
+
+        # Reuse the shared rag kwargs from Section 1.4; override the swept
+        # knobs and turn thresholds OFF (we want the full score distribution
+        # to feed 2.8c calibration).
+        _kw = dict(_rag_kwargs)
+        _kw.update(
+            k=k_, use_hybrid=hyb, use_reranker=rer,
+            use_multi_query=mq, rerank_oversearch=os_,
+            min_score=None, min_score_rrf=None, min_score_rerank=None,
+            # Disable live fallback during the sweep so timing is offline-only
+            # and score distributions reflect the local index, not Wikipedia.
+            use_live_fallback=False,
+            index_grower=None,
+        )
+        strat = RAGStrategy(llm, retriever, **_kw)
+        t0 = _time.monotonic()
+        rep = evaluate_strategy(strat, _gold_slice, verbose=False)
+        dt = _time.monotonic() - t0
+
+        # Stash the per-question samples for 2.8c — calibrating from in-memory
+        # samples avoids the JSONL roundtrip.
+        sweep_samples_by_combo[(k_, hyb, rer, mq, os_)] = rep.samples
+
+        rows.append({
+            'k': k_, 'hybrid': hyb, 'rerank': rer, 'mq': mq, 'os': os_,
+            'accuracy': round(rep.accuracy, 4),
+            'ece':      round(rep.ece, 4),
+            'wall_s':   round(dt, 1),
+            'n':        rep.n_total,
+        })
+        # Live progress so the user can ctrl-c if a combo is too slow.
+        print(f'  k={k_} hyb={int(hyb)} rer={int(rer)} mq={int(mq)} os={os_}'
+              f'  acc={rep.accuracy:.1%}  ({dt:.1f}s)')
+
+    sweep_df = pd.DataFrame(rows).sort_values('accuracy', ascending=False)
+    print(f'\\nRan {n_valid} / {n_total} combos (others skipped: no reranker/bm25).')
+    print('\\nTop 10 RAG recipes by accuracy on the gold slice:')
+    print(sweep_df.head(10).to_string(index=False))
+    if not sweep_df.empty:
+        win = sweep_df.iloc[0]
+        print(f'\\nWinner: k={int(win.k)}, hybrid={bool(win.hybrid)}, '
+              f'rerank={bool(win.rerank)}, mq={bool(win.mq)}, os={int(win.os)}  '
+              f'→ acc={win.accuracy:.1%}')
+'''))
+
+cells.append(md("""#### 2.8c Calibrate `RAG_MIN_SCORE`, `RAG_MIN_SCORE_RRF`, `RAG_MIN_SCORE_RERANK`
+
+For each retrieval path that ran in the sweep, pick the best-accuracy recipe
+in that path, then maximise gated-policy expected accuracy:
+
+```
+expected_acc(τ) = acc(score ≥ τ) · P(score ≥ τ)
+                + bare_baseline_acc · P(score < τ)
+```
+
+The bare-baseline accuracy comes from running the LLM **without RAG** on the
+same gold slice — measured automatically in this cell.
+
+The cell outputs one row per path with a calibrated τ ready to paste back into
+Section 1.1. You only need to set the knob for the recipe you'll ship."""))
+
+cells.append(code('''
+from polimibot.eval.threshold_calibration import calibrate_threshold
+from polimibot.strategies.llm_baseline import BaselineLLMStrategy
+
+if sweep_df is None or sweep_df.empty:
+    print('No sweep results — run cell 2.8b first.')
+    rec_df = None
+else:
+    # 1. Bare-baseline accuracy on the same slice (no RAG).
+    #    Drives the calibration formula's fallback-on-gated assumption.
+    _baseline_for_cal = BaselineLLMStrategy(
+        llm, style=PROMPT_STYLE,
+        use_score_options=USE_SCORE_OPTIONS,
+        direct_max_new_tokens=DIRECT_MAX_NEW_TOKENS,
+        cot_max_new_tokens=COT_MAX_NEW_TOKENS,
+        stop_strings=STOP_STRINGS,
+    )
+    _bare_rep = evaluate_strategy(_baseline_for_cal, list(gold)[:SWEEP_N], verbose=False)
+    BARE_BASELINE_ACC = _bare_rep.accuracy
+    print(f'Bare-baseline accuracy on the slice: {BARE_BASELINE_ACC:.2%}')
+
+    # 2. Bucket sweep rows by retrieval path. Within each path, pick the
+    #    best-accuracy recipe and calibrate τ from its in-memory samples.
+    def _path_of(row):
+        if row.rerank: return 'rerank'
+        if row.hybrid: return 'rrf'
+        return 'dense'
+    sweep_df['path'] = sweep_df.apply(_path_of, axis=1)
+
+    _knob_for_path = {
+        'dense':  'RAG_MIN_SCORE',
+        'rrf':    'RAG_MIN_SCORE_RRF',
+        'rerank': 'RAG_MIN_SCORE_RERANK',
+    }
+    recs = []
+    for path, group in sweep_df.groupby('path'):
+        best = group.sort_values('accuracy', ascending=False).iloc[0]
+        key = (int(best.k), bool(best.hybrid), bool(best.rerank),
+               bool(best.mq), int(best['os']))
+        samples = sweep_samples_by_combo.get(key, [])
+        pairs = [(s.extras.get('top_score'), s.correct) for s in samples
+                 if s.extras.get('top_score') is not None]
+        if not pairs:
+            continue   # nothing to calibrate on this path
+        scores  = [s for s, _ in pairs]
+        corrects = [c for _, c in pairs]
+        cand = calibrate_threshold(
+            scores, corrects, bare_baseline_acc=BARE_BASELINE_ACC,
+        )
+        top = cand[0]
+        recs.append({
+            'path':                path,
+            'knob':                _knob_for_path[path],
+            'best_recipe':         f'k={int(best.k)} mq={int(best.mq)} os={int(best["os"])}',
+            'recipe_accuracy':     round(best.accuracy, 4),
+            'tau':                 round(top['tau'], 4),
+            'expected_acc_at_tau': round(top['expected'], 4),
+            'p_ungated_at_tau':    round(top['p_ungated'], 3),
+            'n_pairs':             len(pairs),
+        })
+
+    rec_df = pd.DataFrame(recs).sort_values('expected_acc_at_tau', ascending=False)
+    print('\\nCalibrated thresholds (one per retrieval path):')
+    print(rec_df.to_string(index=False))
+    print('\\nPaste the τ matching your shipped recipe into Section 1.1, e.g.:')
+    for r in recs:
+        print(f"  {r['knob']} = {r['tau']}")
+    print()
+    print('Note: this assumes the bare-LLM baseline catches gated questions.')
+    print('If you set USE_LIVE_FALLBACK=True, the live arm catches them instead —')
+    print('so the calibrated τ is a lower bound; raising it slightly is usually')
+    print('fine and reduces Wikipedia API load.')
+'''))
+
+cells.append(obs("Tuning observations"))
+
 # ────────────────────────── Section 3 — Compare ──────────────────────────
 cells.append(md("""
 ---
