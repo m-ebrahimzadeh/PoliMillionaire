@@ -600,7 +600,7 @@ cells.append(code('''
 # Lazy retriever. Built only when at least one strategy needs it.
 # Reranker is loaded once and attached to the retriever — heavy (~100 MB),
 # so we cache it across re-runs of Section 1.3 the same way the LLM is cached.
-need_retriever = USE_RAG or USE_ENSEMBLE or USE_TIERED
+need_retriever = USE_RAG or USE_ENSEMBLE or USE_TIERED or USE_CONFIDENCE_GATED
 
 retriever = None
 if need_retriever:
