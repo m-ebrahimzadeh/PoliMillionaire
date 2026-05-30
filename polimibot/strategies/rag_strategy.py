@@ -237,13 +237,17 @@ class RAGStrategy(Strategy):
             min_score_rrf: hybrid-path RRF threshold (no reranker). RRF scores
                 live in ~[0, 0.03]; calibrated values typical in 0.005–0.015.
                 None = never gate.
-            min_score_rerank: rerank-path threshold on the sigmoid-mapped
-                cross-encoder score ∈ [0, 1]. Calibrated values typical in
-                0.3–0.6. Setting this to 1.0 forces 100% gating — pairs well
-                with use_live_fallback=True to route everything through live
-                Wikipedia retrieval (and skips the offline FAISS+BM25+rerank
-                pass entirely via the short-circuit at the top of answer()).
-                None = never gate.
+            min_score_rerank: rerank-path threshold on the RAW cross-encoder
+                logit (no sigmoid is applied — bge-reranker emits the model's
+                pre-sigmoid output, so values can be negative). The practical
+                scale is model-dependent; calibrate from run logs via
+                ``scripts/calibrate_min_score.py --path rerank`` or the
+                in-notebook tuning section. Setting the threshold above the
+                typical positive-relevance range forces ~100% gating — pairs
+                well with use_live_fallback=True to route everything through
+                live Wikipedia retrieval (and skips the offline
+                FAISS+BM25+rerank pass entirely via the short-circuit at the
+                top of answer()). None = never gate.
             max_passage_chars: cap per individual passage. Tighten when
                 context-length pressure is high; loosen to retain detail.
             max_total_chars: cap on the joined context block.
@@ -381,8 +385,9 @@ class RAGStrategy(Strategy):
             active_threshold = self.min_score
 
         # Short-circuit: if the threshold is set at-or-above its score ceiling
-        # (1.0 on the sigmoid-reranker and cosine-dense scales), the offline
-        # path would always gate. Skip the ~50-100 ms FAISS+BM25+rerank pass
+        # (1.0 on the cosine-dense scale, or any value above the reranker's
+        # typical positive-relevance logit range), the offline path would
+        # always gate. Skip the ~50-100 ms FAISS+BM25+rerank pass
         # and go straight to the gate logic so live fallback can take over.
         # Only meaningful when live fallback is wired up; otherwise we still
         # need offline so the bare-LLM path has *some* trace data to log.
@@ -469,8 +474,8 @@ class RAGStrategy(Strategy):
         # Score units differ by retrieval path:
         #   dense-only  → cosine ∈ [-1, 1]               use min_score
         #   hybrid RRF  → RRF ∈ ~0–0.03                  use min_score_rrf
-        #   reranker    → sigmoid-mapped cross-encoder    use min_score_rerank
-        #                 score ∈ [0, 1]
+        #   reranker    → raw cross-encoder logit         use min_score_rerank
+        #                 (model-dependent scale; can be negative)
         #
         # Applying a cosine-calibrated threshold on an RRF or cross-encoder
         # score is meaningless (gates every question or none). Each path
