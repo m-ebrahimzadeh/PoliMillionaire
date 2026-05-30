@@ -41,6 +41,7 @@ from typing import Any, Callable, Iterable, Optional, Sequence
 
 from ..config import Category
 from ..logging_utils import load_jsonl
+from ..rag.fusion import reciprocal_rank_fusion
 from .gold_set import GoldItem, GoldSet
 
 
@@ -356,6 +357,182 @@ def evaluate_retrieval(
             ) / len(cat_samples)
             for k in ks_sorted
         }
+
+    return RetrievalReport(
+        retriever_name=retriever_name,
+        n_total=len(items),
+        n_labeled=n_labeled,
+        n_unlabeled_skipped=n_unlabeled,
+        ks=ks_sorted,
+        recall_at=recall_at,
+        mrr=round(mrr, 4),
+        by_category=by_category,
+        samples=samples,
+    )
+
+
+# ── Multi-query harness (matches runtime RAGStrategy recipe) ─────────────
+
+
+def evaluate_retrieval_multi_query(
+    retriever: Any,
+    items: Sequence[RetrievalGoldItem],
+    *,
+    ks: Sequence[int] = (1, 3, 5, 10),
+    retriever_name: str = "retriever_mq",
+    k_retrieve: Optional[int] = None,
+    use_category_filter: bool = True,
+    use_reranker: bool = False,
+    use_hybrid: bool = False,
+    rerank_oversearch: int = 5,
+) -> RetrievalReport:
+    """Recall@k and MRR for the multi-query RAGStrategy recipe.
+
+    Mirrors :func:`evaluate_retrieval` but fans out one query per (question,
+    option) pair the same way RAGStrategy does at runtime, RRF-fuses the
+    per-query rank lists, and (optionally) reranks the fused pool once with
+    the cross-encoder. Use this when ``RAG_USE_MULTI_QUERY=True`` — the
+    single-query :func:`evaluate_retrieval` measures the wrong recipe.
+
+    Args:
+        retriever: same shape as in :func:`evaluate_retrieval`.
+        items: labeling set.
+        ks: which recall thresholds to report.
+        retriever_name: label for the report.
+        k_retrieve: final top-k after fusion (and rerank, if enabled).
+            Defaults to ``max(ks)``.
+        use_category_filter: same as :func:`evaluate_retrieval`.
+        use_reranker: when True, rerank the fused pool ONCE with the question
+            as the cross-encoder query — matches RAGStrategy's recipe (one
+            rerank pass, not one per query).
+        use_hybrid: when True, ask the retriever to RRF-fuse dense + BM25
+            within each per-query retrieve() call.
+        rerank_oversearch: how wide each per-query rank list is, expressed
+            as a multiple of ``k_retrieve``. Wider pool → better rerank;
+            costs proportionally more cross-encoder calls. Matches the
+            ``RERANK_OVERSEARCH`` knob in the notebook.
+    """
+    if not items:
+        return RetrievalReport(
+            retriever_name=retriever_name,
+            n_total=0, n_labeled=0, n_unlabeled_skipped=0,
+            ks=tuple(sorted(ks)), recall_at={k: 0.0 for k in ks}, mrr=0.0,
+        )
+
+    ks_sorted = tuple(sorted(set(ks)))
+    if k_retrieve is None:
+        k_retrieve = max(ks_sorted)
+
+    # Per-query pool width — must be wide enough that the post-fusion
+    # rerank pass has a useful candidate set when reranker is on.
+    pool_k = k_retrieve * rerank_oversearch if use_reranker else k_retrieve
+
+    samples: list[RetrievalSample] = []
+    n_unlabeled = 0
+    for item in items:
+        if not item.is_labeled:
+            n_unlabeled += 1
+            continue
+
+        category = (
+            item.category.value
+            if (use_category_filter and item.category is not None)
+            else None
+        )
+        # Per-query kwargs — never rerank inside the per-query call;
+        # the reranker fires once over the fused pool below (matches
+        # RAGStrategy's recipe, see rag_strategy.py line ~422-465).
+        per_query_kwargs: dict = {"k": pool_k, "category": category}
+        if use_hybrid:
+            per_query_kwargs["hybrid"] = True
+
+        queries = [item.question_text] + [
+            f"{item.question_text} {opt}" for opt in item.options
+        ]
+        ranked_lists: list[list[tuple]] = []
+        for q in queries:
+            try:
+                hits = retriever.retrieve(q, **per_query_kwargs) or []
+            except TypeError:
+                # Fall back to the lowest-common-denominator signature
+                # so older mocks don't crash the harness.
+                try:
+                    hits = retriever.retrieve(q, k=pool_k, category=category) or []
+                except TypeError:
+                    hits = retriever.retrieve(q, k=pool_k) or []
+            ranked_lists.append(list(hits))
+
+        fused = reciprocal_rank_fusion(ranked_lists, k=pool_k)
+        if use_reranker:
+            # One rerank pass over the fused pool, anchored on the question
+            # (not on a fanned-out query) — matches RAGStrategy.
+            try:
+                hits = retriever.rerank_pool(item.question_text, fused, k=k_retrieve)
+            except AttributeError:
+                # Retriever has no reranker attached — silently degrade to
+                # the fused top-k. Surfaces as "use_reranker requested but
+                # ignored" downstream.
+                hits = fused[:k_retrieve]
+        else:
+            hits = fused[:k_retrieve]
+
+        seen: set[str] = set()
+        unique_titles: list[str] = []
+        unique_scores: list[float] = []
+        for chunk, score in hits:
+            if chunk.source not in seen:
+                seen.add(chunk.source)
+                unique_titles.append(chunk.source)
+                unique_scores.append(float(score))
+
+        found_at: Optional[int] = None
+        gold_norm = (item.gold_article_title or "").strip()
+        for rank, title in enumerate(unique_titles, start=1):
+            if title.strip() == gold_norm:
+                found_at = rank
+                break
+
+        samples.append(RetrievalSample(
+            question_text=item.question_text,
+            gold_article_title=item.gold_article_title or "",
+            retrieved_titles=unique_titles,
+            retrieved_scores=unique_scores,
+            found_at_rank=found_at,
+            category=item.category.value if item.category else None,
+            level=item.level,
+        ))
+
+    n_labeled = len(samples)
+    if n_labeled == 0:
+        return RetrievalReport(
+            retriever_name=retriever_name,
+            n_total=len(items), n_labeled=0,
+            n_unlabeled_skipped=n_unlabeled,
+            ks=ks_sorted,
+            recall_at={k: 0.0 for k in ks_sorted}, mrr=0.0,
+        )
+
+    recall_at: dict[int, float] = {
+        k: sum(1 for s in samples
+               if s.found_at_rank is not None and s.found_at_rank <= k) / n_labeled
+        for k in ks_sorted
+    }
+    mrr = sum(
+        (1.0 / s.found_at_rank) if s.found_at_rank else 0.0
+        for s in samples
+    ) / n_labeled
+
+    by_cat_samples: dict[str, list[RetrievalSample]] = defaultdict(list)
+    for s in samples:
+        by_cat_samples[s.category or "unknown"].append(s)
+    by_category: dict[str, dict[int, float]] = {
+        cat: {
+            k: sum(1 for s in cs
+                   if s.found_at_rank is not None and s.found_at_rank <= k) / len(cs)
+            for k in ks_sorted
+        }
+        for cat, cs in by_cat_samples.items()
+    }
 
     return RetrievalReport(
         retriever_name=retriever_name,

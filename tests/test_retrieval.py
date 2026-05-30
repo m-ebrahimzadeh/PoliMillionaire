@@ -12,6 +12,7 @@ from polimibot.eval.retrieval import (
     RetrievalGoldItem,
     build_labeling_template,
     evaluate_retrieval,
+    evaluate_retrieval_multi_query,
     load_retrieval_gold,
     recall_from_runs,
     save_retrieval_gold,
@@ -325,3 +326,157 @@ def test_report_save_omits_samples(tmp_path: Path):
     d = json.loads(path.read_text())
     assert "recall_at" in d
     assert "samples" not in d   # too large for the report file
+
+
+# ── Multi-query harness (mirrors RAGStrategy's runtime recipe) ────────────
+
+
+def _mq_gold(idx: int, options: tuple[str, ...], *, title: str,
+             cat=Category.HISTORY) -> RetrievalGoldItem:
+    return RetrievalGoldItem(
+        question_text=f"Q{idx}",
+        options=options,
+        correct_index=0,
+        competition_id=1,
+        level=3,
+        category=cat,
+        gold_article_title=title,
+        candidates=(),
+    )
+
+
+def test_multi_query_fans_out_one_call_per_query():
+    """RAGStrategy issues [question] + [question+opt for opt in options]
+    — 5 calls for a 4-option MCQ. Harness must do the same."""
+    calls: list[str] = []
+
+    class _Counter:
+        def retrieve(self, query, k=5, *, category=None, **_):
+            calls.append(query)
+            return [(Chunk(text="…", source="A", chunk_id=0), 1.0)]
+
+    items = [_mq_gold(0, options=("opt_a", "opt_b", "opt_c", "opt_d"), title="A")]
+    evaluate_retrieval_multi_query(_Counter(), items, ks=(1,))
+    assert calls == [
+        "Q0",
+        "Q0 opt_a", "Q0 opt_b", "Q0 opt_c", "Q0 opt_d",
+    ]
+
+
+def test_multi_query_rrf_fusion_picks_consensus_winner():
+    """When every per-query list ranks article X near the top, RRF should
+    push X to rank 1 even if no single query ranked it first."""
+    # X is rank-2 in every list — but rank-1 differs across lists, so the
+    # rank-1 entries split votes. X wins by consensus.
+    per_query = {
+        "Q0":         [("Y1", 0.9), ("X", 0.8)],
+        "Q0 a":       [("Y2", 0.9), ("X", 0.8)],
+        "Q0 b":       [("Y3", 0.9), ("X", 0.8)],
+        "Q0 c":       [("Y4", 0.9), ("X", 0.8)],
+        "Q0 d":       [("Y5", 0.9), ("X", 0.8)],
+    }
+
+    class _ByQuery:
+        def retrieve(self, query, k=5, *, category=None, **_):
+            return [
+                (Chunk(text="…", source=src, chunk_id=i), score)
+                for i, (src, score) in enumerate(per_query.get(query, []))
+            ]
+
+    items = [_mq_gold(0, options=("a", "b", "c", "d"), title="X")]
+    report = evaluate_retrieval_multi_query(_ByQuery(), items, ks=(1, 3))
+    assert report.recall_at[1] == 1.0
+    assert report.mrr == 1.0
+
+
+def test_multi_query_passes_hybrid_through_per_call():
+    captured: list[dict] = []
+
+    class _Captor:
+        def retrieve(self, query, k=5, *, category=None, **kw):
+            captured.append({"query": query, "category": category, **kw})
+            return [(Chunk(text="…", source="A", chunk_id=0), 1.0)]
+
+    items = [_mq_gold(0, options=("a", "b", "c", "d"), title="A")]
+    evaluate_retrieval_multi_query(_Captor(), items, ks=(1,),
+                                    use_hybrid=True,
+                                    use_category_filter=True)
+    # Every per-query call gets hybrid=True and category=history (the item's).
+    for call in captured:
+        assert call.get("hybrid") is True
+        assert call["category"] == "history"
+    # And the per-query call must NOT pass rerank=True — rerank fires once
+    # over the fused pool, not per query (matches RAGStrategy).
+    for call in captured:
+        assert call.get("rerank") is None or call.get("rerank") is False
+
+
+def test_multi_query_reranks_fused_pool_with_question_as_anchor():
+    """When use_reranker=True, the harness calls retriever.rerank_pool ONCE,
+    with the item's question_text (not a fanned-out query)."""
+    rerank_calls: list[str] = []
+
+    class _ReranklingRetriever:
+        def retrieve(self, query, k=5, *, category=None, **_):
+            return [(Chunk(text="…", source="A", chunk_id=0), 0.5)]
+
+        def rerank_pool(self, query, pool, *, k):
+            rerank_calls.append(query)
+            # Trivial pass-through; relevance not the point of this test.
+            return list(pool)[:k]
+
+    items = [_mq_gold(0, options=("a", "b", "c", "d"), title="A")]
+    evaluate_retrieval_multi_query(
+        _ReranklingRetriever(), items, ks=(1,),
+        use_reranker=True, rerank_oversearch=2,
+    )
+    assert rerank_calls == ["Q0"]   # exactly one rerank, anchored on the question
+
+
+def test_multi_query_oversearch_widens_per_query_pool():
+    """rerank_oversearch=N → each per-query call asks for N*k_retrieve hits.
+    Without reranker, per-query k stays at k_retrieve."""
+    captured_ks: list[int] = []
+
+    class _Captor:
+        def retrieve(self, query, k=5, *, category=None, **_):
+            captured_ks.append(k)
+            return [(Chunk(text="…", source="A", chunk_id=0), 1.0)]
+
+        def rerank_pool(self, query, pool, *, k):
+            return list(pool)[:k]
+
+    items = [_mq_gold(0, options=("a", "b", "c", "d"), title="A")]
+
+    captured_ks.clear()
+    evaluate_retrieval_multi_query(_Captor(), items, ks=(1, 3),
+                                    use_reranker=True, rerank_oversearch=4)
+    # max(ks)=3, oversearch=4 → per-query k must be 12.
+    assert set(captured_ks) == {12}
+
+    captured_ks.clear()
+    evaluate_retrieval_multi_query(_Captor(), items, ks=(1, 3),
+                                    use_reranker=False, rerank_oversearch=4)
+    # Without reranker, oversearch has no effect — per-query k stays at 3.
+    assert set(captured_ks) == {3}
+
+
+def test_multi_query_unlabeled_items_skipped():
+    items = [
+        _mq_gold(0, options=("a", "b", "c", "d"), title="A"),
+        RetrievalGoldItem(
+            question_text="Q1", options=("a","b","c","d"),
+            correct_index=0, competition_id=1, level=3,
+            category=Category.HISTORY, gold_article_title=None,
+        ),
+    ]
+
+    class _Hit:
+        def retrieve(self, query, k=5, *, category=None, **_):
+            return [(Chunk(text="…", source="A", chunk_id=0), 1.0)]
+
+    report = evaluate_retrieval_multi_query(_Hit(), items, ks=(1,))
+    assert report.n_total == 2
+    assert report.n_labeled == 1
+    assert report.n_unlabeled_skipped == 1
+    assert report.recall_at[1] == 1.0

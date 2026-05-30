@@ -1420,6 +1420,7 @@ else:
     from polimibot.eval.retrieval import (
         build_labeling_template, save_retrieval_gold,
         load_retrieval_gold, evaluate_retrieval,
+        evaluate_retrieval_multi_query,
     )
 
     if not RETRIEVAL_GOLD_PATH.exists():
@@ -1435,19 +1436,34 @@ else:
             print(f'No labeled rows yet in {RETRIEVAL_GOLD_PATH}.')
             print('Edit the file and fill in "gold_article_title" for each question.')
         else:
-            report = evaluate_retrieval(
-                retriever, labeled,
-                ks=(1, 3, 5, 10),
-                use_category_filter=RAG_USE_CATEGORY_FILTER,
-                use_reranker=RAG_USE_RERANKER,
-                use_hybrid=RAG_USE_HYBRID,
-                retriever_name=(
-                    f'k={RAG_K}'
-                    + ('+cat' if RAG_USE_CATEGORY_FILTER else '')
-                    + ('+hybrid' if RAG_USE_HYBRID else '')
-                    + ('+rerank' if RAG_USE_RERANKER else '')
-                ),
+            # Dispatch on RAG_USE_MULTI_QUERY so the diagnostic measures the
+            # same recipe the runtime RAGStrategy actually uses. The single-
+            # query harness was silently mis-measuring when multi-query was on.
+            common_name = (
+                f'k={RAG_K}'
+                + ('+cat' if RAG_USE_CATEGORY_FILTER else '')
+                + ('+hybrid' if RAG_USE_HYBRID else '')
+                + ('+rerank' if RAG_USE_RERANKER else '')
             )
+            if RAG_USE_MULTI_QUERY:
+                report = evaluate_retrieval_multi_query(
+                    retriever, labeled,
+                    ks=(1, 3, 5, 10),
+                    use_category_filter=RAG_USE_CATEGORY_FILTER,
+                    use_reranker=RAG_USE_RERANKER,
+                    use_hybrid=RAG_USE_HYBRID,
+                    rerank_oversearch=RERANK_OVERSEARCH,
+                    retriever_name=common_name + '+mq',
+                )
+            else:
+                report = evaluate_retrieval(
+                    retriever, labeled,
+                    ks=(1, 3, 5, 10),
+                    use_category_filter=RAG_USE_CATEGORY_FILTER,
+                    use_reranker=RAG_USE_RERANKER,
+                    use_hybrid=RAG_USE_HYBRID,
+                    retriever_name=common_name,
+                )
             report.print_summary()
             report.save(PATHS.eval_dir / f'retrieval__{report_id}.json')
 '''))
