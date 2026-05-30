@@ -22,85 +22,53 @@ The matching ``--path`` value depends on which RAG variant produced the
 runs: ``dense`` for dense-only, ``rrf`` for hybrid (RRF) fusion, or
 ``rerank`` for the cross-encoder reranker. The bare-baseline accuracy
 should be measured separately on the same eval set with RAG disabled.
+
+The algorithm lives in :mod:`polimibot.eval.threshold_calibration` so the
+in-notebook tuning section can call it directly (no separate process).
 """
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
-import numpy as np
+from polimibot.eval.threshold_calibration import (
+    calibrate_threshold,
+    load_pairs_from_runs,
+)
 
 
 def main() -> int:
     args = _parse_args()
 
-    pairs = _load_pairs(args.runs)
+    paths: list[Path] = []
+    for pattern in args.runs:
+        paths.extend(Path().glob(pattern))
+    pairs = load_pairs_from_runs(*paths)
     if not pairs:
         print("No (score, correct) pairs found — check --runs glob.")
         return 1
 
-    scores  = np.array([s for s, _ in pairs], dtype=float)
-    correct = np.array([c for _, c in pairs], dtype=bool)
+    rows = calibrate_threshold(
+        [s for s, _ in pairs],
+        [c for _, c in pairs],
+        bare_baseline_acc=args.bare_baseline_acc,
+    )
 
-    # Candidate thresholds: every observed score, plus 0 and 1. Rounded
-    # to 3 dp so identical scores collapse into one candidate.
-    candidates = sorted(set(np.round(scores, 3).tolist()) | {0.0, 1.0})
-
-    bare = args.bare_baseline_acc
-    rows = []
-    best: tuple[float | None, float] = (None, -1.0)
-
-    for tau in candidates:
-        ungated   = scores >= tau
-        n_ungated = int(ungated.sum())
-        n_total   = len(scores)
-        acc_ungated = float(correct[ungated].mean()) if n_ungated > 0 else 0.0
-        p_ungated   = n_ungated / n_total
-        expected    = acc_ungated * p_ungated + bare * (1.0 - p_ungated)
-        rows.append((tau, p_ungated, acc_ungated, expected))
-        if expected > best[1]:
-            best = (tau, expected)
-
-    rows.sort(key=lambda r: r[3], reverse=True)
+    best = rows[0]
     print(f"\nCalibration for path={args.path!r}, "
-          f"baseline_acc={bare:.2%}, n={len(scores)}\n")
+          f"baseline_acc={args.bare_baseline_acc:.2%}, n={len(pairs)}\n")
     print("  τ        P(ungated)   acc(ungated)   expected   ")
     print("  ──────  ───────────  ─────────────  ──────────")
-    for tau, p, acc, exp in rows[:args.top_n]:
-        flag = " ★" if tau == best[0] else ""
-        print(f"  {tau:>5.3f}   {p:>10.2%}   {acc:>11.2%}   {exp:>8.2%}{flag}")
+    for row in rows[:args.top_n]:
+        flag = " ★" if row["tau"] == best["tau"] else ""
+        print(
+            f"  {row['tau']:>5.3f}   {row['p_ungated']:>10.2%}   "
+            f"{row['acc_ungated']:>11.2%}   {row['expected']:>8.2%}{flag}"
+        )
 
-    if best[0] is None:
-        print("\nNo candidate found (empty score distribution).")
-        return 1
-
-    print(f"\nBest τ for {args.path} path: {best[0]:.3f}  "
-          f"(expected acc {best[1]:.2%})")
+    print(f"\nBest τ for {args.path} path: {best['tau']:.3f}  "
+          f"(expected acc {best['expected']:.2%})")
     return 0
-
-
-def _load_pairs(globs: list[str]) -> list[tuple[float, bool]]:
-    """Pull (top_score, correct) tuples from one or more eval JSONLs.
-
-    Each line must be a dict shaped ``{..., "correct": bool, "extras":
-    {"top_score": float}}``. Lines missing either field are skipped.
-    """
-    pairs: list[tuple[float, bool]] = []
-    for pattern in globs:
-        for path in Path().glob(pattern):
-            with path.open(encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    rec = json.loads(line)
-                    extras = rec.get("extras") or {}
-                    score  = extras.get("top_score")
-                    if score is None:
-                        continue
-                    pairs.append((float(score), bool(rec.get("correct", False))))
-    return pairs
 
 
 def _parse_args() -> argparse.Namespace:
