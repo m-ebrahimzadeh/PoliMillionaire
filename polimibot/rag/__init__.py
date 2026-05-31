@@ -5,6 +5,9 @@ from .fusion import RRF_K, reciprocal_rank_fusion
 from .index import FAISSIndex
 from .index_grower import IndexGrower
 from .live_search import LiveSearchFallback
+from .news_search import (
+    GuardianNewsSource, NewsLiveSearch, extract_question_date,
+)
 from .reranker import CrossEncoderReranker, RerankerSpec
 from .retriever import Retriever
 
@@ -17,5 +20,6 @@ __all__ = [
     "CrossEncoderReranker", "RerankerSpec",
     "Retriever",
     "LiveSearchFallback",
+    "GuardianNewsSource", "NewsLiveSearch", "extract_question_date",
     "IndexGrower",
 ]
