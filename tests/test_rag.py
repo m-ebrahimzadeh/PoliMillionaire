@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from polimibot.rag.chunker import Chunk, chunk_text
+from polimibot.rag.chunker import Chunk, chunk_text, embedding_text
 
 faiss = pytest.importorskip("faiss", reason="faiss-cpu not installed — skipping index tests")
 
@@ -108,6 +108,37 @@ def test_chunk_manifest_version_exported():
     rely on its presence and integrality."""
     from polimibot.rag.chunker import CHUNKER_VERSION
     assert isinstance(CHUNKER_VERSION, int) and CHUNKER_VERSION >= 2
+
+
+# ── Entity-grounded embedding text ──────────────────────────────────────────
+
+
+def test_embedding_text_prefixes_source_title():
+    """The embedded form grounds the passage in its source title so the
+    vector is anchored to the entity (trivia questions name the entity)."""
+    c = Chunk(text="was painted in 1503.", source="Mona Lisa", chunk_id=4)
+    assert embedding_text(c) == "Mona Lisa: was painted in 1503."
+
+
+def test_embedding_text_leaves_stored_text_pure():
+    """``Chunk.text`` itself is never mutated — display + BM25 use it verbatim.
+    Grounding lives only in the embedding-input transform."""
+    chunks = chunk_text("hello world", source="Earth", chunk_size=300, overlap=50)
+    assert chunks[0].text == "hello world"          # stored text untouched
+    assert embedding_text(chunks[0]) == "Earth: hello world"
+
+
+def test_embedding_text_empty_source_falls_back_to_text():
+    """Defensive: a sourceless chunk embeds its raw text rather than ': text'."""
+    c = Chunk(text="orphan passage", source="", chunk_id=0)
+    assert embedding_text(c) == "orphan passage"
+
+
+def test_embed_text_version_exported():
+    """EMBED_TEXT_VERSION is recorded in the index manifest — manifest readers
+    rely on its presence and integrality."""
+    from polimibot.rag.chunker import EMBED_TEXT_VERSION
+    assert isinstance(EMBED_TEXT_VERSION, int) and EMBED_TEXT_VERSION >= 1
 
 
 # ── FAISSIndex (requires faiss-cpu) ─────────────────────────────────────────

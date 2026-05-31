@@ -28,7 +28,7 @@ from typing import Optional, Sequence
 from ..models.llm import LLM, AnswerProbabilities
 from ..models.mock import MockLLM
 from ..prompts.templates import PromptStyle, build_messages_with_context, parse_answer
-from ..rag.chunker import Chunk
+from ..rag.chunker import Chunk, embedding_text
 from ..rag.fusion import reciprocal_rank_fusion
 from ..rag.retriever import Retriever
 from .base import Strategy, StrategyInput, StrategyOutput
@@ -566,7 +566,10 @@ class RAGStrategy(Strategy):
                         embedder = getattr(self.retriever, "_embedder", None)
                         if embedder is not None:
                             q_vec = embedder.encode_query(inp.question)        # (1, D)
-                            p_texts = [c.text for c in all_live_chunks]
+                            # Source-ground live chunks identically to the
+                            # offline index (chunker.embedding_text) so cosine
+                            # scores are comparable across the two paths.
+                            p_texts = [embedding_text(c) for c in all_live_chunks]
                             p_vecs  = embedder.encode_passage(p_texts)         # (N, D)
                             # Cosine similarity: vectors are already normalised
                             # by the embedder, so dot product == cosine sim.

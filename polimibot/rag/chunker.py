@@ -22,6 +22,12 @@ from typing import Iterator, Optional
 # in the index manifest so a stale on-disk index can be detected by callers.
 CHUNKER_VERSION = 2
 
+# Bumped when the embedding-INPUT transform (``embedding_text``) changes.
+# Tracked separately from CHUNKER_VERSION because it does NOT alter the stored
+# ``Chunk.text`` — only the string handed to the passage embedder. Recorded in
+# the index manifest so a grounding change is visible to a future loader.
+EMBED_TEXT_VERSION = 1
+
 
 @dataclass(frozen=True)
 class Chunk:
@@ -36,6 +42,27 @@ class Chunk:
     source: str             # document title / filename — shown in the prompt
     chunk_id: int           # position within that document (0-based)
     category: Optional[str] = None
+
+
+def embedding_text(chunk: Chunk) -> str:
+    """Return the string fed to the passage embedder — chunk grounded in source.
+
+    ``Chunk.text`` is kept pure: display, BM25, and the prompt all use it
+    verbatim. The *embedded* form, however, is prefixed with the source title
+    so every passage vector is anchored to its entity. Trivia questions name
+    the entity ("Who painted the Mona Lisa?"), so grounding each passage
+    embedding in its article title sharpens cross-article matching — a chunk
+    reading "was painted in 1503" embeds as "Mona Lisa: was painted in 1503".
+
+    This must be applied identically at EVERY embed site (index build,
+    live-search scoring, IndexGrower) or vectors land in inconsistent spaces.
+    Callers import this helper rather than inlining the format so the
+    convention stays in one place; ``EMBED_TEXT_VERSION`` tracks changes to it.
+    """
+    source = chunk.source.strip() if chunk.source else ""
+    if not source:
+        return chunk.text
+    return f"{source}: {chunk.text}"
 
 
 # Wikipedia section header line: "== Early life ==", "=== Career ===", ...
