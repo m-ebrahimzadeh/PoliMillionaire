@@ -326,7 +326,10 @@ else:
         load_raw_corpus, save_raw_corpus, clean_wikipedia_text,
         CORPUS_VERSION, CLEANUP_VERSION,
     )
-    from polimibot.rag.chunker import CHUNKER_VERSION, chunk_text as _chunk_text
+    from polimibot.rag.chunker import (
+        CHUNKER_VERSION, EMBED_TEXT_VERSION,
+        chunk_text as _chunk_text, embedding_text as _embedding_text,
+    )
     from polimibot.rag.embedder import Embedder as _Embedder, EmbedderSpec as _EmbedderSpec
     from polimibot.rag.index import FAISSIndex as _FAISSIndex
     from polimibot.rag.bm25 import BM25Index as _BM25Index
@@ -370,6 +373,7 @@ else:
             _art.text, source=_art.title,
             chunk_size=INDEX_CHUNK_SIZE, overlap=INDEX_OVERLAP,
             category=_art.category.value,
+            url=_art.url,
         ))
     print(f'  → {len(_all_chunks)} chunks '
           f'(avg {len(_all_chunks) // max(len(_articles), 1)} per article)')
@@ -382,7 +386,7 @@ else:
 
     print('Embedding passages…')
     _t0 = _time.monotonic()
-    _embeddings = _embedder.encode_passage([c.text for c in _all_chunks])
+    _embeddings = _embedder.encode_passage([_embedding_text(c) for c in _all_chunks])
     print(f'  → done in {_time.monotonic() - _t0:.1f}s')
 
     # ── Step 4: FAISS index ──────────────────────────────────────────
@@ -397,6 +401,7 @@ else:
         'chunk_size':              INDEX_CHUNK_SIZE,
         'chunk_overlap':           INDEX_OVERLAP,
         'chunker_version':         CHUNKER_VERSION,
+        'embed_text_version':      EMBED_TEXT_VERSION,
         'corpus_version':          CORPUS_VERSION,
         'corpus_source':           'hand_curated' if INDEX_LEGACY_SEEDS else 'category_graph',
         'max_per_category':        INDEX_HARVEST_MAX_PER_CATEGORY,
@@ -506,7 +511,7 @@ RAG_MAX_TOTAL_CHARS    = 2400                            # joined context budget
 
 # Reranker (cross-encoder over the dense pool — precision win, +~30 ms/query)
 RAG_USE_RERANKER       = True                           # set True to load + use
-RERANKER_MODEL         = 'BAAI/bge-reranker-base'        # trivia-friendly, ~100 MB
+RERANKER_MODEL         = 'BAAI/bge-reranker-v2-m3'      # stronger CE, GPU-fast; recalibrate RAG_MIN_SCORE_RERANK after swap
 RERANK_OVERSEARCH      = 5                               # dense pool size = k × this
 
 # Embedding model — single source of truth for index build (Section 0.4),
@@ -523,7 +528,7 @@ RAG_USE_MULTI_QUERY    = True                            # 1 question + 4 per-op
 # score scale — never apply a cosine threshold to an RRF or reranker score.
 RAG_MIN_SCORE          = None                            # dense-only cosine ∈ [-1,1]; e.g. 0.30
 RAG_MIN_SCORE_RRF      = None                            # hybrid RRF ∈ ~0–0.03;      e.g. 0.010 (no-rerank path only)
-RAG_MIN_SCORE_RERANK   = None                            # sigmoid-mapped cross-encoder ∈ [0,1]; e.g. 0.5  (set 1.0 to force-gate offline → live-only mode)
+RAG_MIN_SCORE_RERANK   = None                            # raw cross-encoder logit (pre-sigmoid, may be negative); calibrate via §2.8c  (≥1.0 skips offline → live-only)
 
 # Live-search fallback + self-growing index (fires only when offline RAG is gated)
 # When USE_LIVE_FALLBACK=True and the top offline retrieval score is below the

@@ -36,7 +36,9 @@ from pathlib import Path
 
 from polimibot.config import PATHS, Category
 from polimibot.rag.bm25 import BM25Index
-from polimibot.rag.chunker import CHUNKER_VERSION, chunk_text
+from polimibot.rag.chunker import (
+    CHUNKER_VERSION, EMBED_TEXT_VERSION, chunk_text, embedding_text,
+)
 from polimibot.rag.corpus import (
     CLEANUP_VERSION, CORPUS_VERSION, clean_wikipedia_text,
     fetch_articles, fetch_articles_from_categories,
@@ -135,6 +137,7 @@ def main() -> None:
             chunk_size=args.chunk_size,
             overlap=args.overlap,
             category=article.category.value,
+            url=article.url,
         )
         new_chunks.extend(chunks)
     print(f"  → {len(new_chunks)} new chunks total "
@@ -148,7 +151,9 @@ def main() -> None:
 
     print("Embedding new chunks…")
     t0 = time.monotonic()
-    texts = [c.text for c in new_chunks]
+    # Ground each passage in its source title before embedding (see
+    # chunker.embedding_text). Chunk.text stays pure for display + BM25.
+    texts = [embedding_text(c) for c in new_chunks]
     new_embeddings = embedder.encode_passage(texts)
     print(f"  → done in {time.monotonic()-t0:.1f}s")
 
@@ -176,6 +181,7 @@ def main() -> None:
         "chunk_size":              args.chunk_size,
         "chunk_overlap":           args.overlap,
         "chunker_version":         CHUNKER_VERSION,
+        "embed_text_version":      EMBED_TEXT_VERSION,
         "corpus_version":          CORPUS_VERSION,
         "corpus_source":           "hand_curated" if args.legacy_seeds else "category_graph",
         "max_per_category":        args.max_per_category,

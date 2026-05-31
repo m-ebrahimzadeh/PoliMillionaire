@@ -62,7 +62,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .chunker import Chunk, chunk_text
+from .chunker import Chunk, chunk_text, embedding_text
 from .corpus import Article, save_raw_corpus, load_raw_corpus
 from .embedder import Embedder
 from .retriever import Retriever
@@ -168,6 +168,7 @@ class IndexGrower:
                 chunk_size=self._chunk_size,
                 overlap=self._chunk_overlap,
                 category=article.category.value if article.category else None,
+                url=article.url,
             )
 
             if not chunks:
@@ -205,7 +206,9 @@ class IndexGrower:
         # Embed outside the lock — CPU-bound but brief (~100 ms on CPU).
         # The game has already moved on; this runs after outcome receipt.
         try:
-            texts = [c.text for c in entry.chunks]
+            # Same source-grounded embedding input as the build script, so
+            # grown chunks land in the same vector space (chunker.embedding_text).
+            texts = [embedding_text(c) for c in entry.chunks]
             embeddings = self._embedder.encode_passage(texts)
         except Exception:  # noqa: BLE001
             # Embedding failure must not crash the runner.

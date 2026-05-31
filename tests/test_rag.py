@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from polimibot.rag.chunker import Chunk, chunk_text
+from polimibot.rag.chunker import Chunk, chunk_text, embedding_text
 
 faiss = pytest.importorskip("faiss", reason="faiss-cpu not installed — skipping index tests")
 
@@ -108,6 +108,86 @@ def test_chunk_manifest_version_exported():
     rely on its presence and integrality."""
     from polimibot.rag.chunker import CHUNKER_VERSION
     assert isinstance(CHUNKER_VERSION, int) and CHUNKER_VERSION >= 2
+
+
+# ── Entity-grounded embedding text ──────────────────────────────────────────
+
+
+def test_embedding_text_prefixes_source_title():
+    """The embedded form grounds the passage in its source title so the
+    vector is anchored to the entity (trivia questions name the entity)."""
+    c = Chunk(text="was painted in 1503.", source="Mona Lisa", chunk_id=4)
+    assert embedding_text(c) == "Mona Lisa: was painted in 1503."
+
+
+def test_embedding_text_leaves_stored_text_pure():
+    """``Chunk.text`` itself is never mutated — display + BM25 use it verbatim.
+    Grounding lives only in the embedding-input transform."""
+    chunks = chunk_text("hello world", source="Earth", chunk_size=300, overlap=50)
+    assert chunks[0].text == "hello world"          # stored text untouched
+    assert embedding_text(chunks[0]) == "Earth: hello world"
+
+
+def test_embedding_text_empty_source_falls_back_to_text():
+    """Defensive: a sourceless chunk embeds its raw text rather than ': text'."""
+    c = Chunk(text="orphan passage", source="", chunk_id=0)
+    assert embedding_text(c) == "orphan passage"
+
+
+def test_embed_text_version_exported():
+    """EMBED_TEXT_VERSION is recorded in the index manifest — manifest readers
+    rely on its presence and integrality."""
+    from polimibot.rag.chunker import EMBED_TEXT_VERSION
+    assert isinstance(EMBED_TEXT_VERSION, int) and EMBED_TEXT_VERSION >= 1
+
+
+# ── Chunk metadata enrichment (section_title / is_lead / url / word_count) ───
+
+
+def test_chunk_stamps_section_title_and_lead_flag():
+    """Lead (prelude) chunks carry is_lead=True with no section_title; chunks
+    under a header carry that header as section_title and is_lead=False."""
+    text = (
+        "Caesar was a Roman general and statesman of great renown indeed.\n"
+        "== Early life ==\n"
+        + ("word " * 30).strip()
+    )
+    chunks = chunk_text(text, source="Julius Caesar", chunk_size=20, overlap=0,
+                        min_chunk_words=1)
+    lead = [c for c in chunks if c.is_lead]
+    sectioned = [c for c in chunks if c.section_title == "Early life"]
+    assert lead and all(c.section_title is None for c in lead)
+    assert sectioned and all(not c.is_lead for c in sectioned)
+
+
+def test_chunk_headerless_doc_is_all_lead():
+    """An article with no ``== Header ==`` is one lead section."""
+    chunks = chunk_text("word " * 40, source="x", chunk_size=20, overlap=0,
+                        min_chunk_words=1)
+    assert all(c.is_lead for c in chunks)
+    assert all(c.section_title is None for c in chunks)
+
+
+def test_chunk_stamps_url_on_every_chunk():
+    chunks = chunk_text("word " * 50, source="x", chunk_size=20, overlap=0,
+                        url="https://en.wikipedia.org/wiki/X")
+    assert chunks and all(c.url == "https://en.wikipedia.org/wiki/X" for c in chunks)
+
+
+def test_chunk_metadata_defaults_for_back_compat():
+    """Omitting the new args leaves safe defaults (no url, lead flag honest)."""
+    chunks = chunk_text("word " * 50, source="x", chunk_size=20, overlap=0)
+    assert all(c.url is None for c in chunks)
+
+
+def test_chunk_word_count_property_tracks_text():
+    c = Chunk(text="one two three four", source="s", chunk_id=0)
+    assert c.word_count == 4
+    # Derived from text, so a merged chunk reports the merged length.
+    text = " ".join(str(i) for i in range(45))   # 45 words
+    merged = chunk_text(text, source="x", chunk_size=20, overlap=0,
+                        min_chunk_words=10)
+    assert merged[-1].word_count == len(merged[-1].text.split())
 
 
 # ── FAISSIndex (requires faiss-cpu) ─────────────────────────────────────────
@@ -776,6 +856,28 @@ def test_index_save_load_preserves_category(tmp_path):
     loaded = FAISSIndex.load(tmp_path / "idx")
     cats = [c.category for c in loaded._chunks]
     assert cats == ["maths", "history", None]
+
+
+def test_index_save_load_preserves_chunk_metadata(tmp_path):
+    """section_title / is_lead / url survive the .jsonl round-trip; a legacy
+    chunk that omits them loads with safe defaults."""
+    idx = FAISSIndex(dim=8)
+    chunks = [
+        Chunk(text="lead", source="A", chunk_id=0, category="science",
+              section_title=None, is_lead=True,
+              url="https://en.wikipedia.org/wiki/A"),
+        Chunk(text="body", source="A", chunk_id=1, category="science",
+              section_title="History", is_lead=False, url=None),
+        Chunk(text="legacy", source="B", chunk_id=0),   # all defaults
+    ]
+    idx.add(chunks, _random_vecs(3, dim=8))
+    idx.save(tmp_path / "idx", manifest={"embedder_model_name": "m", "embedder_dim": 8})
+
+    loaded = FAISSIndex.load(tmp_path / "idx")._chunks
+    assert [c.is_lead for c in loaded] == [True, False, False]
+    assert [c.section_title for c in loaded] == [None, "History", None]
+    assert loaded[0].url == "https://en.wikipedia.org/wiki/A"
+    assert loaded[1].url is None and loaded[2].url is None
 
 
 def test_retriever_category_filter_drops_off_category_chunks():
