@@ -14,7 +14,7 @@ producing a 10-word vector that competes for top-k slots with full chunks.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterator, Optional
 
 
@@ -37,11 +37,30 @@ class Chunk:
     science / maths) — used by the retriever's category filter to surface
     only on-topic passages for the question being asked. Stored as a
     plain string for JSON-friendliness; ``None`` means "unknown / generic".
+
+    The trailing metadata fields enable filtered / provenance-aware retrieval
+    (audit §5). They are optional with safe defaults so every existing
+    constructor and on-disk index (which omits them) keeps working:
+
+      ``section_title`` — the ``== Header ==`` this chunk came from (``None``
+          for the lead/prelude). Provenance + a hook for section-aware boosting.
+      ``is_lead`` — ``True`` for chunks from the article's lead section, which
+          concentrates the most-queried trivia facts (birth dates, "first X").
+      ``url`` — source document URL, for citations and debugging.
     """
     text: str
     source: str             # document title / filename — shown in the prompt
     chunk_id: int           # position within that document (0-based)
     category: Optional[str] = None
+    section_title: Optional[str] = None
+    is_lead: bool = False
+    url: Optional[str] = None
+
+    @property
+    def word_count(self) -> int:
+        """Words in ``text`` — handy for context-budget packing. Derived (not
+        stored) so it is always consistent with the current text."""
+        return len(self.text.split())
 
 
 def embedding_text(chunk: Chunk) -> str:
@@ -164,6 +183,7 @@ def chunk_text(
     overlap: int = 50,       # words shared between consecutive chunks
     min_chunk_words: Optional[int] = None,
     category: Optional[str] = None,
+    url: Optional[str] = None,
 ) -> list[Chunk]:
     """Split text into overlapping word-windows that respect sentence and
     section boundaries.
@@ -181,6 +201,7 @@ def chunk_text(
             mega-merged output.
         category: optional category tag stamped on every chunk produced from
             this document. The retriever's category filter reads it.
+        url: optional source URL stamped on every chunk (provenance/citations).
 
     Returns:
         List of Chunk objects, in document order. ``chunk_id`` is the 0-based
@@ -195,9 +216,14 @@ def chunk_text(
 
     chunks: list[Chunk] = []
     cid = 0
-    for header, body in sections:
+    for sec_idx, (header, body) in enumerate(sections):
         sentences = _split_sentences(body)
         first_in_section = True
+        # The lead/prelude is the first section with no header (the intro that
+        # precedes the first ``== Header ==``, or the whole body when the
+        # article has no headers at all).
+        is_lead = sec_idx == 0 and not header
+        section_title = header or None
         for window_words in _pack_sentences(
             sentences, chunk_size=chunk_size, overlap=overlap,
         ):
@@ -212,6 +238,9 @@ def chunk_text(
                 source=source,
                 chunk_id=cid,
                 category=category,
+                section_title=section_title,
+                is_lead=is_lead,
+                url=url,
             ))
             cid += 1
 
@@ -222,18 +251,12 @@ def chunk_text(
         for c in chunks[1:]:
             if len(c.text.split()) < min_chunk_words:
                 prev = merged[-1]
-                merged[-1] = Chunk(
-                    text=f"{prev.text} {c.text}",
-                    source=prev.source,
-                    chunk_id=prev.chunk_id,
-                    category=prev.category,
-                )
+                # Keep the predecessor's metadata (section/lead/url); only the
+                # text grows by absorbing the short tail.
+                merged[-1] = replace(prev, text=f"{prev.text} {c.text}")
             else:
                 merged.append(c)
         # Re-number ids contiguously so the merge isn't visible to callers.
-        chunks = [
-            Chunk(text=c.text, source=c.source, chunk_id=i, category=c.category)
-            for i, c in enumerate(merged)
-        ]
+        chunks = [replace(c, chunk_id=i) for i, c in enumerate(merged)]
 
     return chunks

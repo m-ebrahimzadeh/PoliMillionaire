@@ -137,6 +137,7 @@ def main() -> None:
             chunk_size=args.chunk_size,
             overlap=args.overlap,
             category=article.category.value,
+            url=article.url,
         )
         new_chunks.extend(chunks)
     print(f"  → {len(new_chunks)} new chunks total "

@@ -135,8 +135,16 @@ class FAISSIndex:
                     "source": c.source,
                     "chunk_id": c.chunk_id,
                 }
+                # Optional metadata — written only when set so legacy-shaped
+                # rows stay compact and back-compatible.
                 if c.category is not None:
                     row["category"] = c.category
+                if c.section_title is not None:
+                    row["section_title"] = c.section_title
+                if c.is_lead:
+                    row["is_lead"] = True
+                if c.url is not None:
+                    row["url"] = c.url
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
         if manifest is not None:
@@ -188,7 +196,10 @@ class FAISSIndex:
                     text=d["text"],
                     source=d["source"],
                     chunk_id=d["chunk_id"],
-                    category=d.get("category"),   # absent on legacy chunks
+                    category=d.get("category"),         # absent on legacy chunks
+                    section_title=d.get("section_title"),
+                    is_lead=d.get("is_lead", False),
+                    url=d.get("url"),
                 ))
         obj = cls(dim=faiss_index.d, _faiss_index=faiss_index)
         obj._chunks = chunks

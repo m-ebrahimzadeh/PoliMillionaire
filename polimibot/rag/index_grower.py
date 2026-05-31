@@ -168,6 +168,7 @@ class IndexGrower:
                 chunk_size=self._chunk_size,
                 overlap=self._chunk_overlap,
                 category=article.category.value if article.category else None,
+                url=article.url,
             )
 
             if not chunks:
