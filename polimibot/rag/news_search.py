@@ -53,8 +53,17 @@ from typing import Optional
 
 import requests
 
-from ..config import NEWS, PATHS, Category, NewsConfig
+# Import the config *module* (not the NEWS/PATHS names) so that a runtime
+# ``update_news(...)`` — which rebinds ``config.NEWS`` — is honoured by no-arg
+# construction.  Category / NewsConfig are never rebound, so importing those by
+# name is fine.
+from .. import config as _config
+from ..config import Category, NewsConfig
 from .corpus import Article
+
+# Sentinel so ``cache_dir=None`` can explicitly disable caching while the
+# default still resolves to ``PATHS.news_cache_dir`` at construction time.
+_UNSET = object()
 
 
 # ── Date extraction ─────────────────────────────────────────────────────────
@@ -129,20 +138,23 @@ class GuardianNewsSource:
     """Query The Guardian content API and return ``Article`` objects.
 
     Args:
-        config: a :class:`~polimibot.config.NewsConfig`.  Defaults to the
-            module-level ``NEWS`` singleton (which reads ``GUARDIAN_API_KEY``).
+        config: a :class:`~polimibot.config.NewsConfig`.  ``None`` (default)
+            resolves the current ``NEWS`` singleton at construction time, so an
+            earlier ``update_news(...)`` is honoured.
         cache_dir: directory for the on-disk response cache.  Defaults to
             ``PATHS.news_cache_dir``.  Pass ``None`` to disable caching.
     """
 
     def __init__(
         self,
-        config: NewsConfig = NEWS,
+        config: Optional[NewsConfig] = None,
         *,
-        cache_dir: Optional[Path] = PATHS.news_cache_dir,
+        cache_dir: Optional[Path] = _UNSET,  # type: ignore[assignment]
     ) -> None:
-        self.config = config
-        self.cache_dir = cache_dir
+        self.config = config if config is not None else _config.NEWS
+        self.cache_dir = (
+            _config.PATHS.news_cache_dir if cache_dir is _UNSET else cache_dir
+        )
         self._last_call = 0.0
         self._warned_no_key = False
 
@@ -388,7 +400,8 @@ class NewsLiveSearch:
          ``LiveSearchFallback`` so we never go dark.
 
     Args:
-        config: NewsConfig (defaults to the ``NEWS`` singleton).
+        config: NewsConfig; ``None`` (default) resolves the current ``NEWS``
+            singleton at construction time (honours ``update_news(...)``).
         guardian: an existing ``GuardianNewsSource`` (constructed from
             ``config`` if omitted).
         wiki_fallback: an existing ``LiveSearchFallback`` for the secondary
@@ -399,14 +412,14 @@ class NewsLiveSearch:
 
     def __init__(
         self,
-        config: NewsConfig = NEWS,
+        config: Optional[NewsConfig] = None,
         *,
         guardian: Optional[GuardianNewsSource] = None,
         wiki_fallback=None,
         use_wiki_fallback: bool = True,
     ) -> None:
-        self.config = config
-        self.guardian = guardian or GuardianNewsSource(config)
+        self.config = config if config is not None else _config.NEWS
+        self.guardian = guardian or GuardianNewsSource(self.config)
         self.use_wiki_fallback = use_wiki_fallback
         self._wiki = wiki_fallback  # may be lazily built in search()
 
