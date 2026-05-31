@@ -25,6 +25,7 @@ from __future__ import annotations
 import time
 from typing import Optional, Sequence
 
+from ..config import Category
 from ..models.llm import LLM, AnswerProbabilities
 from ..models.mock import MockLLM
 from ..prompts.templates import PromptStyle, build_messages_with_context, parse_answer
@@ -193,6 +194,7 @@ class RAGStrategy(Strategy):
         live_max_articles: int = 2,
         index_grower=None,   # Optional[IndexGrower] — avoids circular import
         live_use_llm_query: bool = True,
+        news_search=None,    # Optional[NewsLiveSearch] — live source for NEWS
         # ── HyDE ────────────────────────────────────────────────────────
         use_hyde: bool = False,
         hyde_max_new_tokens: int = 80,
@@ -269,6 +271,12 @@ class RAGStrategy(Strategy):
                 the article is permanently added to the offline index.
                 When None, live-fetched context is used for this question
                 only and nothing is learned.
+            news_search: optional ``NewsLiveSearch`` instance.  When provided,
+                NEWS-category questions route their gated live fallback through
+                it (Guardian, date+entity aware) instead of the Wikipedia
+                ``LiveSearchFallback``.  Every other category is unaffected.
+                ``NewsLiveSearch`` itself falls back to Wikipedia internally,
+                so News degrades gracefully when the Guardian has nothing.
         """
         if style in _COT_STYLES and use_score_options:
             raise ValueError(
@@ -318,6 +326,9 @@ class RAGStrategy(Strategy):
         self.live_max_articles   = live_max_articles
         self.index_grower        = index_grower
         self.live_use_llm_query  = live_use_llm_query
+        # Category-routed live source for NEWS (Guardian-backed). None → NEWS
+        # uses the same Wikipedia LiveSearchFallback as every other category.
+        self._news_search        = news_search
         # Per-instance LLM-rewrite cache for live search queries.
         # Intentionally instance-scoped: a different RAGStrategy in a
         # different experiment shouldn't reuse rewrites tuned by a
@@ -351,9 +362,10 @@ class RAGStrategy(Strategy):
         mq_tag   = "|mq"     if use_multi_query else ""
         hyde_tag = "|hyde"   if use_hyde else ""
         live_tag = "|live"   if use_live_fallback else ""
+        news_tag = "|news"   if news_search is not None else ""
         self.name = (
             f"rag[{getattr(llm, 'name', 'llm')}"
-            f"|k={k}|{style.value}{path_tag}{cat_tag}{hyb_tag}{mq_tag}{hyde_tag}{rer_tag}{gate_tag}{live_tag}]"
+            f"|k={k}|{style.value}{path_tag}{cat_tag}{hyb_tag}{mq_tag}{hyde_tag}{rer_tag}{gate_tag}{live_tag}{news_tag}]"
         )
 
     def warm_up(self) -> None:
@@ -394,7 +406,7 @@ class RAGStrategy(Strategy):
         skip_offline = (
             active_threshold is not None
             and active_threshold >= 1.0
-            and self._live_search is not None
+            and (self._live_search is not None or self._news_search is not None)
         )
 
         common_kwargs: dict = {"k": self.k, "category": category_filter}
@@ -500,17 +512,31 @@ class RAGStrategy(Strategy):
         _live_all_scored: list[tuple[Chunk, float]] = []
 
         live_search_query: Optional[str] = None
-        if gated and self._live_search is not None:
+        # Category-routed live source: NEWS uses the Guardian-backed
+        # NewsLiveSearch (date + entity aware) when one is wired; every other
+        # category uses the Wikipedia LiveSearchFallback exactly as before.
+        # NewsLiveSearch falls back to Wikipedia internally, so News never
+        # goes dark when the Guardian returns nothing.
+        live_source = (
+            self._news_search
+            if (inp.category == Category.NEWS and self._news_search is not None)
+            else self._live_search
+        )
+        if gated and live_source is not None:
             _t0 = time.monotonic()
-            # Optionally use the LLM to distil the question into focused
-            # Wikipedia keyword terms.  When live_use_llm_query=False (default)
-            # we fall back to the bare question string — identical to the
-            # previous behaviour.
-            if self.live_use_llm_query:
+            # The news source parses the publication date out of the raw
+            # question itself, so hand it the question verbatim. The LLM
+            # title-extraction prompt is Wikipedia-shaped (wrong for news),
+            # so it is used only on the Wikipedia path. When
+            # live_use_llm_query=False the bare question is used either way —
+            # identical to the previous behaviour.
+            if live_source is self._news_search:
+                live_search_query = inp.question
+            elif self.live_use_llm_query:
                 live_search_query = self._extract_search_query(inp)
             else:
                 live_search_query = inp.question
-            live_articles = self._live_search.search(
+            live_articles = live_source.search(
                 live_search_query,
                 category=inp.category,
             )

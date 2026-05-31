@@ -75,6 +75,8 @@ class PathConfig:
     def eval_dir(self) -> Path:        return self.data_dir / "eval"
     @property
     def cache_dir(self) -> Path:       return self.data_dir / "cache"
+    @property
+    def news_cache_dir(self) -> Path:  return self.cache_dir / "news"
 
     def ensure(self) -> "PathConfig":
         """Idempotently create all dirs. Call once at app start."""
@@ -104,6 +106,43 @@ class RuntimeConfig:
     game_mode: str = "text"
 
 
+# ──────────────────────────── News source ────────────────────────────
+
+@dataclass(frozen=True)
+class NewsConfig:
+    """Online news-source knobs for the NEWS category's hybrid RAG path.
+
+    The News category is the one flavour Wikipedia serves poorly: questions
+    reference a *specific dated article* ("the 2026-05-17 article about …").
+    So News retrieval is grounded in a real news API (The Guardian Open
+    Platform) — both for an offline harvest (``scripts/fetch_news_corpus.py``)
+    and for the online live-search fallback (``rag/news_search.py``), which
+    plugs into the *same* threshold-gated mechanism every other category uses.
+
+    The Guardian key is read from the ``GUARDIAN_API_KEY`` env var (mirrors the
+    ``POLIMI_USER`` / ``POLIMI_PASS`` convention). An empty key is tolerated:
+    the news source logs once and degrades to the Wikipedia fallback, so
+    nothing crashes when the key is absent (CI, offline dev).
+    """
+    provider: str = "guardian"
+    guardian_api_key: str = ""
+    # Guardian content endpoint. Overridable for tests / a future proxy.
+    guardian_base_url: str = "https://content.guardianapis.com/search"
+    # Hard wall-clock budget per online query (same spirit as live_search's 5s).
+    timeout_seconds: float = 6.0
+    # ± days around the question's stated date to widen the from/to window —
+    # absorbs publish-vs-update and timezone skew (an article "published on
+    # the 17th" may carry a 16th or 18th webPublicationDate).
+    date_window_days: int = 1
+    # Max articles to turn into passages per online query.
+    max_articles: int = 3
+    # Fetch the full article body (show-fields=bodyText) vs. just the trailText
+    # teaser. Full body is needed for statistic/entity questions.
+    use_full_body: bool = True
+    # Client-side throttle between Guardian HTTP calls (free tier ~1 req/s).
+    min_delay_seconds: float = 1.0
+
+
 # ──────────────────────────── Singletons ────────────────────────────
 
 PATHS: PathConfig = PathConfig(project_root=_resolve_project_root())
@@ -111,6 +150,11 @@ PATHS: PathConfig = PathConfig(project_root=_resolve_project_root())
 # (e.g. a local mock during development) without editing config.py.
 RUNTIME: RuntimeConfig = RuntimeConfig(
     api_url=os.environ.get("POLIMI_API_URL", _DEFAULT_API_URL),
+)
+# GUARDIAN_API_KEY env var supplies the (free) Guardian Open Platform key.
+# Absent key → news source degrades to the Wikipedia fallback (see news_search).
+NEWS: NewsConfig = NewsConfig(
+    guardian_api_key=os.environ.get("GUARDIAN_API_KEY", ""),
 )
 
 
@@ -131,6 +175,20 @@ def update_runtime(**kwargs: object) -> RuntimeConfig:
     global RUNTIME
     RUNTIME = dataclasses.replace(RUNTIME, **kwargs)
     return RUNTIME
+
+
+def update_news(**kwargs: object) -> NewsConfig:
+    """Replace the NEWS singleton with one or more fields overridden.
+
+    Same pattern as :func:`update_runtime` — lets the notebook tweak the news
+    provider knobs (date window, max articles, even the api key) without
+    editing this module or restarting the kernel.
+
+    Returns the new ``NewsConfig`` (already installed as ``NEWS``).
+    """
+    global NEWS
+    NEWS = dataclasses.replace(NEWS, **kwargs)
+    return NEWS
 
 
 def ts() -> str:

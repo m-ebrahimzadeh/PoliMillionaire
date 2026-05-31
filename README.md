@@ -111,6 +111,7 @@ pip install -e ".[llm,rag,tools,dev]"
 | `POLIMI_PASS` | Game server password | *required for live play* |
 | `POLIMI_API_URL` | Override game server URL | `http://131.175.15.22:51111` |
 | `POLIMIBOT_ROOT` | Override project root detection | Auto-detected via `pyproject.toml` |
+| `GUARDIAN_API_KEY` | The Guardian Open Platform key for the NEWS category's online source | *optional* — absent → Wikipedia fallback |
 
 ### Runtime Configuration
 
@@ -132,6 +133,22 @@ python scripts/build_rag_index.py
 ```
 
 This one-time operation fetches Wikipedia articles, chunks them, computes embeddings, and builds the index stored in `data/cache/`.
+
+### News Category — Hybrid Online/Offline RAG
+
+NEWS questions reference a *specific dated article* ("the article published on `2026-05-17`…"), which Wikipedia cannot serve. The NEWS category therefore uses **The Guardian Open Platform** (free key, full body text, precise date filtering) in a hybrid setup:
+
+- **Offline** — seed the index with a date range of Guardian articles so most recent-date questions are answerable without network:
+
+  ```bash
+  export GUARDIAN_API_KEY=...                       # free: open-platform.theguardian.com
+  python scripts/build_rag_index.py --fresh         # base index (all categories), first time
+  python scripts/fetch_news_corpus.py --days 30 --build
+  ```
+
+- **Online** — NEWS uses the *same* threshold-gated live fallback as every other category, but its source is the date- and entity-aware [`NewsLiveSearch`](polimibot/rag/news_search.py) (Guardian) instead of Wikipedia. It extracts the question's publication date, queries that window, and **falls back to Wikipedia** when the Guardian returns nothing or no key is set — so NEWS never goes dark. Toggle via `USE_NEWS_LIVE_SEARCH` in the notebook's Section 1.
+
+Guardian responses are cached under `data/cache/news/` (keyed without the API key), so eval replays cost no quota. Confirmed-correct live articles are learned into the offline index by the existing `IndexGrower`, so coverage grows over time.
 
 ---
 

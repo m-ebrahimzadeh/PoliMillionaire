@@ -541,6 +541,15 @@ LIVE_MAX_ARTICLES      = 2                               # max Wikipedia article
 LEARN_FROM_CORRECT     = True                            # grow the index from confirmed-correct answers
 LIVE_USE_LLM_QUERY     = True                           # True → LLM distils question to 2-5 Wikipedia keywords before live search
 
+# News online source (The Guardian) — NEWS category only. When True, NEWS
+# questions route their gated live fallback through the Guardian (date + entity
+# aware) instead of Wikipedia; NewsLiveSearch falls back to Wikipedia internally
+# when the Guardian has nothing. Reads GUARDIAN_API_KEY from the environment;
+# seed the offline News corpus with scripts/fetch_news_corpus.py --days 30 --build.
+USE_NEWS_LIVE_SEARCH   = True                           # True → Guardian-backed live search for NEWS
+NEWS_DATE_WINDOW_DAYS  = 1                              # ± days around the question's stated date
+NEWS_MAX_ARTICLES      = 3                              # max Guardian articles per NEWS live query
+
 # Eval
 N_EVAL_QUESTIONS    = None                               # None = all gold items; int = first-N slice
 
@@ -702,6 +711,28 @@ if USE_LIVE_FALLBACK and need_retriever and not USE_MOCK:
 elif USE_LIVE_FALLBACK:
     print('IndexGrower: skipped (USE_MOCK=True or no retriever) — live search context-only mode')
 
+# ── News online source (Guardian) for the NEWS category ─────────────────
+# Built only when USE_NEWS_LIVE_SEARCH=True and a real (non-mock) retriever is
+# in play. NEWS questions route their gated live fallback here (date + entity
+# aware); every other category keeps using the Wikipedia LiveSearchFallback.
+# NewsLiveSearch falls back to Wikipedia internally when the Guardian returns
+# nothing or no GUARDIAN_API_KEY is set.
+_news_search = None
+if USE_NEWS_LIVE_SEARCH and need_retriever and not USE_MOCK:
+    from polimibot.rag.news_search import NewsLiveSearch
+    from polimibot.config import update_news
+    _news_cfg = update_news(
+        date_window_days=NEWS_DATE_WINDOW_DAYS,
+        max_articles=NEWS_MAX_ARTICLES,
+        timeout_seconds=LIVE_SEARCH_TIMEOUT,
+    )
+    _news_search = NewsLiveSearch(_news_cfg)
+    _key_state = ('GUARDIAN_API_KEY set' if _news_cfg.guardian_api_key
+                  else "no key — using public 'test' key + Wikipedia fallback")
+    print(f'NewsLiveSearch ready for NEWS — {_key_state}')
+elif USE_NEWS_LIVE_SEARCH:
+    print('NewsLiveSearch: skipped (USE_MOCK=True or no retriever) — NEWS uses Wikipedia fallback')
+
 # Shared RAGStrategy kwargs — assemble once so all three call sites stay in sync.
 _rag_kwargs = dict(
     k=RAG_K,
@@ -725,6 +756,8 @@ _rag_kwargs = dict(
     live_max_articles=LIVE_MAX_ARTICLES,
     index_grower=_grower if LEARN_FROM_CORRECT else None,
     live_use_llm_query=LIVE_USE_LLM_QUERY,
+    # NEWS-only Guardian source; None → NEWS uses the Wikipedia fallback.
+    news_search=_news_search,
 )
 
 if USE_CONFIDENCE_GATED:
@@ -789,6 +822,8 @@ print(f'report_id: {report_id}')
 if USE_LIVE_FALLBACK:
     print(f'Live-search fallback: ENABLED (timeout={LIVE_SEARCH_TIMEOUT}s, max_articles={LIVE_MAX_ARTICLES})')
     print(f'Index growing: {"ENABLED (learn from correct answers)" if LEARN_FROM_CORRECT else "DISABLED"}')
+if _news_search is not None:
+    print(f'NEWS online source: Guardian (±{NEWS_DATE_WINDOW_DAYS}d window, max_articles={NEWS_MAX_ARTICLES})')
 '''))
 
 cells.append(md("""
