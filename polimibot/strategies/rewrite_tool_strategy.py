@@ -170,7 +170,7 @@ class RewriteToolStrategy(Strategy):
             style=PromptStyle.FEW_SHOT,
         )
         try:
-            result = self.llm.score_options(messages, options=list(inp.options))
+            result = self.llm.score_options(messages)
             return StrategyOutput(
                 chosen_index=result.chosen_index,
                 confidence=result.top_prob,

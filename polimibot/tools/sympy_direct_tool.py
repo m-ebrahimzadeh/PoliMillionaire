@@ -36,12 +36,32 @@ from .sympy_tool import sympy_solve, _BLOCKED
 # and aligns with an option wins.  Conservative: abstain on anything ambiguous.
 
 def _mod_pattern():
-    """remainder when A^B is divided by C  →  Mod(A**B, C)"""
+    r"""remainder when EXPR is divided by C  →  Mod(EXPR, C)
+
+    Handles:
+      "remainder when 2^87 is divided by 7"          → Mod(2**87, 7)
+      "remainder when $2^{87}+3$ is divided by $7$"  → Mod(2**87+3, 7)
+      "remainder when 2^87 - 1 is divided by 7"      → Mod(2**87-1, 7)
+    """
     pat = re.compile(
-        r'remainder\s+when\s+(\d+)\s*\^?\*?\*?\s*(\d+)\s+is\s+divided\s+by\s+(\d+)',
+        r'remainder\s+when\s+'
+        r'\$?'                                          # optional opening $
+        r'(\d+)'                                        # base
+        r'\s*(?:\^|\*\*)\s*\{?(\d+)\}?'               # ^B or **B (with optional {})
+        r'\s*([+\-]\s*\d+)?'                            # optional +C or -C
+        r'\$?'                                          # optional closing $
+        r'\s+is\s+divided\s+by\s+\$?(\d+)\$?',        # divided by D
         re.I,
     )
-    def build(m): return f"Mod({m.group(1)}**{m.group(2)}, {m.group(3)})"
+    def build(m):
+        base     = m.group(1)
+        exp      = m.group(2)
+        addend   = m.group(3)          # e.g. "+3" or "-1", may be None
+        divisor  = m.group(4)
+        expr = f"{base}**{exp}"
+        if addend:
+            expr = f"{expr}{addend.replace(' ', '')}"
+        return f"Mod({expr}, {divisor})"
     return pat, build
 
 def _comb_pattern():
@@ -909,6 +929,11 @@ def _try_evaluate(expr_str: str) -> Optional[float]:
 
     # __range__ is not a float — handled separately in use()
     if expr_str.startswith('__range__:'):
+        return None
+
+    # Reject bare numbers — a lone integer or float is not a meaningful expression
+    # and would spuriously match options (e.g. "17" matching option "B. 17").
+    if re.fullmatch(r'-?\d+(?:\.\d+)?', expr_str.strip()):
         return None
 
     # Safety gate — reuse sympy_tool's block list
