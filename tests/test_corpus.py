@@ -292,3 +292,42 @@ def test_save_omits_empty_new_fields(tmp_path):
     save_raw_corpus([Article("Gold", "Au.", Category.SCIENCE)], path)
     row = json.loads(path.read_text(encoding="utf-8").strip())
     assert "aliases" not in row and "competition" not in row
+
+
+# ── Alias / competition enrichment at fetch time (no network) ──────────────────
+
+def test_competition_for_maps_category_to_display_name():
+    from polimibot.rag.corpus import _competition_for
+    from polimibot.config import Category
+    assert _competition_for(Category.HISTORY) == "Ancient History and Politics"
+    assert _competition_for(Category.PHILOSOPHY) == "Philosophy and Psychology"
+    assert _competition_for(Category.SCIENCE) == "Science and Nature"
+
+
+def test_make_article_sets_competition_and_skips_aliases_when_disabled():
+    """_make_article derives the competition label and, with fetch_aliases=False,
+    attaches no aliases (and makes no network call)."""
+    from polimibot.rag.corpus import _make_article
+    from polimibot.config import Category
+
+    class _FakePage:
+        title = "Bystander effect"
+        content = "The bystander effect is a social psychological phenomenon."
+        url = "https://en.wikipedia.org/wiki/Bystander_effect"
+
+    art = _make_article(_FakePage(), Category.PHILOSOPHY,
+                        fetch_aliases=False, verbose=False)
+    assert art.competition == "Philosophy and Psychology"
+    assert art.aliases == ()
+    assert art.title == "Bystander effect"
+
+
+def test_fetch_redirects_returns_empty_on_failure(monkeypatch):
+    """A redirect-API hiccup must never raise — aliases are optional."""
+    import polimibot.rag.corpus as corpus
+
+    def boom(*a, **k):
+        raise OSError("network down")
+
+    monkeypatch.setattr(corpus.urllib.request, "urlopen", boom)
+    assert corpus._fetch_redirects("Anything", verbose=False) == ()

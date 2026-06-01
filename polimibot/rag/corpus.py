@@ -10,6 +10,9 @@ from __future__ import annotations
 import json
 import re
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -293,7 +296,76 @@ def _page_with_retry(title: str, *, verbose: bool):
     raise last_exc  # type: ignore[misc]
 
 
-def _fetch_one(title: str, category: Category, *, verbose: bool) -> Optional[Article]:
+# Wikimedia's API:Etiquette requires a contact-bearing User-Agent.
+_WIKI_API_USER_AGENT = (
+    "PoliMillionaire-RAG/1.0 "
+    "(https://github.com/your-org/polimibot; contact: ebrahimzadeh.meh@gmail.com)"
+)
+
+# Cap on redirect titles kept per article. Most pages have a handful; a few
+# popular ones have dozens of near-duplicate redirects that add no signal.
+_MAX_ALIASES = 10
+
+
+def _competition_for(category: Category) -> str:
+    """The runtime competition display name for a category (e.g. HISTORY →
+    "Ancient History and Politics"), or "" if unmapped. Single source of truth
+    is ``config.CATEGORIES``."""
+    from ..config import CATEGORIES
+    for info in CATEGORIES.values():
+        if info.category == category:
+            return info.display_name
+    return ""
+
+
+def _fetch_redirects(title: str, *, verbose: bool = False) -> tuple[str, ...]:
+    """Best-effort fetch of a page's redirect titles (aliases) via the MediaWiki
+    ``prop=redirects`` API.
+
+    Returns up to ``_MAX_ALIASES`` redirect titles (namespace 0 only), or ``()``
+    on any failure — aliases are pure enrichment, so a redirect hiccup must
+    never sink the article fetch. One short, polite GET with a named UA.
+    """
+    params = {
+        "action": "query", "prop": "redirects", "titles": title,
+        "rdlimit": str(_MAX_ALIASES), "rdnamespace": "0",
+        "format": "json", "formatversion": "2",
+    }
+    url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"User-Agent": _WIKI_API_USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 — aliases are optional enrichment
+        if verbose:
+            print(f"    (redirects fetch failed for '{title}': {exc})")
+        return ()
+    out: list[str] = []
+    for p in data.get("query", {}).get("pages", []):
+        for r in p.get("redirects", []):
+            t = (r.get("title") or "").strip()
+            if t and t != title:
+                out.append(t)
+    return tuple(out[:_MAX_ALIASES])
+
+
+def _make_article(page, category: Category, *, fetch_aliases: bool,
+                  verbose: bool) -> Article:
+    """Build an enriched Article from a resolved wikipedia page: clean the body,
+    derive the competition label, and (optionally) attach redirect aliases."""
+    aliases = _fetch_redirects(page.title, verbose=verbose) if fetch_aliases else ()
+    return Article(
+        title=page.title,
+        text=clean_wikipedia_text(page.content),
+        category=category,
+        url=page.url,
+        aliases=aliases,
+        competition=_competition_for(category),
+    )
+
+
+def _fetch_one(title: str, category: Category, *, verbose: bool,
+               fetch_aliases: bool = True) -> Optional[Article]:
     """Fetch a single Wikipedia page. Returns None on hard failure.
 
     On a DisambiguationError, walks the option list (instead of blindly
@@ -301,14 +373,15 @@ def _fetch_one(title: str, category: Category, *, verbose: bool) -> Optional[Art
     contains at least one keyword from the seed title.
 
     Transient network / JSON-parse errors are retried automatically up to
-    ``_FETCH_MAX_ATTEMPTS`` times before giving up.
+    ``_FETCH_MAX_ATTEMPTS`` times before giving up. When ``fetch_aliases`` is
+    True the resolved page's redirect titles are attached as ``Article.aliases``.
     """
     import wikipedia
 
     try:
         page = _page_with_retry(title, verbose=verbose)
-        return Article(title=page.title, text=clean_wikipedia_text(page.content),
-                       category=category, url=page.url)
+        return _make_article(page, category, fetch_aliases=fetch_aliases,
+                             verbose=verbose)
 
     except wikipedia.DisambiguationError as e:
         keywords = _seed_keywords(title)
@@ -324,9 +397,8 @@ def _fetch_one(title: str, category: Category, *, verbose: bool) -> Optional[Art
             if not keywords or any(k in preview for k in keywords):
                 if verbose and option != title:
                     print(f"  ! disambiguation for '{title}' → resolved to '{option}'")
-                return Article(title=page.title,
-                               text=clean_wikipedia_text(page.content),
-                               category=category, url=page.url)
+                return _make_article(page, category, fetch_aliases=fetch_aliases,
+                                     verbose=verbose)
         if verbose:
             print(f"  ! disambiguation for '{title}' — no relevant option found, skipped")
 
@@ -348,6 +420,7 @@ def fetch_articles_from_categories(
     max_per_category: int = 500,
     max_depth: int = 0,
     sleep_seconds: float = 0.3,
+    fetch_aliases: bool = True,
     verbose: bool = True,
 ) -> list[Article]:
     """Fetch Wikipedia articles seeded from the MediaWiki category graph.
@@ -375,6 +448,9 @@ def fetch_articles_from_categories(
             tens of thousands of titles).
         sleep_seconds: polite delay between Wikipedia article fetches
             (separate from the harvester's internal API politeness).
+        fetch_aliases: when True (default), attach each article's Wikipedia
+            redirect titles as ``Article.aliases`` (one extra lightweight API
+            call per article). Set False to skip for a faster, lighter build.
         verbose: print progress.
 
     Returns:
@@ -430,7 +506,7 @@ def fetch_articles_from_categories(
     # the existing pipeline so we inherit all of its robustness.
     articles: list[Article] = []
     for i, (title, cat) in enumerate(flat, start=1):
-        article = _fetch_one(title, cat, verbose=verbose)
+        article = _fetch_one(title, cat, verbose=verbose, fetch_aliases=fetch_aliases)
         if article is not None:
             articles.append(article)
         # Progress dot every 50 fetches so a multi-thousand crawl shows life.
