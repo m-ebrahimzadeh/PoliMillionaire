@@ -9,7 +9,9 @@ from polimibot.prompts.templates import build_messages_with_context, PromptStyle
 from polimibot.rag.chunker import Chunk
 from polimibot.rag.retriever import Retriever
 from polimibot.strategies.base import StrategyInput
-from polimibot.strategies.rag_strategy import RAGStrategy, _build_query, _format_context
+from polimibot.strategies.rag_strategy import (
+    RAGStrategy, _build_query, _distill_title, _format_context,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -923,3 +925,64 @@ def test_extract_search_query_falls_back_to_question_on_empty_response():
 
     # Should have fallen back to the bare question.
     assert _FakeLiveSearch.searched[0].startswith("Who crossed the Rubicon?")
+
+
+# ── _distill_title: model-agnostic parsing (the "Thinking Process:" bug) ───────
+
+def test_distill_title_plain_title():
+    assert _distill_title("Greek fire", "FALLBACK") == "Greek fire"
+
+
+def test_distill_title_strips_think_block():
+    assert _distill_title("<think>reasoning</think>Julius Caesar", "FB") == "Julius Caesar"
+
+
+def test_distill_title_prefers_title_label_after_reasoning():
+    """A reasoning model emits a plaintext preamble then the labelled title; the
+    ``Title:`` line must win, not the 'Thinking Process:' lead-in."""
+    raw = "Thinking Process:\nThe question is about Chaplin's life.\nTitle: Charlie Chaplin"
+    assert _distill_title(raw, "FB") == "Charlie Chaplin"
+
+
+def test_distill_title_falls_back_on_reasoning_only():
+    """The real failure: the 40-token budget cuts the model off mid-reasoning,
+    before any title. Must fall back to the question, never 'Thinking Process:'."""
+    raw = "Thinking Process:\nOkay, the user is asking about Pink Floyd and"
+    assert _distill_title(raw, "FALLBACK_QUESTION") == "FALLBACK_QUESTION"
+
+
+def test_distill_title_rejects_bare_preamble_label():
+    assert _distill_title("Thinking Process:", "FB") == "FB"
+
+
+def test_distill_title_empty_falls_back():
+    assert _distill_title("", "FB") == "FB"
+    assert _distill_title("<think>only thinking</think>", "FB") == "FB"
+
+
+def test_extract_search_query_recovers_title_from_reasoning_model(monkeypatch):
+    """End-to-end: a qwen-style 'Thinking Process:' transcript with a trailing
+    Title: line must search for the real title, not the preamble."""
+    llm = _RecordingMockLLM(
+        generate_response="Thinking Process:\nLet me identify the topic.\nTitle: Achtung Baby"
+    )
+    retriever = _GatedRetriever(_passages())
+
+    class _FakeLiveSearch:
+        searched: list[str] = []
+        def search(self, query, *, category=None):
+            _FakeLiveSearch.searched.append(query)
+            return []
+
+    strategy = RAGStrategy(
+        llm, retriever, k=2,
+        min_score=0.30,
+        use_multi_query=False,
+        use_live_fallback=True,
+        live_use_llm_query=True,
+    )
+    strategy._live_search = _FakeLiveSearch()
+
+    strategy.answer(_inp("B"))
+
+    assert _FakeLiveSearch.searched[0] == "Achtung Baby"
