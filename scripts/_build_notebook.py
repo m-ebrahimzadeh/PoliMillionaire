@@ -255,18 +255,36 @@ cells.append(md("### 0.3 Log in (live games only — skip for offline eval)"))
 
 cells.append(code('''
 # Credentials, from Colab Secrets (userdata) or env vars we read.
-# Set in Colab: Secrets panel → POLIMI_USER / POLIMI_PASS  (preferred)
+# Set in Colab: Secrets panel → POLIMI_USER / POLIMI_PASS / GUARDIAN_API_KEY
 #            or os.environ['POLIMI_USER'] = '...'  (fallback)
 # Skip this cell entirely if only the offline gold set you intend to evaluate.
 from millionaire_client import MillionaireClient
 
-try:
-    from google.colab import userdata as _userdata
-    POLIMI_USER = _userdata.get('POLIMI_USER') or os.environ.get('POLIMI_USER', '')
-    POLIMI_PASS = _userdata.get('POLIMI_PASS') or os.environ.get('POLIMI_PASS', '')
-except Exception:
-    POLIMI_USER = os.environ.get('POLIMI_USER', '')
-    POLIMI_PASS = os.environ.get('POLIMI_PASS', '')
+def _secret(name):
+    """Read a secret from Colab userdata, falling back to the env var."""
+    try:
+        from google.colab import userdata as _userdata
+        val = _userdata.get(name)
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.environ.get(name, '')
+
+POLIMI_USER = _secret('POLIMI_USER')
+POLIMI_PASS = _secret('POLIMI_PASS')
+
+# Guardian key for the NEWS online source. Export it into the environment NOW
+# so the strategy build (Section 1.3) — which reads os.environ at build time —
+# picks it up no matter the import order. config.NEWS captures the key at
+# import; setting it in a later cell only takes effect because the build
+# threads os.environ['GUARDIAN_API_KEY'] in explicitly.
+_guardian_key = _secret('GUARDIAN_API_KEY')
+if _guardian_key:
+    os.environ['GUARDIAN_API_KEY'] = _guardian_key
+    print(f'GUARDIAN_API_KEY loaded (…{_guardian_key[-4:]}).')
+else:
+    print('GUARDIAN_API_KEY not found — NEWS online source will use Wikipedia/offline.')
 
 client = None
 if POLIMI_USER and POLIMI_PASS:
@@ -540,6 +558,7 @@ LIVE_SEARCH_TIMEOUT    = 7.0                             # hard wall-clock limit
 LIVE_MAX_ARTICLES      = 2                               # max Wikipedia articles per live query
 LEARN_FROM_CORRECT     = True                            # grow the index from confirmed-correct answers
 LIVE_USE_LLM_QUERY     = True                           # True → LLM distils question to 2-5 Wikipedia keywords before live search
+MIN_LIVE_SCORE         = 0.20                            # absolute quality floor on live passages (cosine scale); None → keep all. Drops off-topic fallbacks instead of injecting them as context
 
 # News online source (The Guardian) — NEWS category only. When True, NEWS
 # questions route their gated live fallback through the Guardian (date + entity
@@ -547,7 +566,7 @@ LIVE_USE_LLM_QUERY     = True                           # True → LLM distils q
 # when the Guardian has nothing. Reads GUARDIAN_API_KEY from the environment;
 # seed the offline News corpus with scripts/fetch_news_corpus.py --days 30 --build.
 USE_NEWS_LIVE_SEARCH   = True                           # True → Guardian-backed live search for NEWS
-NEWS_DATE_WINDOW_DAYS  = 1                              # ± days around the question's stated date
+NEWS_DATE_WINDOW_DAYS  = 2                              # ± days around the question's stated date (absorbs publish-date skew)
 NEWS_MAX_ARTICLES      = 3                              # max Guardian articles per NEWS live query
 
 # Eval
@@ -721,14 +740,19 @@ _news_search = None
 if USE_NEWS_LIVE_SEARCH and need_retriever and not USE_MOCK:
     from polimibot.rag.news_search import NewsLiveSearch
     from polimibot.config import update_news
+    # Read the key from the environment HERE (build time), not at import time —
+    # this is what lets the Colab secret cell take effect even though it runs
+    # after `import polimibot`.
     _news_cfg = update_news(
+        guardian_api_key=os.environ.get('GUARDIAN_API_KEY', '').strip(),
         date_window_days=NEWS_DATE_WINDOW_DAYS,
         max_articles=NEWS_MAX_ARTICLES,
         timeout_seconds=LIVE_SEARCH_TIMEOUT,
     )
     _news_search = NewsLiveSearch(_news_cfg)
-    _key_state = ('GUARDIAN_API_KEY set' if _news_cfg.guardian_api_key
-                  else "no key — using public 'test' key + Wikipedia fallback")
+    _key_state = (f'GUARDIAN_API_KEY set (…{_news_cfg.guardian_api_key[-4:]})'
+                  if _news_cfg.guardian_api_key
+                  else 'no key — Wikipedia fallback only')
     print(f'NewsLiveSearch ready for NEWS — {_key_state}')
 elif USE_NEWS_LIVE_SEARCH:
     print('NewsLiveSearch: skipped (USE_MOCK=True or no retriever) — NEWS uses Wikipedia fallback')
@@ -748,6 +772,7 @@ _rag_kwargs = dict(
     min_score=RAG_MIN_SCORE,
     min_score_rrf=RAG_MIN_SCORE_RRF,
     min_score_rerank=RAG_MIN_SCORE_RERANK,
+    min_live_score=MIN_LIVE_SCORE,
     max_passage_chars=RAG_MAX_PASSAGE_CHARS,
     max_total_chars=RAG_MAX_TOTAL_CHARS,
     # Live-search fallback — fires only when offline retrieval is gated.
