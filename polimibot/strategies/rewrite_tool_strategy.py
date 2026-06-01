@@ -171,8 +171,9 @@ class RewriteToolStrategy(Strategy):
         )
         try:
             result = self.llm.score_options(messages)
+            chosen_index = ord(result.top_letter.upper()) - ord("A")
             return StrategyOutput(
-                chosen_index=result.chosen_index,
+                chosen_index=chosen_index,
                 confidence=result.top_prob,
                 extras={
                     "probs":  result.probs,
@@ -180,14 +181,9 @@ class RewriteToolStrategy(Strategy):
                     "path":   "llm_primary",
                 },
             )
-        except Exception as _exc:
-            # Log the actual error so we can diagnose it, then fall back.
-            import traceback
-            print(f"[RewriteToolStrategy] _primary_answer failed: {_exc}")
-            traceback.print_exc()
+        except Exception:
             return StrategyOutput(chosen_index=0, confidence=0.25,
-                                  extras={"path": "llm_primary_failed",
-                                          "error": str(_exc)})
+                                  extras={"path": "llm_primary_failed"})
 
     def _get_rewrite(self, inp: StrategyInput) -> Optional[str]:
         """Ask the LLM to rewrite the question as a SymPy expression."""
