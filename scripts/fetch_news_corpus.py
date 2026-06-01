@@ -45,21 +45,34 @@ def main() -> None:
 
     if not NEWS.guardian_api_key:
         print(
-            "WARNING: GUARDIAN_API_KEY is not set. The public 'test' key is "
-            "heavily rate-limited and a multi-day harvest will likely be "
-            "throttled. Register a free key at open-platform.theguardian.com "
-            "and `export GUARDIAN_API_KEY=...` for a real harvest."
+            "WARNING: GUARDIAN_API_KEY is not set, so the Guardian source skips "
+            "the network and this harvest will fetch nothing. Register a free "
+            "key at open-platform.theguardian.com and `export "
+            "GUARDIAN_API_KEY=...` before running."
         )
 
+    # Harvest day-by-day so every date in the window gets its own pagination
+    # budget. A single fetch_range over a multi-day window only returns the
+    # newest ``page_size * max_pages`` results (the Guardian publishes hundreds
+    # of pieces a day), silently dropping the older end of the range — which is
+    # exactly where the dated News questions live.
     source = GuardianNewsSource()
-    articles = source.fetch_range(
-        from_date, to_date,
-        query=args.query,
-        sections=args.sections,
-        page_size=args.page_size,
-        max_pages=args.max_pages,
-    )
-    # De-dup within this harvest by title (paging can re-surface an article).
+    articles: list[Article] = []
+    day = from_date
+    while day <= to_date:
+        day_articles = source.fetch_range(
+            day, day,
+            query=args.query,
+            sections=args.sections,
+            page_size=args.page_size,
+            max_pages=args.max_pages,
+        )
+        articles.extend(day_articles)
+        print(f"  {day}: {len(day_articles)} article(s)")
+        day += _dt.timedelta(days=1)
+
+    # De-dup across the whole harvest by title (paging / adjacent days can
+    # re-surface an article).
     seen: set[str] = set()
     unique: list[Article] = []
     for a in articles:
