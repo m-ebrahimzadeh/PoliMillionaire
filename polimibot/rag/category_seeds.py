@@ -218,6 +218,71 @@ CATEGORY_SEEDS: dict[Category, list] = {
 }
 
 
+# ── Concept seed categories ─────────────────────────────────────────────────
+# CATEGORY_SEEDS above harvests NAMED ENTITIES (people, works, elements, events).
+# But the bulk of the real questions — Philosophy & Psychology dominates, and
+# Science leans conceptual too — are CONCEPTUAL/definitional ("the bystander
+# effect", "a GAN", "necessary vs sufficient cause", "reductive physicalism").
+# An entity harvest never surfaces those nodes. These concept categories cover
+# that demand, keyed to the same Category enum.
+#
+# Harvested with one level of subcategory recursion (``_CONCEPT_DEPTH``): concept
+# taxonomies routinely nest their pages a level below the top category, and the
+# per-category cap still bounds the crawl. Categories that don't exist are
+# skipped gracefully by the harvester — the explicit ``CONCEPT_TITLES`` list
+# (corpus.py) is the guaranteed-inclusion safety net for specific proven-gap
+# articles. MATHS (procedural) and NEWS (live Guardian path) get none.
+_CONCEPT_DEPTH = 1
+
+CONCEPT_SEEDS: dict[Category, list] = {
+    Category.PHILOSOPHY: [
+        ("Psychological_concepts", 300),
+        ("Cognitive_biases", 200),
+        "Psychotherapy",
+        "Interpersonal_relationships",
+        "Social_psychology",
+        "Cognitive_science",
+        "Philosophy_of_mind",
+        "Concepts_in_ethics",
+        "Concepts_in_epistemology",
+        "Concepts_in_metaphysics",
+        "Logical_fallacies",
+        ("Political_ideologies", 300),
+        "Political_theories",
+        "Forms_of_government",
+        "Existentialism",
+        "Schools_and_traditions_in_philosophy",
+    ],
+    Category.SCIENCE: [
+        ("Concepts_in_physics", 300),
+        "Cell_biology",
+        "Biological_processes",
+        ("Machine_learning", 200),
+        "Scientific_method",
+        "Metabolism",
+        "Branches_of_chemistry",
+        "Chemical_processes",
+        "States_of_matter",
+    ],
+    Category.HISTORY: [
+        "Roman_law",
+        "Social_classes_in_ancient_Rome",
+        ("Battles_involving_the_Roman_Republic", 200),
+        "Culture_of_ancient_Rome",
+        "Religion_in_ancient_Rome",
+        "Mystery_religions",
+        "Forms_of_government",
+        "Hellenistic_civilization",
+    ],
+    Category.ENTERTAINMENT: [
+        ("Friends_(TV_series)_episodes", 100),
+        "Music_genres",
+        "Film_genres",
+        "Narrative_techniques",
+    ],
+}
+
+
 # ── Public API ───────────────────────────────────────────────────────────
 
 def harvest_titles(
@@ -275,37 +340,28 @@ def harvest_titles(
     out: dict[Category, list[str]] = {c: list(cached[c]) for c in cached_targets}
 
     for cat in missing_targets:
-        seeds = CATEGORY_SEEDS.get(cat, [])
+        entity_seeds = CATEGORY_SEEDS.get(cat, [])
+        concept_seeds = CONCEPT_SEEDS.get(cat, [])
         if verbose:
-            print(f"\n[{cat.value}] harvesting from {len(seeds)} seed categories…")
+            print(
+                f"\n[{cat.value}] harvesting from {len(entity_seeds)} entity + "
+                f"{len(concept_seeds)} concept seed categories…"
+            )
 
         titles: list[str] = []
         seen: set[str] = set()
-        for seed in seeds:
-            # Normalise seed entries: either bare string or (name, cap) tuple.
-            if isinstance(seed, tuple):
-                cat_name, cap = seed
-            else:
-                cat_name, cap = seed, max_per_category
-
-            try:
-                fetched = _fetch_category_members(
-                    cat_name, limit=cap, max_depth=max_depth, verbose=verbose,
-                )
-            except Exception as exc:  # noqa: BLE001 — never abort the whole harvest
-                if verbose:
-                    print(f"  ! failed to fetch Category:{cat_name}: {exc}")
-                continue
-
-            kept = 0
-            for title in fetched:
-                if title in seen:
-                    continue
-                seen.add(title)
-                titles.append(title)
-                kept += 1
-            if verbose:
-                print(f"  + Category:{cat_name}: {len(fetched)} → {kept} new (total {len(titles)})")
+        # Entity seeds at the caller's depth (0 by default — wide flat lists).
+        _harvest_seeds(
+            entity_seeds, titles=titles, seen=seen,
+            default_cap=max_per_category, max_depth=max_depth, verbose=verbose,
+        )
+        # Concept seeds one level deeper (taxonomies nest a level down), but
+        # never shallower than the caller asked for.
+        _harvest_seeds(
+            concept_seeds, titles=titles, seen=seen,
+            default_cap=max_per_category, max_depth=max(max_depth, _CONCEPT_DEPTH),
+            verbose=verbose,
+        )
 
         out[cat] = titles
         if verbose:
@@ -326,6 +382,48 @@ def harvest_titles(
             print(f"\nSaved harvested titles → {cache_path}")
 
     return out
+
+
+def _harvest_seeds(
+    seeds: list,
+    *,
+    titles: list[str],
+    seen: set[str],
+    default_cap: int,
+    max_depth: int,
+    verbose: bool,
+) -> None:
+    """Harvest one seed list into ``titles`` (deduped via ``seen``), in place.
+
+    Each seed is a bare ``"Category_Name"`` (uses ``default_cap``) or a
+    ``("Category_Name", cap)`` tuple. A failed category is logged and skipped —
+    one bad name never aborts the harvest. Used for both the entity and concept
+    seed lists, which differ only in their ``max_depth``.
+    """
+    for seed in seeds:
+        if isinstance(seed, tuple):
+            cat_name, cap = seed
+        else:
+            cat_name, cap = seed, default_cap
+
+        try:
+            fetched = _fetch_category_members(
+                cat_name, limit=cap, max_depth=max_depth, verbose=verbose,
+            )
+        except Exception as exc:  # noqa: BLE001 — never abort the whole harvest
+            if verbose:
+                print(f"  ! failed to fetch Category:{cat_name}: {exc}")
+            continue
+
+        kept = 0
+        for title in fetched:
+            if title in seen:
+                continue
+            seen.add(title)
+            titles.append(title)
+            kept += 1
+        if verbose:
+            print(f"  + Category:{cat_name}: {len(fetched)} → {kept} new (total {len(titles)})")
 
 
 # ── MediaWiki API plumbing ────────────────────────────────────────────────
