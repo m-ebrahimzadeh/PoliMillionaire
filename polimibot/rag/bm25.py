@@ -40,8 +40,10 @@ from .chunker import Chunk
 
 
 # Bumped whenever the on-disk format or the tokenisation pipeline changes.
-# v2 = positional postings + stopword removal (was v1: tf-only postings).
-BM25_VERSION = 2
+# v3 = alias terms folded into the per-chunk token stream (lead chunks carry
+#      the article's redirect phrasings). v2 = positional postings + stopword
+#      removal. v1 = tf-only postings.
+BM25_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,20 @@ def tokenize(text: str, *, drop_stopwords: bool = True) -> List[str]:
     if drop_stopwords:
         return [t for t in toks if t not in _STOPWORDS]
     return toks
+
+
+def _doc_text_for_bm25(chunk: Chunk) -> str:
+    """Lexical surface for a chunk: its text plus any alias phrasings.
+
+    Lead chunks carry the article's redirect titles (e.g. "Dr. Drake Ramoray").
+    Appending them to the BM25 token stream lets a query that uses the alias
+    match the article even when its body never spells the alias out. Chunks
+    without aliases reduce to ``chunk.text``, so unaliased corpora tokenise
+    exactly as before.
+    """
+    if chunk.aliases:
+        return chunk.text + " " + " ".join(chunk.aliases)
+    return chunk.text
 
 
 def _build_positional_postings(
@@ -142,7 +158,7 @@ class BM25Index:
             return
 
         # Build from scratch.
-        self._doc_tokens = [tokenize(c.text) for c in self._chunks]
+        self._doc_tokens = [tokenize(_doc_text_for_bm25(c)) for c in self._chunks]
         self._doc_len = [len(t) for t in self._doc_tokens]
         n_docs = len(self._chunks)
         self._avgdl = (sum(self._doc_len) / n_docs) if n_docs else 0.0
@@ -261,7 +277,7 @@ class BM25Index:
             return
 
         start_id = len(self._chunks)
-        new_tokens = [tokenize(c.text) for c in chunks]
+        new_tokens = [tokenize(_doc_text_for_bm25(c)) for c in chunks]
         new_lens = [len(t) for t in new_tokens]
 
         # Extend core lists.

@@ -134,6 +134,38 @@ def test_embedding_text_empty_source_falls_back_to_text():
     assert embedding_text(c) == "orphan passage"
 
 
+def test_embedding_text_includes_section_path():
+    """A chunk under a header grounds on title + section so the cross-encoder
+    can tell a deep-section chunk apart from the generic lead."""
+    c = Chunk(text="He fell down an elevator shaft.", source="The One Where Dr. Ramoray Dies",
+              chunk_id=2, section_title="Plot")
+    assert embedding_text(c) == (
+        "The One Where Dr. Ramoray Dies — Plot: He fell down an elevator shaft."
+    )
+
+
+def test_embedding_text_includes_aliases():
+    """Alias phrasings join the embedded form so a question naming the entity
+    by a redirect still lands near the article in vector space."""
+    c = Chunk(text="is the 18th episode.", source="The One Where Dr. Ramoray Dies",
+              chunk_id=0, is_lead=True, aliases=("Dr. Drake Ramoray",))
+    assert embedding_text(c) == (
+        "The One Where Dr. Ramoray Dies (also known as: Dr. Drake Ramoray): "
+        "is the 18th episode."
+    )
+
+
+def test_chunk_text_stamps_aliases_on_lead_only():
+    """``aliases`` ride the lead chunk(s); sectioned chunks carry None."""
+    text = "Lead paragraph about the topic.\n\n== History ==\nLater developments."
+    chunks = chunk_text(text, source="Topic", chunk_size=300, overlap=50,
+                        min_chunk_words=1, aliases=("Alt Name",))
+    lead = [c for c in chunks if c.is_lead]
+    sectioned = [c for c in chunks if not c.is_lead]
+    assert lead and all(c.aliases == ("Alt Name",) for c in lead)
+    assert sectioned and all(c.aliases is None for c in sectioned)
+
+
 def test_embed_text_version_exported():
     """EMBED_TEXT_VERSION is recorded in the index manifest — manifest readers
     rely on its presence and integrality."""
@@ -878,6 +910,22 @@ def test_index_save_load_preserves_chunk_metadata(tmp_path):
     assert [c.section_title for c in loaded] == [None, "History", None]
     assert loaded[0].url == "https://en.wikipedia.org/wiki/A"
     assert loaded[1].url is None and loaded[2].url is None
+
+
+def test_index_save_load_roundtrips_aliases(tmp_path):
+    """aliases survive the FAISS .jsonl round-trip (lead chunk only)."""
+    idx = FAISSIndex(dim=8)
+    chunks = [
+        Chunk(text="lead", source="A", chunk_id=0, is_lead=True,
+              aliases=("Alt One", "Alt Two")),
+        Chunk(text="body", source="A", chunk_id=1),   # no aliases
+    ]
+    idx.add(chunks, _random_vecs(2, dim=8))
+    idx.save(tmp_path / "idx", manifest={"embedder_model_name": "m", "embedder_dim": 8})
+
+    loaded = FAISSIndex.load(tmp_path / "idx")._chunks
+    assert loaded[0].aliases == ("Alt One", "Alt Two")
+    assert loaded[1].aliases is None
 
 
 def test_retriever_category_filter_drops_off_category_chunks():
