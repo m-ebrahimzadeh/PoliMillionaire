@@ -382,7 +382,7 @@ def fetch_articles_from_categories(
     """
     # Local import keeps the dependency cycle clean: category_seeds is a
     # leaf module that imports nothing from corpus / chunker / index.
-    from .category_seeds import harvest_titles
+    from .category_seeds import harvest_titles, CONCEPT_TITLES
 
     import wikipedia  # lazy — only needed when this function actually runs
 
@@ -397,6 +397,15 @@ def fetch_articles_from_categories(
         max_depth=max_depth,
         verbose=verbose,
     )
+
+    # Step 1b: prepend the explicit concept titles (guaranteed inclusion).
+    # These bypass the category caps and lead the per-category list so they win
+    # the cross-category dedup below and are fetched first. Merged here (not in
+    # harvest_titles) so they're never lost to the harvested-titles cache.
+    for cat in targets:
+        explicit = CONCEPT_TITLES.get(cat, [])
+        if explicit:
+            harvested[cat] = explicit + harvested.get(cat, [])
 
     # Step 2: flatten with cross-category dedup. First category in
     # ``targets`` wins for any duplicate title.

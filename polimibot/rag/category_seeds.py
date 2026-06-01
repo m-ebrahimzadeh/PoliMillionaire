@@ -283,6 +283,101 @@ CONCEPT_SEEDS: dict[Category, list] = {
 }
 
 
+# ── Explicit concept titles (guaranteed inclusion) ──────────────────────────
+# Category harvesting is breadth-first and alphabetical-capped, so a specific
+# node the bot has demonstrably missed can still fall outside the crawl. These
+# are exact Wikipedia article titles, fetched directly (bypassing the category
+# caps) so the proven-gap concepts are *guaranteed* present. Derived from every
+# question in the two run logs plus the gap analysis. A title that 404s or
+# disambiguates with no good option is skipped gracefully at fetch time.
+CONCEPT_TITLES: dict[Category, list[str]] = {
+    Category.ENTERTAINMENT: [
+        "Brad Pitt", "Marilyn Monroe", "Charlie Chaplin", "Bette Davis",
+        "James Cameron", "Martin Scorsese", "Steven Spielberg",
+        "John Williams", "Whitney Houston", "I Will Always Love You",
+        "Johnny Cash", "A Boy Named Sue", "Jimi Hendrix", "Audio feedback",
+        "The Beatles", "Paul McCartney", "Pink Floyd", "Psychedelic pop",
+        "U2", "Achtung Baby", "Electronic dance music", "Joey Tribbiani",
+        "The One Where Dr. Ramoray Dies", "Joker (The Dark Knight)",
+        "2001: A Space Odyssey (film)", "The Shawshank Redemption",
+        "Shared universe", "Broadway Danny Rose",
+    ],
+    Category.HISTORY: [
+        "Maat", "Peregrinus (Roman)", "Ancient Roman architecture",
+        "John Hyrcanus", "Edomites", "Battle of Actium", "Roman citizenship",
+        "Greco-Roman mysteries", "Achaeans (Homer)", "Homer", "Iliad",
+        "Acropolis of Athens", "Demography of the Roman Empire", "Babylonia",
+        "Hammurabi", "Assyria", "Battle of the Milvian Bridge", "Freedman",
+        "Cleopatra", "Ahhiyawa", "Tawagalawa letter", "Ancient Egypt",
+        "Parthenon", "Pericles", "Ancient Roman cuisine",
+        "Edict of Milan", "Constantine the Great", "Pharaoh",
+        "Classical antiquity", "Virtus", "Ancient Egyptian race controversy",
+        "Byzantine Empire", "Macedonia (ancient kingdom)", "Aristotle",
+        "Corpus Juris Civilis", "Roman law", "Ariarathes V of Cappadocia",
+        "Plato", "Theory of forms", "Autochthon (ancient Greece)",
+        "Names of Athens", "Antikythera mechanism", "Form of the Good",
+        "Roman historiography",
+    ],
+    Category.SCIENCE: [
+        "Unicellular organism", "Thermal insulation", "Wave function collapse",
+        "Quantum decoherence", "Giant-impact hypothesis", "Origin of the Moon",
+        "Whistle", "Sound", "Star", "Cell membrane", "Protein", "Quartz",
+        "Bird migration", "Water cycle", "Transpiration", "Protist",
+        "Paramecium", "Human digestive system", "Refraction", "Cooking oil",
+        "Fat", "Virial theorem",
+        "Globally Harmonized System of Classification and Labelling of Chemicals",
+        "Wind turbine", "Xanthan gum", "Cell (biology)", "Carbon cycle",
+        "Hydrolysis", "Inverted sugar syrup", "Sucrose",
+        "Necessity and sufficiency", "Causality", "Propylene glycol", "Diol",
+        "Henry's law", "Saccharomyces cerevisiae", "Entropy",
+        "Second law of thermodynamics", "Weathering", "Sedimentary rock",
+        "Scientific method", "Hypothesis", "Conservation of energy",
+        "Reflecting telescope", "Arthropod", "Chordate", "DNA",
+    ],
+    Category.PHILOSOPHY: [
+        "Thales of Miletus", "Central nervous system", "Reification (Marxism)",
+        "György Lukács", "Illiberal democracy", "Generative adversarial network",
+        "Neural oscillation", "Bertrand Russell", "Gottlob Frege",
+        "Logical atomism", "Pan-Slavism", "Zebrafish", "Stockholm syndrome",
+        "Posttraumatic stress disorder", "Will to power",
+        "The World as Will and Representation", "Communitarianism",
+        "Negative and positive rights", "George Santayana",
+        "The Sense of Beauty", "Peronism", "Right-wing populism", "Taboo",
+        "Separatism", "Existentialism", "Jean-Paul Sartre",
+        "Colorless green ideas sleep furiously", "Corporate social responsibility",
+        "Nick Bostrom", "Superintelligence", "Global catastrophic risk",
+        "Id, ego and superego", "Scientism", "Al-Kindi", "Active intellect",
+        "Stoic logic", "Supererogation", "Richard Rorty", "Codependency",
+        "David Hume", "Logical positivism", "Emmanuel Levinas",
+        "Other (philosophy)", "Categorical imperative", "Social isolation",
+        "Person-centered therapy", "Carl Rogers", "Bystander effect",
+        "Limerence", "Barbell strategy", "Nassim Nicholas Taleb",
+        "Self-regulation", "Cognitive dissonance", "John Henry Newman",
+        "Natural religion", "Chromesthesia", "Absolute pitch", "Synesthesia",
+        "Just-world hypothesis", "Victim blaming", "Attachment theory",
+        "Parasocial interaction", "Purity spiral", "Informal logic",
+        "Formal logic", "Queerplatonic relationship", "Embodied cognition",
+        "Simone de Beauvoir", "Polysemy", "Median voter theorem",
+        "Collective unconscious", "Jungian archetypes", "Physicalism",
+        "Theory of mind", "Computability theory", "Domino theory",
+        "Legalism (Chinese philosophy)", "Ad hominem", "Fiscal conservatism",
+        "Personal identity", "Pacifism", "Nonviolent resistance",
+        "New Left", "Jean Piaget", "Milgram experiment",
+        "Abstract and concrete", "Atlanticism", "Aphantasia", "Karl Marx",
+        "Carl Jung", "Sigmund Freud", "Friedrich Nietzsche",
+        "Arthur Schopenhauer",
+    ],
+    # MATHS: definitional anchors only — the procedural questions are tool work,
+    # but a handful of named concepts ("Type I error", "p-value") do appear.
+    Category.MATHS: [
+        "Type I and type II errors", "P-value", "Student's t-test",
+        "Statistical hypothesis testing", "Group (mathematics)",
+        "Field (mathematics)", "Integral domain", "Linear regression",
+        "Stratified sampling", "Sampling (statistics)",
+    ],
+}
+
+
 # ── Public API ───────────────────────────────────────────────────────────
 
 def harvest_titles(

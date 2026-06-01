@@ -44,6 +44,21 @@ def test_harvest_seeds_dedupes_and_respects_caps(monkeypatch):
     assert titles == ["Bystander effect", "Just-world hypothesis", "Person-centered therapy"]
 
 
+def test_concept_titles_cover_proven_gaps():
+    """The exact articles the bot demonstrably missed must be guaranteed-fetch
+    titles, so a future seed edit can't silently drop them again."""
+    flat = {t for titles in cs.CONCEPT_TITLES.values() for t in titles}
+    for proven_gap in (
+        "Necessity and sufficiency", "Demography of the Roman Empire",
+        "Achtung Baby", "The One Where Dr. Ramoray Dies", "Chromesthesia",
+        "Bystander effect", "Generative adversarial network", "Weathering",
+        "Entropy", "Person-centered therapy",
+    ):
+        assert proven_gap in flat, proven_gap
+    # News is handled by the live Guardian path, not the static corpus.
+    assert cs.CONCEPT_TITLES.get(Category.NEWS, []) == []
+
+
 def test_harvest_seeds_skips_failed_category(monkeypatch):
     """A category that raises (e.g. doesn't exist) is skipped, not fatal."""
     def fake_fetch(category, *, limit, max_depth, verbose, _depth=0):
