@@ -502,6 +502,10 @@ USE_ENSEMBLE        = False                              # weighted-prob fusion 
 USE_TIERED          = False                              # full hybrid: tier-by-level with all the above
 USE_CONFIDENCE_GATED  = True                            # primary → fallback-on-uncertainty
 MARGIN_THRESHOLD      = 0.30                             # commit primary when (top1 - top2) prob ≥ this
+# Categories that ALWAYS escalate to the RAG/live fallback, bypassing the margin
+# gate. The base LLM cannot know dated NEWS articles (past its knowledge cutoff),
+# so its confidence there is meaningless — retrieval is mandatory. [] → pure gate.
+CONFGATE_ALWAYS_FALLBACK = ['news']                     # category values; e.g. [] or ['news']
 
 # Tier knobs (only used when USE_TIERED=True)
 TIER_EASY_MAX       = 5                                  # levels 1..5  → easy strategy
@@ -787,16 +791,21 @@ _rag_kwargs = dict(
 
 if USE_CONFIDENCE_GATED:
     from polimibot.strategies.confidence_gated_strategy import ConfidenceGatedStrategy
+    from polimibot.config import Category as _Category_cg
     # Primary: bare LLM, logit-scored. Uses the `baseline` object built at
     # the top of this cell. No RAG, no live — fast and well-calibrated.
     # Fallback: live-Wikipedia-only RAG (offline auto-skipped when
-    # RAG_MIN_SCORE_RERANK >= 1.0). Only fires when primary's margin is
-    # below MARGIN_THRESHOLD — reduces Wikipedia API load ~95%.
+    # RAG_MIN_SCORE_RERANK >= 1.0). Fires when primary's margin is below
+    # MARGIN_THRESHOLD, or always for CONFGATE_ALWAYS_FALLBACK categories
+    # (NEWS) where the model's confidence is not a trustworthy signal.
     fallback_rag = RAGStrategy(llm, retriever, **_rag_kwargs)
     strategy = ConfidenceGatedStrategy(
         primary=baseline,
         fallback=fallback_rag,
         margin_threshold=MARGIN_THRESHOLD,
+        always_fallback_categories=frozenset(
+            _Category_cg(c) for c in CONFGATE_ALWAYS_FALLBACK
+        ),
     )
 elif USE_TIERED:
     from polimibot.config import Category as _Category_tiered
