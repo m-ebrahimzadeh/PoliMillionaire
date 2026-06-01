@@ -55,6 +55,9 @@ _REWRITE_SYSTEM = (
     "You are a SymPy expression converter. "
     "Given a math problem, output ONLY a single SymPy-parseable Python expression. "
     "No explanation. No prose. Output exactly one line.\n"
+    "If the question does not involve a specific numeric computation — for example, "
+    "it asks about a concept, a definition, or a true/false statement — output the "
+    "single word NONE and nothing else.\n"
     "Examples:\n"
     "  binomial(25, 3)\n"
     "  Mod(2**87, 7)\n"
@@ -62,6 +65,7 @@ _REWRITE_SYSTEM = (
     "  log(2, 8)\n"
     "  solve(x**2 - 5*x + 6, x)[0]\n"
     "  diff(x**3 + exp(x), x).subs(x, 0)\n"
+    "  integrate(pi * sin(x)**2, (x, 0, pi))\n"
     "  (3*5 - 2) / 7"
 )
 
@@ -218,9 +222,14 @@ class RewriteToolStrategy(Strategy):
 
     @staticmethod
     def _strip_rewrite(raw: str) -> Optional[str]:
-        """Extract the first plausible SymPy expression line from LLM output."""
+        """Extract the first plausible SymPy expression line from LLM output.
+        Returns None if the model outputs NONE (non-computable question signal).
+        """
         # Remove markdown code fences
         raw = re.sub(r'```[a-z]*\n?', '', raw).strip()
+        # Explicit NONE signal from the model
+        if raw.strip().upper() == 'NONE':
+            return None
         for line in raw.splitlines():
             line = line.strip()
             if not line:
@@ -242,7 +251,16 @@ class RewriteToolStrategy(Strategy):
 
     @staticmethod
     def _eval_rewrite(expr: str, options: tuple) -> Optional[int]:
-        """Evaluate a raw SymPy expression and match against options."""
+        """Evaluate a raw SymPy expression and match against options.
+
+        Three-stage matching:
+          1. Numeric float match (handles integers, decimals, fractions)
+          2. LaTeX fraction match (for options like \\frac{1}{3})
+          3. Symbolic match — converts each option to SymPy and checks
+             sympy.simplify(result - option) == 0.  Catches cases where the
+             rewrite returns a symbolic expression (e.g. 2 + exp(-4)) and the
+             option is written in the same symbolic form.
+        """
         if _BLOCKED.search(expr):
             return None
         try:
@@ -251,26 +269,63 @@ class RewriteToolStrategy(Strategy):
             return None
 
         nums = re.findall(r'-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?', result_str)
-        if not nums:
-            return None
 
-        floats = [float(n) for n in nums]
-        pos = [f for f in floats if f >= 0]
-        value = pos[0] if pos else floats[0]
+        # ── Stage 1: numeric float match ─────────────────────────────────
+        if nums:
+            floats = [float(n) for n in nums]
+            pos = [f for f in floats if f >= 0]
+            value = pos[0] if pos else floats[0]
 
-        # Numeric match (handles integers and floats with tolerance)
-        idx = _match_options(value, options)
-        if idx is not None:
-            return idx
+            idx = _match_options(value, options)
+            if idx is not None:
+                return idx
 
-        # Fraction fallback (for options like \frac{1}{3})
+            # Stage 1b: LaTeX fraction fallback
+            try:
+                from ..tools.sympy_direct_tool import SympyDirectTool
+                frac = Fraction(value).limit_denominator(1000)
+                idx = SympyDirectTool._match_fraction(
+                    frac.numerator, frac.denominator, options)
+                if idx is not None:
+                    return idx
+            except Exception:
+                pass
+
+        # ── Stage 2: symbolic match ───────────────────────────────────────
+        # Parse the rewrite result as a SymPy expression and compare each
+        # option symbolically.  Handles "2 + e^{-4}", "π²/2", etc.
         try:
-            from ..tools.sympy_direct_tool import SympyDirectTool
-            frac = Fraction(value).limit_denominator(1000)
-            idx = SympyDirectTool._match_fraction(frac.numerator, frac.denominator, options)
+            sp = __import__('sympy')
+            # Build a safe namespace for sympify
+            _ns = {k: getattr(sp, k) for k in dir(sp) if not k.startswith('_')}
+
+            def _to_sympy(s: str):
+                s = (s.strip()
+                     .replace('^', '**')
+                     .replace('\\pi', 'pi').replace('\\e', 'E')
+                     .replace('{', '(').replace('}', ')')
+                     .replace('\\', ''))
+                # Treat bare 'e' as Euler's number (E) when not part of a word
+                s = re.sub(r'(?<![a-zA-Z])e(?![a-zA-Z0-9_])', 'E', s)
+                return sp.sympify(s, locals=_ns)
+
+            sym_result = _to_sympy(result_str)
+            for i, opt in enumerate(options):
+                try:
+                    sym_opt = _to_sympy(opt)
+                    diff = sp.simplify(sym_result - sym_opt)
+                    if diff == 0:
+                        return i
+                    # Numerical check for near-zero differences
+                    numeric = complex(sp.N(diff, 10))
+                    if abs(numeric) < 1e-6:
+                        return i
+                except Exception:
+                    continue
         except Exception:
-            idx = None
-        return idx
+            pass
+
+        return None
 
     @staticmethod
     def _pinned(pinned: StrategyOutput, reason: str) -> StrategyOutput:
