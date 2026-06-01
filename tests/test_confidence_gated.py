@@ -11,6 +11,7 @@ from typing import Optional
 
 import pytest
 
+from polimibot.config import Category
 from polimibot.strategies.base import Strategy, StrategyInput, StrategyOutput
 from polimibot.strategies.confidence_gated_strategy import (
     ConfidenceGatedStrategy,
@@ -51,11 +52,12 @@ class _FakeStrategy(Strategy):
         )
 
 
-def _input() -> StrategyInput:
+def _input(category: Optional[Category] = None) -> StrategyInput:
     return StrategyInput(
         question="What is 2+2?",
         options=("3", "4", "5", "6"),
         level=1,
+        category=category,
     )
 
 
@@ -139,6 +141,57 @@ def test_margin_exactly_at_threshold_commits_primary():
 
     assert out.chosen_index == 1
     assert fallback.answer_calls == 0
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Forced-category escalation — the margin gate is bypassed for configured
+# categories (e.g. NEWS) the primary cannot answer from parametric memory.
+# ──────────────────────────────────────────────────────────────────────────
+def test_forced_category_escalates_despite_high_margin():
+    """A category in always_fallback_categories escalates even at high margin."""
+    primary  = _FakeStrategy(chosen_index=1, margin=0.99, name_str="prim")
+    fallback = _FakeStrategy(chosen_index=2, margin=0.10, name_str="back")
+    s = ConfidenceGatedStrategy(
+        primary, fallback, margin_threshold=0.20,
+        always_fallback_categories=frozenset({Category.NEWS}),
+    )
+
+    out = s.answer(_input(category=Category.NEWS))
+
+    assert out.chosen_index == 2, "Fallback must fire despite a confident primary"
+    assert fallback.answer_calls == 1
+    assert out.extras["confgated_used_primary"] is False
+    assert out.extras["confgated_forced_category"] is True
+    # Primary still ran once so the disagreement analysis is preserved.
+    assert primary.answer_calls == 1
+    assert out.extras["confgated_primary_choice"] == 1
+
+
+def test_non_forced_category_still_uses_margin_gate():
+    """A category NOT in the forced set keeps the normal margin behaviour."""
+    primary  = _FakeStrategy(chosen_index=1, margin=0.99, name_str="prim")
+    fallback = _FakeStrategy(chosen_index=2, margin=0.10, name_str="back")
+    s = ConfidenceGatedStrategy(
+        primary, fallback, margin_threshold=0.20,
+        always_fallback_categories=frozenset({Category.NEWS}),
+    )
+
+    out = s.answer(_input(category=Category.HISTORY))
+
+    assert out.chosen_index == 1, "High margin should commit primary off-category"
+    assert fallback.answer_calls == 0
+
+
+def test_name_includes_always_fallback_tag():
+    s = ConfidenceGatedStrategy(
+        _FakeStrategy(name_str="baseline[phi-4|few_shot]"),
+        _FakeStrategy(name_str="rag[phi-4|k=3|hybrid]"),
+        margin_threshold=0.25,
+        always_fallback_categories=frozenset({Category.NEWS}),
+    )
+    assert s.name == "gated[baseline→rag|m≥0.25+always:news]", (
+        f"Unexpected name: {s.name!r}"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────

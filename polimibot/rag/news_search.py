@@ -157,6 +157,19 @@ class GuardianNewsSource:
         )
         self._last_call = 0.0
         self._warned_no_key = False
+        # Set by ``_request``: True when the most recent call hit a transport
+        # failure (no-key / 429 / timeout / network) rather than a clean result.
+        self._last_call_failed = False
+
+    @property
+    def last_call_failed(self) -> bool:
+        """Whether the most recent ``_request`` failed at the transport level.
+
+        Lets ``NewsLiveSearch`` distinguish "the Guardian is unavailable right
+        now" (don't retry into a throttled endpoint) from "the Guardian
+        answered, but found nothing" (a broader query may still help).
+        """
+        return self._last_call_failed
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -254,7 +267,7 @@ class GuardianNewsSource:
     def _base_params(self, query: str, *, order_by: str, page_size: int) -> dict:
         params = {
             "q": query.strip(),
-            "api-key": self.config.guardian_api_key or "test",
+            "api-key": self.config.guardian_api_key,
             "order-by": order_by,
             "page-size": str(max(1, min(page_size, 50))),
             "show-fields": "bodyText,trailText,headline" if self.config.use_full_body
@@ -268,17 +281,26 @@ class GuardianNewsSource:
         Returns the inner ``response`` object (the dict holding ``results`` /
         ``pages``) on success, or ``None`` on any failure.  Failures are logged
         with their exception class so a 429 / quota / network blip can be told
-        apart from a genuine empty result.
+        apart from a genuine empty result, and ``last_call_failed`` records
+        which it was.
         """
+        self._last_call_failed = False
+
+        # No key → don't send anything. The public 'test' key is globally
+        # throttled (every call 429s) and silently masks a misconfigured /
+        # set-too-late key as a "rate limit". Skip the network entirely and let
+        # the caller degrade to Wikipedia/offline.
         if not self.config.guardian_api_key:
             if not self._warned_no_key:
                 print(
-                    "[news_search] GUARDIAN_API_KEY not set — using the public "
-                    "'test' key (heavily rate-limited). Set the env var for "
-                    "real runs; the news source will fall back to Wikipedia "
-                    "when the Guardian returns nothing."
+                    "[news_search] GUARDIAN_API_KEY not set — skipping the "
+                    "Guardian and degrading to Wikipedia/offline. Set the env "
+                    "var *before the strategy is built* (e.g. from the Colab "
+                    "secret) to enable the online news path."
                 )
                 self._warned_no_key = True
+            self._last_call_failed = True
+            return None
 
         cache_key = self._cache_key(params)
         cached = self._cache_get(cache_key)
@@ -290,32 +312,78 @@ class GuardianNewsSource:
         if 0 < elapsed < self.config.min_delay_seconds:
             time.sleep(self.config.min_delay_seconds - elapsed)
 
-        try:
-            r = requests.get(
-                self.config.guardian_base_url,
-                params=params,
-                timeout=self.config.timeout_seconds,
-            )
-            self._last_call = time.monotonic()
-            if r.status_code == 429:
-                print("[news_search] RATE LIMIT (HTTP 429) — backing off to fallback")
+        payload = None
+        for attempt in range(2):  # at most one retry, only on a short-wait 429
+            try:
+                r = requests.get(
+                    self.config.guardian_base_url,
+                    params=params,
+                    timeout=self.config.timeout_seconds,
+                )
+                self._last_call = time.monotonic()
+                if r.status_code == 429:
+                    wait = self._retry_after_seconds(r)
+                    remaining = self._rate_limit_remaining(r)
+                    if (attempt == 0 and wait is not None
+                            and wait <= self.config.max_retry_seconds):
+                        print(
+                            f"[news_search] RATE LIMIT (HTTP 429){remaining} — "
+                            f"retrying in {wait:.1f}s"
+                        )
+                        time.sleep(wait)
+                        continue
+                    print(
+                        f"[news_search] RATE LIMIT (HTTP 429){remaining} — "
+                        "backing off to fallback"
+                    )
+                    self._last_call_failed = True
+                    return None
+                r.raise_for_status()
+                payload = r.json()
+                break
+            except requests.Timeout:
+                print(f"[news_search] TIMEOUT after {self.config.timeout_seconds}s")
+                self._last_call_failed = True
                 return None
-            r.raise_for_status()
-            payload = r.json()
-        except requests.Timeout:
-            print(f"[news_search] TIMEOUT after {self.config.timeout_seconds}s")
-            return None
-        except Exception as exc:  # noqa: BLE001
-            print(f"[news_search] EXCEPTION: {type(exc).__name__}: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[news_search] EXCEPTION: {type(exc).__name__}: {exc}")
+                self._last_call_failed = True
+                return None
+
+        if payload is None:  # defensive: retries exhausted without a payload
+            self._last_call_failed = True
             return None
 
         response = payload.get("response") if isinstance(payload, dict) else None
         if not response or response.get("status") != "ok":
             print(f"[news_search] non-ok response: {str(payload)[:200]}")
+            self._last_call_failed = True
             return None
 
         self._cache_put(cache_key, response)
         return response
+
+    @staticmethod
+    def _retry_after_seconds(resp) -> Optional[float]:
+        """Parse the ``Retry-After`` header (seconds form) into a float."""
+        raw = resp.headers.get("Retry-After")
+        if not raw:
+            return None
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            # HTTP-date form is rare on this endpoint; treat as unknown so the
+            # caller gives up rather than guessing a wait.
+            return None
+
+    @staticmethod
+    def _rate_limit_remaining(resp) -> str:
+        """A short ' [remaining day=… minute=…]' suffix for 429 logs, if sent."""
+        day = resp.headers.get("X-RateLimit-Remaining-day")
+        minute = resp.headers.get("X-RateLimit-Remaining-minute")
+        if day is None and minute is None:
+            return ""
+        return f" [remaining day={day} minute={minute}]"
 
     def _to_article(self, item: dict) -> Optional[Article]:
         """Map one Guardian result item to an ``Article`` (NEWS-tagged).
@@ -448,8 +516,13 @@ class NewsLiveSearch:
             articles = self.guardian.search(
                 q, from_date=date - window, to_date=date + window
             )
+            # If that call hit a 429 / timeout / no-key, the Guardian is
+            # unavailable right now — a second unconstrained call would only
+            # earn a second 429. Degrade straight to Wikipedia instead.
+            if not articles and self.guardian.last_call_failed:
+                return self._wiki_search(query, category)
 
-        # Date window too tight / no date stated → try an unconstrained search.
+        # Healthy but empty (window too tight) or no date stated → broaden once.
         if not articles:
             articles = self.guardian.search(q)
 
@@ -457,6 +530,12 @@ class NewsLiveSearch:
             return articles[: self.config.max_articles]
 
         # ── Secondary fallback: Wikipedia ──────────────────────────────────
+        return self._wiki_search(query, category)
+
+    def _wiki_search(
+        self, query: str, category: Optional[Category]
+    ) -> list[Article]:
+        """Delegate to the Wikipedia ``LiveSearchFallback`` (the secondary path)."""
         if not self.use_wiki_fallback:
             return []
         wiki = self._wiki_source()

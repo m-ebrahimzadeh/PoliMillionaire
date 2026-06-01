@@ -146,6 +146,11 @@ NEWS questions reference a *specific dated article* ("the article published on `
   python scripts/fetch_news_corpus.py --days 30 --build
   ```
 
+  The harvest pulls the window **day by day** so every date is covered evenly — a
+  single multi-day query would only return the newest ~`page-size × max-pages`
+  results and silently drop the older end of the range (where dated questions
+  live). Narrow a focused harvest with `--sections world,politics,us-news,uk-news,business,technology,sport,science,society` and/or widen `--days`.
+
 - **Online** — NEWS uses the *same* threshold-gated live fallback as every other category, but its source is the date- and entity-aware [`NewsLiveSearch`](polimibot/rag/news_search.py) (Guardian) instead of Wikipedia. It extracts the question's publication date, queries that window, and **falls back to Wikipedia** when the Guardian returns nothing or no key is set — so NEWS never goes dark. Toggle via `USE_NEWS_LIVE_SEARCH` in the notebook's Section 1.
 
 Guardian responses are cached under `data/cache/news/` (keyed without the API key), so eval replays cost no quota. Confirmed-correct live articles are learned into the offline index by the existing `IndexGrower`, so coverage grows over time.
