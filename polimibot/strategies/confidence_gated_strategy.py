@@ -35,8 +35,9 @@ Routing logic
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Iterable, Optional
 
+from ..config import Category
 from .base import Strategy, StrategyInput, StrategyOutput
 
 
@@ -68,6 +69,14 @@ class ConfidenceGatedStrategy(Strategy):
             (less fallback, more reliance on parametric knowledge), values
             closer to 1 escalate more often (more retrieval, more API
             calls, potentially more context-distraction).
+        always_fallback_categories: categories whose questions ALWAYS escalate
+            to ``fallback``, bypassing the margin gate entirely. The margin is
+            a valid uncertainty signal only when the primary *could* know the
+            answer; for a category the model has no parametric knowledge of —
+            e.g. NEWS, whose questions reference specific dated articles past
+            the model's knowledge cutoff — a confident margin is meaningless,
+            so retrieval is mandatory rather than optional lift. Defaults to
+            the empty set (pure margin gate, unchanged behaviour).
 
     Side-effects on ``extras``:
         The returned ``StrategyOutput.extras`` always includes:
@@ -86,6 +95,7 @@ class ConfidenceGatedStrategy(Strategy):
         fallback: Strategy,
         *,
         margin_threshold: float = DEFAULT_MARGIN_THRESHOLD,
+        always_fallback_categories: Iterable[Category] = frozenset(),
     ) -> None:
         if not 0.0 <= margin_threshold <= 1.0:
             raise ValueError(
@@ -94,14 +104,20 @@ class ConfidenceGatedStrategy(Strategy):
         self.primary = primary
         self.fallback = fallback
         self.margin_threshold = float(margin_threshold)
+        self.always_fallback_categories = frozenset(always_fallback_categories)
         # Short, leaderboard-friendly name. We use only each arm's *type tag*
         # (the prefix before its first ``[``) rather than the arm's full name —
         # the surrounding ``report_id`` already encodes model + prompt style,
-        # so repeating them here would be redundant.
+        # so repeating them here would be redundant. The optional ``+always:…``
+        # suffix surfaces any forced-fallback categories.
         primary_tag  = getattr(primary,  "name", "primary").split("[", 1)[0]
         fallback_tag = getattr(fallback, "name", "fallback").split("[", 1)[0]
+        always_tag = ""
+        if self.always_fallback_categories:
+            cats = ",".join(sorted(c.value for c in self.always_fallback_categories))
+            always_tag = f"+always:{cats}"
         self.name = (
-            f"gated[{primary_tag}→{fallback_tag}|m≥{self.margin_threshold}]"
+            f"gated[{primary_tag}→{fallback_tag}|m≥{self.margin_threshold}{always_tag}]"
         )
 
     def warm_up(self) -> None:
@@ -126,13 +142,22 @@ class ConfidenceGatedStrategy(Strategy):
         primary_out: StrategyOutput = self.primary.answer(inp)
         margin: Optional[float] = primary_out.extras.get("margin")
 
+        # ── Forced escalation ───────────────────────────────────────────────
+        # Some categories (e.g. NEWS) ask about facts the primary cannot know
+        # from parametric memory, so its margin is not a trustworthy signal —
+        # always escalate to retrieval regardless of how "confident" it looks.
+        force_fallback = (
+            inp.category is not None
+            and inp.category in self.always_fallback_categories
+        )
+
         # ── Gate decision ───────────────────────────────────────────────────
-        # Commit primary when:
+        # Commit primary when NOT force-escalating and either:
         #   (a) margin signal is absent (e.g. free-generation primary) — we
         #       have no uncertainty estimate to act on, so defer to primary; OR
         #   (b) margin is at-or-above threshold — primary is confident enough
         #       that retrieval is unlikely to help and might hurt.
-        if margin is None or margin >= self.margin_threshold:
+        if not force_fallback and (margin is None or margin >= self.margin_threshold):
             # Annotate routing decision on the existing extras dict. We must
             # not mutate frozen StrategyOutput itself, but extras is a dict
             # (mutable by design of dataclass field default_factory).
@@ -151,6 +176,7 @@ class ConfidenceGatedStrategy(Strategy):
             "confgated_used_primary":      False,
             "confgated_margin":             margin,
             "confgated_threshold":          self.margin_threshold,
+            "confgated_forced_category":    force_fallback,
             "confgated_primary_choice":     primary_out.chosen_index,
             "confgated_primary_confidence": primary_out.confidence,
             "confgated_disagrees":          (
