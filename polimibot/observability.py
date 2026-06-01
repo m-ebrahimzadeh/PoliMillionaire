@@ -121,11 +121,14 @@ def print_retrieval_summary(extras: dict) -> None:
     # ── Tool hit line (shown only when a deterministic tool answered) ─────
     tool_name = extras.get("tool")
     if tool_name:
-        expr   = extras.get("expr", "")
+        # Direct tools store "expr"; rewrite path stores "rewrite_expr"
+        expr   = extras.get("expr") or extras.get("rewrite_expr", "")
         result = extras.get("result", "")
-        expr_str   = f"  expr={str(expr)[:60]}"   if expr   else ""
-        result_str = f"  result={str(result)[:30]}" if result else ""
-        print(f"     TOOL HIT [{tool_name}]{expr_str}{result_str}")
+        path   = extras.get("path", "")
+        expr_str   = f"  expr={str(expr)[:60]}"    if expr   else ""
+        result_str = f"  result={str(result)[:30]}" if result and result != "complex" else ""
+        path_str   = f"  [{path}]"                  if path and path not in ("direct_tool",) else ""
+        print(f"     TOOL HIT [{tool_name}]{path_str}{expr_str}{result_str}")
 
     # ── Decoding / parse line ──────────────────────────────────────────────
     decoding  = extras.get("decoding_path", "—")

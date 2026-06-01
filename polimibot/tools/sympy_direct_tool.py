@@ -986,6 +986,9 @@ class SympyDirectTool(Tool):
 
     @staticmethod
     def _match_complex(result_str: str, options: tuple) -> Optional[int]:
+        # Bare numbers are not complex expressions — skip to avoid false positives
+        if re.fullmatch(r'-?\d+(?:\.\d+)?', result_str.strip()):
+            return None
         """Match a complex-number result string against options like '50+50i'."""
         try:
             sp = __import__('sympy')

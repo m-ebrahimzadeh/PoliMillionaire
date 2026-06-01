@@ -141,7 +141,11 @@ class RewriteToolStrategy(Strategy):
             return self._pinned(pinned, "no_time_for_rewrite")
 
         rewrite_expr = self._get_rewrite(inp)
-        if rewrite_expr is not None:
+        if rewrite_expr is None:
+            # LLM produced no parseable expression — log and fall back
+            print(f"  [rewrite] no expr extracted (pinned={pinned.chosen_letter} "
+                  f"conf={pinned.confidence:.0%})")
+        else:
             idx = self._eval_rewrite(rewrite_expr, inp.options)
             if idx is not None:
                 return StrategyOutput(
@@ -156,6 +160,9 @@ class RewriteToolStrategy(Strategy):
                         "pinned_conf":  pinned.confidence,
                     },
                 )
+            # Expression generated but no option matched — log both
+            print(f"  [rewrite] expr={rewrite_expr!r}  → no option match "
+                  f"(pinned={pinned.chosen_letter} conf={pinned.confidence:.0%})")
 
         # ── Step 5: all paths failed — return pinned ─────────────────────────
         return self._pinned(pinned, "all_abstained")
