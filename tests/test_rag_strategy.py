@@ -314,6 +314,19 @@ def test_rag_name_includes_min_score_when_set():
     assert "min_score=0.3" in strategy.name
 
 
+def test_rag_name_shows_active_path_threshold_not_dense():
+    """On the rerank path the name must show the rerank gate (the one actually
+    applied), not the inactive dense min_score — the §0c misreport bug."""
+    strategy = RAGStrategy(
+        MockLLM(), MockRetriever(_passages(), has_reranker=True),
+        k=2, use_reranker=True,
+        min_score=0.40,          # dense — inactive on the rerank path
+        min_score_rerank=0.50,   # the one that actually gates
+    )
+    assert "min_score=0.5" in strategy.name
+    assert "min_score=0.4" not in strategy.name
+
+
 def test_rag_path_aware_gate_uses_rrf_threshold_on_hybrid():
     """On the hybrid path, min_score_rrf is used, not min_score.
     A low RRF score (<min_score_rrf) should gate; a cosine-range value

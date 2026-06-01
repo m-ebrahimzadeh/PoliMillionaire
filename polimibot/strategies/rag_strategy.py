@@ -429,7 +429,18 @@ class RAGStrategy(Strategy):
                 max_articles=live_max_articles,
             )
 
-        gate_tag = f"|min_score={min_score}" if min_score is not None else ""
+        # Show the threshold that's actually applied on the active retrieval
+        # path, not always the dense one — the gate uses min_score_rerank when
+        # reranking, min_score_rrf when hybrid-only, else min_score. The old tag
+        # always printed `min_score` (dense), which misreported the real gate
+        # in logs/leaderboards (e.g. name said 0.4 while the gate logged "< 0.5").
+        if use_reranker:
+            _active_min_score = min_score_rerank
+        elif use_hybrid:
+            _active_min_score = min_score_rrf
+        else:
+            _active_min_score = min_score
+        gate_tag = f"|min_score={_active_min_score}" if _active_min_score is not None else ""
         path_tag = "" if use_score_options else "|gen"
         cat_tag  = "" if use_category_filter else "|no_cat_filter"
         rer_tag  = "|rerank" if use_reranker else ""
