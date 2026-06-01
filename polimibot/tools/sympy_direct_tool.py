@@ -6,6 +6,9 @@ Extends MathsTool's coverage to question types that safe_eval cannot handle:
   - Combinatorics          "In how many ways can 3 be chosen from 25, of which 5 are damaged?"
   - Polynomial roots       "What is the maximum of 4(x+7)(2-x)?"
   - Geometry               "Opposite vertices (1,2) and (7,4) — area of square?"
+  - Repeating decimals     "Express 0.1̄7̄ as a fraction" / "reciprocal of 0.7̄"
+  - Linear systems         "725x+727y=1500 and 729x+731y=1508, find x-y"
+  - LaTeX expressions      "Evaluate log_8 2", "range of y=5+3sin(π-x)", nested fractions
 
 Design: same precision-over-recall contract as MathsTool.
   - No LLM involved at any point — purely deterministic.
@@ -333,7 +336,229 @@ def _bare_expression_pattern():
     return pat, build
 
 
+# ── Addition 1: Repeating decimal patterns ────────────────────────────────────
+
+def _repeating_decimal_pattern():
+    r"""Convert repeating-decimal notation to a fraction.
+
+    Handles three forms that appear in live questions:
+      \overline{d}          → pure repeat:   0.\overline{7}   = 7/9
+      d.\overline{d}        → mixed:         0.1\overline{7}  = 8/45
+      reciprocal of …       → wraps result:  reciprocal of 0.\overline{7} = 9/7
+
+    Algorithm (no SymPy needed — pure integer arithmetic):
+      For  A.BC̄  (A = integer part, B = non-repeating decimals, C = repeating block):
+        value = (ABC - AB) / (99...9 × 10^len(B))
+      where the number of 9s equals len(C).
+    """
+    pat = re.compile(
+        r'(reciprocal\s+of\s+)?'              # optional "reciprocal of"
+        r'(\d+(?:\.\d*)?)'                    # leading digits, e.g. "0.1" or "0"
+        r'\\overline\s*\{(\d+)\}',            # \overline{repeating block}
+        re.I,
+    )
+    def build(m):
+        want_reciprocal = bool(m.group(1))
+        leading = m.group(2)          # e.g. "0.1"
+        repeat  = m.group(3)          # e.g. "7"
+
+        # Split leading into integer part and non-repeating decimal part
+        if '.' in leading:
+            int_part, non_rep = leading.split('.', 1)
+        else:
+            int_part, non_rep = leading, ''
+
+        int_val  = int(int_part) if int_part else 0
+        len_nr   = len(non_rep)
+        len_rep  = len(repeat)
+
+        # Numerator = (all digits without decimal) - (digits without repeating part)
+        all_digits = int(int_part + non_rep + repeat) if (int_part + non_rep + repeat) else 0
+        no_rep_digits = int(int_part + non_rep) if (int_part + non_rep) else 0
+
+        numer = all_digits - no_rep_digits
+        denom = int('9' * len_rep) * (10 ** len_nr)
+
+        if denom == 0:
+            return None
+
+        # Reduce fraction
+        from math import gcd
+        g = gcd(abs(numer), denom)
+        numer //= g
+        denom //= g
+
+        if want_reciprocal:
+            if numer == 0:
+                return None
+            numer, denom = denom, numer
+
+        return f"__fraction__:{numer}/{denom}"
+    return pat, build
+
+
+# ── Addition 2: Linear system of equations ────────────────────────────────────
+
+def _linear_system_pattern():
+    r"""Two-equation linear system → solve for a simple expression of the unknowns.
+
+    Matches questions like:
+      "725x + 727y = 1500 and 729x + 731y = 1508, what is x - y?"
+      "$725x + 727y = 1500$ and $729x + 731y = 1508$. Find x + y."
+
+    Extracts coefficients from the two equations, solves with SymPy, then
+    evaluates the requested linear combination (x-y, x+y, x, y, etc.).
+    """
+    # Matches two equations each of the form  Ax ± By = C  (integer coefficients)
+    _eq = r'(-?\d+)\s*x\s*([+\-])\s*(\d+)\s*y\s*=\s*(-?\d+)'
+    pat = re.compile(
+        rf'{_eq}'                                       # equation 1
+        r'(?:\s*(?:and|,|\.|;)\s*\$?)'                  # separator
+        rf'{_eq}'                                       # equation 2
+        r'.*?(?:find|what\s+is|compute|determine)'      # question verb
+        r'\s*(?:the\s+(?:value\s+of\s+)?)?'
+        r'(x\s*[-+]\s*y|x\s*\*\s*y|x|y)',              # what to evaluate
+        re.I | re.DOTALL,
+    )
+    def build(m):
+        a1  = int(m.group(1))
+        s1  = 1 if m.group(2) == '+' else -1
+        b1  = s1 * int(m.group(3))
+        c1  = int(m.group(4))
+        a2  = int(m.group(5))
+        s2  = 1 if m.group(6) == '+' else -1
+        b2  = s2 * int(m.group(7))
+        c2  = int(m.group(8))
+        target = re.sub(r'\s+', '', m.group(9).lower())  # 'x-y', 'x+y', 'x', 'y'
+        return f"__linsys__:{a1},{b1},{c1},{a2},{b2},{c2},{target}"
+    return pat, build
+
+
+# ── Addition 3: LaTeX expression evaluator ────────────────────────────────────
+
+# Maps LaTeX commands to SymPy-compatible equivalents.
+# Applied before sympify so the expression evaluates correctly.
+_LATEX_REPLACEMENTS = [
+    # Trig functions
+    (re.compile(r'\\sin\b'),  'sin'),
+    (re.compile(r'\\cos\b'),  'cos'),
+    (re.compile(r'\\tan\b'),  'tan'),
+    (re.compile(r'\\ln\b'),   'log'),
+    (re.compile(r'\\exp\b'),  'exp'),
+    (re.compile(r'\\sqrt\b'), 'sqrt'),
+    # Constants
+    (re.compile(r'\\pi\b'),   'pi'),
+    (re.compile(r'\\infty\b'),'oo'),
+    # Operators
+    (re.compile(r'\\cdot\b'), '*'),
+    (re.compile(r'\\times\b'),'*'),
+    (re.compile(r'\\div\b'),  '/'),
+    (re.compile(r'\\pm\b'),   '+'),   # approximate — abstain if result ambiguous
+    # Fractions: \frac{a}{b} → (a)/(b)
+    # Applied iteratively to handle nested fractions
+    (re.compile(r'\\[dc]?frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}'), r'(\1)/(\2)'),
+    # \left( \right) — remove sizing commands
+    (re.compile(r'\\(?:left|right)\s*([(){}\[\]|])'), r'\1'),
+    # Superscripts: ^{expr} → **(expr)
+    (re.compile(r'\^\{([^{}]+)\}'), r'**(\1)'),
+    # Subscripts in log: \log_{base} → handled by dedicated pattern; strip here
+    (re.compile(r'\\log_\{?(\w+)\}?'), r'log_\1_'),  # marker, resolved below
+    # Remove remaining backslash commands we don't recognise
+    (re.compile(r'\\[a-zA-Z]+'), ''),
+    # Braces → parens
+    (re.compile(r'\{'), '('),
+    (re.compile(r'\}'), ')'),
+]
+
+_LOG_BASE_MARKER = re.compile(r'log_(\w+)_\s*\(?(\w+)\)?')
+
+
+def _latex_to_sympy(expr: str) -> str:
+    """Convert a LaTeX math expression string to a SymPy-parseable string."""
+    # Resolve nested \frac / \cfrac / \dfrac from innermost outward.
+    # Repeat until no more \frac patterns remain (handles arbitrary nesting depth).
+    _frac_pat = re.compile(r'\\[dc]?frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}')
+    for _ in range(8):
+        new_expr = _frac_pat.sub(r'(\1)/(\2)', expr)
+        if new_expr == expr:
+            break
+        expr = new_expr
+
+    # Apply remaining replacements once
+    for pat, repl in _LATEX_REPLACEMENTS:
+        # Skip frac — already handled above
+        if hasattr(pat, 'pattern') and 'frac' in pat.pattern:
+            continue
+        expr = pat.sub(repl, expr)
+
+    # Resolve log_base_ markers: log_8_(2) → log(2,8)
+    expr = _LOG_BASE_MARKER.sub(lambda m: f"log({m.group(2)},{m.group(1)})", expr)
+    expr = _insert_mul(expr)
+    return expr.strip()
+
+
+def _latex_expr_pattern():
+    r"""Evaluate a LaTeX expression from a question of the form:
+      "Evaluate $\log_8 2$"
+      "Find $-\frac{1}{-3}\cdot\frac{1}{\frac{1}{-3}}$"
+      "What is the range of y = 5 + 3\sin(\pi - x)?"  [range queries handled separately]
+      "Calculate $\left(\frac{1}{a}\right)^4 \cdot 2 \cdot a^4 + a^{2+1-3}$ when a=42"
+
+    For range questions the result is a pair; handled by __range__ marker.
+    For substitution questions ("when a=42") the variable is substituted first.
+    """
+    pat = re.compile(
+        r'(?:evaluate|calculate|compute|find|simplify)\s+'
+        r'\$([^$]{1,200})\$'           # LaTeX expression in $...$
+        r'(?:\s+when\s+([a-z])\s*=\s*(-?\d+(?:\.\d+)?))?',  # optional substitution
+        re.I,
+    )
+    def build(m):
+        latex = m.group(1).strip()
+        sub_var = m.group(2)
+        sub_val = m.group(3)
+        expr = _latex_to_sympy(latex)
+        if sub_var and sub_val:
+            return f"__subst__:{expr}|{sub_var}={sub_val}"
+        # Reject if still contains long alphabetic words after conversion
+        if re.search(r'[a-zA-Z]{5,}', expr):
+            return None
+        return expr
+    return pat, build
+
+
+def _trig_range_pattern():
+    r"""Range of a trig function like y = A + B*sin(expr) or y = A + B*cos(expr).
+    Answer is [A-|B|, A+|B|] since sin/cos range is [-1, 1].
+
+    Matches: "range of y = 5 + 3*sin(pi - x)" → [2, 8]
+    sin(π - x) = sin(x), so the phase doesn't affect the range.
+    """
+    pat = re.compile(
+        r'range\s+of\s+(?:the\s+function\s+)?'
+        r'y\s*=\s*(-?\d+(?:\.\d+)?)\s*([+\-])\s*(\d+(?:\.\d+)?)'
+        r'\s*\*?\s*(?:sin|cos)\s*\(',
+        re.I,
+    )
+    def build(m):
+        A   = float(m.group(1))
+        sgn = 1.0 if m.group(2) == '+' else -1.0
+        B   = sgn * float(m.group(3))
+        lo  = A - abs(B)
+        hi  = A + abs(B)
+        return f"__range__:{lo},{hi}"
+    return pat, build
+
+
 _PATTERNS = [
+    # ── Addition 1: repeating decimals (high-confidence failures) ──
+    _repeating_decimal_pattern(),
+    # ── Addition 2: linear systems ──
+    _linear_system_pattern(),
+    # ── Addition 3: LaTeX evaluation ──
+    _trig_range_pattern(),            # specific trig range — before generic latex
+    _latex_expr_pattern(),            # general LaTeX evaluate/calculate
+    # ── Existing patterns ──
     _mod_pattern(),
     _latex_binom_pattern(),           # before _comb_pattern and _direct_sympy_pattern
     _latex_log_pattern(),             # before _direct_sympy_pattern
@@ -354,6 +579,54 @@ _PATTERNS = [
 
 
 # ── Evaluation helpers ────────────────────────────────────────────────────────
+
+def _eval_fraction(spec: str) -> Optional[float]:
+    """Return float value of a fraction string like '8/45'."""
+    try:
+        n, d = spec.split('/')
+        return float(int(n)) / float(int(d))
+    except Exception:
+        return None
+
+
+def _eval_linsys(spec: str) -> Optional[float]:
+    """Solve  a1*x + b1*y = c1,  a2*x + b2*y = c2  and evaluate target."""
+    try:
+        sp = __import__('sympy')
+        parts = spec.split(',')
+        a1, b1, c1 = int(parts[0]), int(parts[1]), int(parts[2])
+        a2, b2, c2 = int(parts[3]), int(parts[4]), int(parts[5])
+        target = parts[6]
+        x, y = sp.symbols('x y')
+        sol = sp.solve([a1*x + b1*y - c1, a2*x + b2*y - c2], [x, y])
+        if not sol:
+            return None
+        xv = float(sol[x])
+        yv = float(sol[y])
+        if target == 'x-y':   return xv - yv
+        if target == 'x+y':   return xv + yv
+        if target == 'x*y':   return xv * yv
+        if target == 'x':     return xv
+        if target == 'y':     return yv
+        return None
+    except Exception:
+        return None
+
+
+def _eval_subst(spec: str) -> Optional[float]:
+    """Evaluate  expr  after substituting  var=val  (e.g. a=42)."""
+    try:
+        sp = __import__('sympy')
+        expr_part, sub_part = spec.split('|', 1)
+        var_name, val_str = sub_part.split('=', 1)
+        var = sp.Symbol(var_name.strip())
+        val = sp.Rational(val_str.strip())
+        parsed = sp.sympify(_insert_mul(expr_part), locals={var_name.strip(): var})
+        result = parsed.subs(var, val)
+        return float(sp.N(result, 15))
+    except Exception:
+        return None
+
 
 def _eval_max(expr_body: str) -> Optional[float]:
     """Find the maximum of a single-variable polynomial expression."""
@@ -465,6 +738,19 @@ def _try_evaluate(expr_str: str) -> Optional[float]:
     if expr_str.startswith('__lcm_count__:'):
         return _eval_lcm_count(expr_str[len('__lcm_count__:'):])
 
+    if expr_str.startswith('__fraction__:'):
+        return _eval_fraction(expr_str[len('__fraction__:'):])
+
+    if expr_str.startswith('__linsys__:'):
+        return _eval_linsys(expr_str[len('__linsys__:'):])
+
+    if expr_str.startswith('__subst__:'):
+        return _eval_subst(expr_str[len('__subst__:'):])
+
+    # __range__ is not a float — handled separately in use()
+    if expr_str.startswith('__range__:'):
+        return None
+
     # Safety gate — reuse sympy_tool's block list
     if _BLOCKED.search(expr_str):
         return None
@@ -533,6 +819,45 @@ class SympyDirectTool(Tool):
                 continue
         return None
 
+    @staticmethod
+    def _match_fraction(numer: int, denom: int, options: tuple) -> Optional[int]:
+        """Match a fraction n/d against options that may be written as LaTeX fractions."""
+        target = numer / denom
+        # Try numeric match first
+        for i, opt in enumerate(options):
+            # Parse LaTeX fraction: \frac{a}{b}
+            fm = re.search(r'\\(?:d?c?frac|frac)\s*\{(-?\d+)\}\s*\{(\d+)\}', opt)
+            if fm:
+                try:
+                    val = int(fm.group(1)) / int(fm.group(2))
+                    if abs(val - target) < 1e-9:
+                        return i
+                except (ValueError, ZeroDivisionError):
+                    pass
+            # Plain numeric
+            try:
+                if abs(float(opt) - target) < 1e-9:
+                    return i
+            except ValueError:
+                pass
+        return None
+
+    @staticmethod
+    def _match_range(lo: float, hi: float, options: tuple) -> Optional[int]:
+        """Match a [lo, hi] range against options like '2 ≤ y ≤ 8' or '-2 <= y <= 8'."""
+        _num = r'(-?\d+(?:\.\d+)?)'
+        pat = re.compile(rf'{_num}\s*(?:≤|<=|<)\s*\w\s*(?:≤|<=|<)\s*{_num}')
+        for i, opt in enumerate(options):
+            m = pat.search(opt)
+            if m:
+                try:
+                    olo, ohi = float(m.group(1)), float(m.group(2))
+                    if abs(olo - lo) < 1e-6 and abs(ohi - hi) < 1e-6:
+                        return i
+                except ValueError:
+                    pass
+        return None
+
     def use(self, inp: StrategyInput) -> Optional[StrategyOutput]:
         question = inp.question
 
@@ -544,10 +869,57 @@ class SympyDirectTool(Tool):
             if not expr:
                 continue
 
-            # Try real numeric match first
+            # ── Special: fraction result ─────────────────────────────────
+            if expr.startswith('__fraction__:'):
+                spec = expr[len('__fraction__:'):]
+                try:
+                    n, d = spec.split('/')
+                    idx = self._match_fraction(int(n), int(d), inp.options)
+                except (ValueError, AttributeError):
+                    idx = None
+                if idx is not None:
+                    return StrategyOutput(
+                        chosen_index=idx,
+                        confidence=0.97,
+                        rationale=f"SympyDirectTool[fraction]: {spec}",
+                        extras={"tool": "sympy_direct", "expr": expr, "result": spec},
+                    )
+                continue
+
+            # ── Special: range result ────────────────────────────────────
+            if expr.startswith('__range__:'):
+                parts = expr[len('__range__:'):].split(',')
+                try:
+                    lo, hi = float(parts[0]), float(parts[1])
+                    idx = self._match_range(lo, hi, inp.options)
+                except (ValueError, IndexError):
+                    idx = None
+                if idx is not None:
+                    return StrategyOutput(
+                        chosen_index=idx,
+                        confidence=0.97,
+                        rationale=f"SympyDirectTool[range]: [{lo}, {hi}]",
+                        extras={"tool": "sympy_direct", "expr": expr,
+                                "result": f"[{lo},{hi}]"},
+                    )
+                continue
+
+            # ── Standard: real numeric match ─────────────────────────────
             result = _try_evaluate(expr)
             if result is not None and math.isfinite(result):
                 idx = _match_options(result, inp.options)
+                if idx is None:
+                    # Options may be LaTeX fractions — try fraction matching
+                    from math import gcd as _gcd
+                    # Approximate result as a simple fraction and try
+                    from fractions import Fraction
+                    try:
+                        frac = Fraction(result).limit_denominator(1000)
+                        idx = self._match_fraction(frac.numerator,
+                                                   frac.denominator,
+                                                   inp.options)
+                    except Exception:
+                        pass
                 if idx is not None:
                     return StrategyOutput(
                         chosen_index=idx,
@@ -556,10 +928,9 @@ class SympyDirectTool(Tool):
                         extras={"tool": "sympy_direct", "expr": expr, "result": result},
                     )
 
-            # Try complex match as fallback (e.g. options like '50+50i')
-            raw_expr = expr
+            # ── Fallback: complex match ───────────────────────────────────
             if not expr.startswith('__'):
-                idx = self._match_complex(raw_expr, inp.options)
+                idx = self._match_complex(expr, inp.options)
                 if idx is not None:
                     return StrategyOutput(
                         chosen_index=idx,
