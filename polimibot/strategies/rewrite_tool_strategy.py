@@ -227,9 +227,10 @@ class RewriteToolStrategy(Strategy):
                 continue
             if not re.search(r'[a-zA-Z0-9_(]', line):
                 continue
-            # Reject prose: common English words signal a failed rewrite
+            # Reject prose and Python import/statement lines
             if re.search(
-                r'\b(the|is|of|to|and|for|that|this|you|we|it|a|an)\b',
+                r'\b(the|is|of|to|and|for|that|this|you|we|it|a|an'
+                r'|from|import|print|return|def|class|if|else|while|for)\b',
                 line, re.I,
             ):
                 return None

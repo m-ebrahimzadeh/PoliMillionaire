@@ -323,21 +323,41 @@ def _r_squared_ratio_pattern():
 
 
 def _sum_of_squares_formula_pattern():
-    """Sum-of-squares telescoping: given formula for 1^2+...+n^2, find 21^2+...+40^2"""
+    """Sum-of-squares telescoping: given formula for 1^2+...+n^2, find 21^2+...+40^2.
+
+    The question has two parts:
+      - A formula line:   1^2 + 2^2 + ... + n^2 = n(n+1)(2n+1)/6
+      - A question line:  What is the value of 21^2 + 22^2 + ... + 40^2?
+
+    We must extract the range ONLY from the question part (after the '='), not from
+    the formula definition — otherwise we'd include 1,2,...,n and compute the wrong sum.
+    """
     pat = re.compile(
         r'(\d+)\^2\s*\+\s*(\d+)\^2\s*\+.*?\+\s*(\d+)\^2',
         re.I,
     )
     def build(m):
-        # Extract all exponent bases from the question
-        all_nums = re.findall(r'(\d+)\^2', m.string)
-        if len(all_nums) < 2:
+        full = m.string
+        # Split at the question boundary — look for "what is" or "find" after the formula
+        q_match = re.search(
+            r'(?:what\s+is\s+the\s+value\s+of|find\s+(?:the\s+value\s+of)?)\s+'
+            r'([^?]{1,120})',
+            full, re.I | re.DOTALL,
+        )
+        if q_match:
+            # Extract n^2 terms only from the question part
+            question_part = q_match.group(1)
+        else:
+            # Fallback: use everything after the last '=' sign
+            eq_idx = full.rfind('=')
+            question_part = full[eq_idx + 1:] if eq_idx != -1 else full
+
+        nums = [int(n) for n in re.findall(r'(\d+)\^2', question_part)]
+        if len(nums) < 2:
             return None
-        nums = [int(n) for n in all_nums]
         low, high = min(nums), max(nums)
         if high - low < 2:
             return None
-        # sum(k^2, k=low..high) = sum(k^2, k=1..high) - sum(k^2, k=1..low-1)
         def s(n): return n * (n + 1) * (2 * n + 1) // 6
         result = s(high) - s(low - 1)
         return f"__literal__:{result}"
