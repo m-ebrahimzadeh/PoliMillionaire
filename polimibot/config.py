@@ -132,8 +132,9 @@ class NewsConfig:
     timeout_seconds: float = 6.0
     # ± days around the question's stated date to widen the from/to window —
     # absorbs publish-vs-update and timezone skew (an article "published on
-    # the 17th" may carry a 16th or 18th webPublicationDate).
-    date_window_days: int = 1
+    # the 17th" may carry a 16th or 18th webPublicationDate). Widened to ±2
+    # after a Lives-game run showed exact-date windows missing the article.
+    date_window_days: int = 2
     # Max articles to turn into passages per online query.
     max_articles: int = 3
     # Fetch the full article body (show-fields=bodyText) vs. just the trailText
@@ -141,6 +142,11 @@ class NewsConfig:
     use_full_body: bool = True
     # Client-side throttle between Guardian HTTP calls (free tier ~1 req/s).
     min_delay_seconds: float = 1.0
+    # On HTTP 429 the Guardian sends a ``Retry-After`` header. We honour it with
+    # a single short retry when the wait is at-or-below this cap (the per-second
+    # limit refills almost immediately); a longer wait (daily-quota 429) is not
+    # worth blocking the question budget, so we give up instead.
+    max_retry_seconds: float = 2.0
 
 
 # ──────────────────────────── Singletons ────────────────────────────
