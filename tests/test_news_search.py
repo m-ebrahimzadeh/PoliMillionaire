@@ -44,10 +44,11 @@ def _payload(results, *, pages=1, status="ok"):
     return {"response": {"status": status, "pages": pages, "results": results}}
 
 
-def _resp(payload, *, status_code=200, raise_exc=None):
+def _resp(payload, *, status_code=200, raise_exc=None, headers=None):
     r = MagicMock()
     r.status_code = status_code
     r.json.return_value = payload
+    r.headers = {} if headers is None else dict(headers)
     if raise_exc is not None:
         r.raise_for_status.side_effect = raise_exc
     else:
@@ -140,8 +141,39 @@ def test_search_empty_on_http_error(tmp_path):
 def test_search_empty_on_429(tmp_path):
     src = GuardianNewsSource(_cfg(), cache_dir=tmp_path)
     with patch.object(ns.requests, "get",
-                      return_value=_resp(_payload([_result()]), status_code=429)):
+                      return_value=_resp(_payload([_result()]), status_code=429)) as get:
         assert src.search("q") == []
+    assert get.call_count == 1            # no Retry-After → no retry
+    assert src.last_call_failed is True
+
+
+def test_search_no_key_skips_network(tmp_path):
+    """An empty key must not hit the network (the 'test' key just 429s)."""
+    src = GuardianNewsSource(_cfg(guardian_api_key=""), cache_dir=tmp_path)
+    with patch.object(ns.requests, "get") as get:
+        assert src.search("q") == []
+    get.assert_not_called()
+    assert src.last_call_failed is True
+
+
+def test_search_429_retries_once_when_retry_after_is_short(tmp_path):
+    src = GuardianNewsSource(_cfg(), cache_dir=tmp_path)
+    r429 = _resp(_payload([]), status_code=429, headers={"Retry-After": "0"})
+    ok = _resp(_payload([_result()]))
+    with patch.object(ns.requests, "get", side_effect=[r429, ok]) as get:
+        articles = src.search("q")
+    assert get.call_count == 2            # one retry after the short 429
+    assert len(articles) == 1
+    assert src.last_call_failed is False
+
+
+def test_search_429_gives_up_when_retry_after_too_long(tmp_path):
+    src = GuardianNewsSource(_cfg(max_retry_seconds=2.0), cache_dir=tmp_path)
+    r429 = _resp(_payload([]), status_code=429, headers={"Retry-After": "60"})
+    with patch.object(ns.requests, "get", return_value=r429) as get:
+        assert src.search("q") == []
+    assert get.call_count == 1            # 60s > cap → no retry
+    assert src.last_call_failed is True
 
 
 def test_search_empty_on_timeout(tmp_path):
@@ -189,9 +221,10 @@ def test_fetch_range_paginates(tmp_path):
 # ── NewsLiveSearch — Guardian + Wikipedia fallback ──────────────────────────────
 
 class _FakeGuardian:
-    def __init__(self, results):
+    def __init__(self, results, *, fail=False):
         self.results = results
         self.calls = []
+        self.last_call_failed = fail
 
     def search(self, query, *, from_date=None, to_date=None, page_size=None, order_by="relevance"):
         self.calls.append((query, from_date, to_date))
@@ -234,6 +267,20 @@ def test_news_live_search_falls_back_to_wikipedia():
 
     assert out == [w_article]             # degraded to Wikipedia
     assert len(g.calls) >= 1              # Guardian was tried first
+    assert w.calls and w.calls[0][1] == Category.NEWS
+
+
+def test_news_live_search_skips_second_call_on_guardian_failure():
+    """On a 429/timeout the windowed call fails → no wasted unconstrained call."""
+    g = _FakeGuardian([], fail=True)      # windowed call returns [] and FAILED
+    w_article = Article("w", "wiki text", Category.NEWS, "u")
+    w = _FakeWiki([w_article])
+    nls = NewsLiveSearch(_cfg(date_window_days=1), guardian=g, wiki_fallback=w)
+
+    out = nls.search("On 2026-05-17 something happened", category=Category.NEWS)
+
+    assert out == [w_article]             # degraded to Wikipedia
+    assert len(g.calls) == 1              # only the windowed call — no retry
     assert w.calls and w.calls[0][1] == Category.NEWS
 
 
