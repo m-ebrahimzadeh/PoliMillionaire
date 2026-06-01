@@ -180,10 +180,14 @@ class RewriteToolStrategy(Strategy):
                     "path":   "llm_primary",
                 },
             )
-        except Exception:
-            # Fallback: pick option 0 with minimum confidence
+        except Exception as _exc:
+            # Log the actual error so we can diagnose it, then fall back.
+            import traceback
+            print(f"[RewriteToolStrategy] _primary_answer failed: {_exc}")
+            traceback.print_exc()
             return StrategyOutput(chosen_index=0, confidence=0.25,
-                                  extras={"path": "llm_primary_failed"})
+                                  extras={"path": "llm_primary_failed",
+                                          "error": str(_exc)})
 
     def _get_rewrite(self, inp: StrategyInput) -> Optional[str]:
         """Ask the LLM to rewrite the question as a SymPy expression."""
