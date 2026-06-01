@@ -32,7 +32,7 @@ CLEANUP_VERSION = 1
 # *selection* logic changes (separate from CLEANUP_VERSION, which tracks the
 # in-place text normalisation only). Surfaced in the index manifest so a
 # retriever can spot a stale corpus even when cleanup didn't change.
-CORPUS_VERSION = 3   # v3 = category-graph harvest (was v2: hand-curated TOPIC_SEEDS)
+CORPUS_VERSION = 4   # v4 = concept-first seeds + aliases/competition schema (was v3: category-graph harvest)
 
 _CITATION_RE = re.compile(r"\[\d+\](?:\[\d+\])*")
 
@@ -71,11 +71,26 @@ def clean_wikipedia_text(text: str) -> str:
 
 @dataclass(frozen=True)
 class Article:
-    """One Wikipedia article — the raw unit before chunking."""
+    """One Wikipedia article — the raw unit before chunking.
+
+    The trailing fields are optional with safe defaults so every existing
+    constructor and on-disk corpus (which omits them) keeps loading:
+
+      ``aliases`` — Wikipedia redirect titles / alternate phrasings for this
+          article (e.g. "Dr. Drake Ramoray" → *The One Where Dr. Ramoray Dies*).
+          Indexed as extra retrieval keys so a question that names the entity
+          by an alias still reaches the article.
+      ``competition`` — the exact runtime competition label this article serves
+          (e.g. "Ancient History and Politics"), derived from ``category`` via
+          ``config.CATEGORIES``. Kept for provenance/trace; the retriever still
+          filters on ``category``.
+    """
     title: str
     text: str         # full article text (may be many thousands of words)
     category: Category
     url: str = ""
+    aliases: tuple[str, ...] = ()
+    competition: str = ""
 
 
 # ── Topic seeds ───────────────────────────────────────────────────────────────
@@ -422,19 +437,33 @@ def fetch_articles_from_categories(
 # ── Persistence ───────────────────────────────────────────────────────────────
 
 def save_raw_corpus(articles: list[Article], path: Path) -> None:
-    """Persist raw articles to JSONL. Safe to overwrite."""
+    """Persist raw articles to JSONL. Safe to overwrite.
+
+    ``aliases``/``competition`` are written only when non-empty so corpora with
+    no enrichment stay byte-for-byte compatible with the v3 reader.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for a in articles:
-            f.write(json.dumps({
+            row = {
                 "title": a.title, "text": a.text,
                 "category": a.category.value, "url": a.url,
-            }, ensure_ascii=False) + "\n")
+            }
+            if a.aliases:
+                row["aliases"] = list(a.aliases)
+            if a.competition:
+                row["competition"] = a.competition
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
     print(f"Saved {len(articles)} articles → {path}")
 
 
 def load_raw_corpus(path: Path) -> list[Article]:
-    """Load previously saved raw corpus from JSONL."""
+    """Load previously saved raw corpus from JSONL.
+
+    Tolerant of both v3 rows (title/text/category/url only) and v4 rows that
+    add ``aliases``/``competition`` — missing fields fall back to their
+    dataclass defaults.
+    """
     articles = []
     with path.open(encoding="utf-8") as f:
         for line in f:
@@ -442,5 +471,7 @@ def load_raw_corpus(path: Path) -> list[Article]:
             articles.append(Article(
                 title=d["title"], text=d["text"],
                 category=Category(d["category"]), url=d.get("url", ""),
+                aliases=tuple(d.get("aliases", ())),
+                competition=d.get("competition", ""),
             ))
     return articles

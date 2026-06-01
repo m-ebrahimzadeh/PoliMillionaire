@@ -245,3 +245,50 @@ def test_fetch_one_skips_when_no_disambig_option_matches(monkeypatch):
 def test_corpus_version_is_positive_int():
     from polimibot.rag.corpus import CORPUS_VERSION
     assert isinstance(CORPUS_VERSION, int) and CORPUS_VERSION >= 2
+
+
+# ── Article schema round-trip (aliases + competition, backward-compatible) ─────
+
+def test_save_load_roundtrips_aliases_and_competition(tmp_path):
+    from polimibot.rag.corpus import Article, save_raw_corpus, load_raw_corpus
+    from polimibot.config import Category
+
+    arts = [
+        Article(
+            title="The One Where Dr. Ramoray Dies", text="Plot…",
+            category=Category.ENTERTAINMENT, url="http://x",
+            aliases=("Dr. Drake Ramoray", "Ramoray"),
+            competition="Entertainment",
+        ),
+    ]
+    path = tmp_path / "corpus.jsonl"
+    save_raw_corpus(arts, path)
+    loaded = load_raw_corpus(path)
+    assert loaded[0].aliases == ("Dr. Drake Ramoray", "Ramoray")
+    assert loaded[0].competition == "Entertainment"
+    assert loaded[0].category == Category.ENTERTAINMENT
+
+
+def test_load_tolerates_v3_rows_without_new_fields(tmp_path):
+    """v3 corpora (no aliases/competition keys) must still load, with defaults."""
+    path = tmp_path / "v3.jsonl"
+    path.write_text(
+        '{"title": "Gold", "text": "Au.", "category": "science", "url": ""}\n',
+        encoding="utf-8",
+    )
+    from polimibot.rag.corpus import load_raw_corpus
+    loaded = load_raw_corpus(path)
+    assert loaded[0].aliases == ()
+    assert loaded[0].competition == ""
+
+
+def test_save_omits_empty_new_fields(tmp_path):
+    """No aliases/competition → row stays v3-shaped (no extra keys written)."""
+    import json
+    from polimibot.rag.corpus import Article, save_raw_corpus
+    from polimibot.config import Category
+
+    path = tmp_path / "c.jsonl"
+    save_raw_corpus([Article("Gold", "Au.", Category.SCIENCE)], path)
+    row = json.loads(path.read_text(encoding="utf-8").strip())
+    assert "aliases" not in row and "competition" not in row
