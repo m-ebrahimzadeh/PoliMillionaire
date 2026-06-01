@@ -195,6 +195,7 @@ class RAGStrategy(Strategy):
         index_grower=None,   # Optional[IndexGrower] — avoids circular import
         live_use_llm_query: bool = True,
         news_search=None,    # Optional[NewsLiveSearch] — live source for NEWS
+        min_live_score: Optional[float] = None,
         # ── HyDE ────────────────────────────────────────────────────────
         use_hyde: bool = False,
         hyde_max_new_tokens: int = 80,
@@ -277,6 +278,16 @@ class RAGStrategy(Strategy):
                 ``LiveSearchFallback``.  Every other category is unaffected.
                 ``NewsLiveSearch`` itself falls back to Wikipedia internally,
                 so News degrades gracefully when the Guardian has nothing.
+            min_live_score: optional ABSOLUTE quality floor on live-search
+                passages, distinct from the gate thresholds above. The gate is
+                deliberately bypassed for live passages (see ``answer()``), so
+                a weak fallback (e.g. an off-topic Wikipedia hit at cosine
+                ~0.01) would otherwise be injected as context and can flip a
+                correct answer. When set, live passages scoring below this are
+                dropped; if none survive, the model answers with no context
+                rather than on noise. Compared in whatever score unit the live
+                passages carry (reranker logit when the reranker scored them,
+                else cosine). ``None`` (default) preserves the prior behaviour.
         """
         if style in _COT_STYLES and use_score_options:
             raise ValueError(
@@ -309,6 +320,7 @@ class RAGStrategy(Strategy):
         self.min_score = min_score
         self.min_score_rrf = min_score_rrf
         self.min_score_rerank = min_score_rerank
+        self.min_live_score = min_live_score
         self.max_passage_chars = max_passage_chars
         self.max_total_chars = max_total_chars
         self.direct_max_new_tokens = direct_max_new_tokens
@@ -621,6 +633,26 @@ class RAGStrategy(Strategy):
                     # already keeps only the strongest matches. Keep the full
                     # pre-rerank list around for trace/debug visibility, this we do.
                     _live_all_scored = list(live_passages)
+
+                    # Absolute quality floor on live passages (opt-in via
+                    # min_live_score). Distinct from the gate threshold the
+                    # block above deliberately bypasses: a weak fallback (an
+                    # off-topic Wikipedia hit at cosine ~0.01) would otherwise
+                    # be injected as context and can flip a correct answer.
+                    # Drop sub-floor passages; if none survive, live_all_below
+                    # (below) routes to no-context so the model answers on its
+                    # own rather than on noise.
+                    if self.min_live_score is not None and live_passages:
+                        kept = [(c, s) for c, s in live_passages
+                                if s >= self.min_live_score]
+                        if len(kept) != len(live_passages):
+                            print(
+                                f"[rag] live floor: dropped "
+                                f"{len(live_passages) - len(kept)}/"
+                                f"{len(live_passages)} live passage(s) below "
+                                f"min_live_score={self.min_live_score}"
+                            )
+                        live_passages = kept
 
         # Best live score (pre-filter) — stored in extras for observability.
         live_top_score: Optional[float] = (
