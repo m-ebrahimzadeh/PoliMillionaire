@@ -71,15 +71,18 @@ def _perm_pattern():
     return pat, build
 
 def _max_poly_pattern():
-    """maximum value of a polynomial in one variable"""
+    """maximum value of a polynomial in one variable.
+    Strips surrounding $...$ LaTeX delimiters before passing to _eval_max."""
     pat = re.compile(
-        r'maximum\s+value\s+of\s+(.+?)(?:\s*,\s*over|\s*for\s+all|\s*\?|$)',
+        r'maximum\s+(?:possible\s+)?value\s+of\s+(.+?)(?:\s*,\s*over|\s*for\s+all|\s*\?|$)',
         re.I,
     )
     def build(m):
         expr = m.group(1).strip().rstrip('?').strip()
-        # Rewrite to SymPy: find critical point, evaluate
-        # Return a special marker so _eval_max() handles it
+        # Strip LaTeX $...$ delimiters if present
+        expr = re.sub(r'^\$(.+)\$$', r'\1', expr)
+        # Convert LaTeX notation
+        expr = _latex_to_sympy(expr)
         return f"__max__:{expr}"
     return pat, build
 
@@ -145,6 +148,14 @@ def _direct_sympy_pattern():
                 .replace('\\div', '/')
                 .replace('{', '(').replace('}', ')')
                 .replace('\\', ''))
+        # Guard: reject bare single-variable expressions (e.g. just "x") —
+        # these produce meaningless results and cause false positives.
+        stripped = expr.strip()
+        if re.fullmatch(r'[a-zA-Z]', stripped):
+            return None
+        # Must contain at least one digit or operator to be worth evaluating.
+        if not re.search(r'[\d+\-*/]', stripped):
+            return None
         return expr
     return pat, build
 
@@ -550,6 +561,83 @@ def _trig_range_pattern():
     return pat, build
 
 
+# ── Addition 4: three-way LCM (lights blinking at 3 different periods) ───────
+
+def _lcm3_pattern():
+    """Three simultaneous periodic events — find how many times they coincide.
+    'red blinks every 2 seconds, yellow every 3, blue every 5 ... 7 minutes'
+    Handles word and digit period forms; extracts total duration from minutes/seconds.
+    """
+    num = r'(\d+|one|two|three|four|five|six|seven|eight|nine|ten)'
+    pat = re.compile(
+        rf'every\s+{num}\s+seconds?'
+        r'.*?'
+        rf'every\s+{num}\s+seconds?'
+        r'.*?'
+        rf'every\s+{num}\s+seconds?'
+        r'.*?'
+        r'(\d+)\s*(?:-\s*)?(?:minute|min)\b',
+        re.I | re.DOTALL,
+    )
+    def build(m):
+        def to_int(s):
+            return _WORD_TO_NUM.get(s.lower(), None) or int(s)
+        try:
+            a, b, c = to_int(m.group(1)), to_int(m.group(2)), to_int(m.group(3))
+            total_min = int(m.group(4))
+        except (ValueError, TypeError):
+            return None
+        return f"__lcm3_count__:{a},{b},{c},{total_min}"
+    return pat, build
+
+
+# ── Addition 5: tangent line to a curve at a point ────────────────────────────
+
+def _tangent_line_pattern():
+    r"""Tangent line to y=f(x) at x=a.
+    'equation of the line tangent to y = x + e^x at x = 0'
+    Differentiates symbolically, evaluates slope and y-intercept, returns
+    a __tangent__ marker matched against options of the form 'y = mx + b'.
+    """
+    pat = re.compile(
+        r'(?:equation\s+of\s+)?(?:the\s+)?line\s+tangent\s+to\s+'
+        r'(?:the\s+graph\s+of\s+)?'
+        r'y\s*=\s*([^,?]+?)'           # f(x) expression
+        r'\s+at\s+x\s*=\s*(-?\d+(?:\.\d+)?)',  # x = a
+        re.I,
+    )
+    def build(m):
+        fx_raw = m.group(1).strip()
+        x_val  = m.group(2).strip()
+        # Convert to SymPy-parseable form
+        fx = _latex_to_sympy(fx_raw)
+        return f"__tangent__:{fx}|{x_val}"
+    return pat, build
+
+
+# ── Addition 6: functional equation h(ax+b)=cx+d → solve h(x)=x ─────────────
+
+def _functional_eq_pattern():
+    r"""h(ax+b) = cx+d, find x where h(x)=x.
+    'Let h(4x-1) = 2x+7. For what value of x is h(x) = x?'
+    Strategy: substitute u=ax+b → x=(u-b)/a, express h(u)=(c(u-b)/a)+d,
+    then solve h(x)=x symbolically.
+    """
+    pat = re.compile(
+        r'(?:let\s+)?h\s*\(\s*(-?\d+)\s*x\s*([+\-]\s*\d+)\s*\)'
+        r'\s*=\s*(-?\d+)\s*x\s*([+\-]\s*\d+)'
+        r'.*?h\s*\(\s*x\s*\)\s*=\s*x',
+        re.I | re.DOTALL,
+    )
+    def build(m):
+        a  = int(m.group(1))
+        b  = int(m.group(2).replace(' ', ''))   # e.g. "-1"
+        c  = int(m.group(3))
+        d  = int(m.group(4).replace(' ', ''))   # e.g. "+7"
+        return f"__func_eq__:{a},{b},{c},{d}"
+    return pat, build
+
+
 _PATTERNS = [
     # ── Addition 1: repeating decimals (high-confidence failures) ──
     _repeating_decimal_pattern(),
@@ -558,6 +646,10 @@ _PATTERNS = [
     # ── Addition 3: LaTeX evaluation ──
     _trig_range_pattern(),            # specific trig range — before generic latex
     _latex_expr_pattern(),            # general LaTeX evaluate/calculate
+    # ── Additions 4-6: new patterns ──
+    _tangent_line_pattern(),          # before equation_solve (more specific)
+    _functional_eq_pattern(),         # before equation_solve (more specific)
+    _lcm3_pattern(),                  # three-period LCM — before two-period
     # ── Existing patterns ──
     _mod_pattern(),
     _latex_binom_pattern(),           # before _comb_pattern and _direct_sympy_pattern
@@ -579,6 +671,63 @@ _PATTERNS = [
 
 
 # ── Evaluation helpers ────────────────────────────────────────────────────────
+
+def _eval_lcm3_count(params: str) -> Optional[float]:
+    """Number of simultaneous events for 3 periodic processes in a time window.
+    params: 'a,b,c,total_minutes'  (periods in seconds, window in minutes)
+    Includes start (t=0) per problem convention.
+    """
+    try:
+        import math as _math
+        a, b, c, total_min = (int(x) for x in params.split(','))
+        lcm_ab  = a * b // _math.gcd(a, b)
+        lcm_abc = lcm_ab * c // _math.gcd(lcm_ab, c)
+        total_sec = total_min * 60
+        # Number of multiples of lcm_abc in [0, total_sec] inclusive
+        count = total_sec // lcm_abc + 1
+        return float(count)
+    except Exception:
+        return None
+
+
+def _eval_tangent(spec: str) -> Optional[tuple[float, float]]:
+    """Differentiate f(x), evaluate at x=a, return (slope, intercept)."""
+    try:
+        sp = __import__('sympy')
+        fx_str, x_str = spec.split('|', 1)
+        x   = sp.Symbol('x')
+        a   = sp.Rational(x_str.strip())
+        fx  = sp.sympify(_insert_mul(fx_str), locals={'x': x, 'e': sp.E, 'pi': sp.pi})
+        df  = sp.diff(fx, x)
+        m   = float(sp.N(df.subs(x, a), 15))    # slope
+        y0  = float(sp.N(fx.subs(x, a), 15))    # y at x=a
+        b   = y0 - m * float(a)                 # intercept
+        return (m, b)
+    except Exception:
+        return None
+
+
+def _eval_func_eq(params: str) -> Optional[float]:
+    """Solve h(ax+b)=cx+d for h(x)=x.
+    Derives h(u) = c*(u-b)/a + d, then solves c*(x-b)/a + d = x.
+    """
+    try:
+        sp = __import__('sympy')
+        a, b, c, d = (int(v) for v in params.split(','))
+        x = sp.Symbol('x')
+        # h(u) expressed by substituting u = ax+b → x = (u-b)/a into h(ax+b)=cx+d
+        u = sp.Symbol('u')
+        h_u = sp.Rational(c) * (u - b) / sp.Rational(a) + d
+        # Solve h(x) = x
+        sols = sp.solve(h_u.subs(u, x) - x, x)
+        real_sols = [float(sp.re(s)) for s in sols if sp.Abs(sp.im(s)) < 1e-9]
+        if not real_sols:
+            return None
+        pos = [s for s in real_sols if s > 0]
+        return pos[0] if pos else real_sols[0]
+    except Exception:
+        return None
+
 
 def _eval_fraction(spec: str) -> Optional[float]:
     """Return float value of a fraction string like '8/45'."""
@@ -656,10 +805,12 @@ def _eval_max(expr_body: str) -> Optional[float]:
 
 def _insert_mul(expr: str) -> str:
     """Insert explicit * where Python/SymPy requires it but humans omit it.
-    '2x' → '2*x', ')('' → ')*(', but never breaks function names like 'Mod('.
+    '2x' → '2*x', '4(' → '4*(', ')('' → ')*(', but never breaks function names.
     """
     # digit immediately followed by 'x' (the unknown variable): 2x → 2*x
     expr = re.sub(r'(\d)\s*(x)\b', r'\1*\2', expr, flags=re.I)
+    # digit immediately before opening paren: 4( → 4*(
+    expr = re.sub(r'(\d)\s*\(', r'\1*(', expr)
     # closing paren immediately before opening paren: )( → )*(
     expr = re.sub(r'\)\s*\(', r')*(', expr)
     # single letter (not part of a longer word) followed by (: x( → x*(
@@ -737,6 +888,15 @@ def _try_evaluate(expr_str: str) -> Optional[float]:
 
     if expr_str.startswith('__lcm_count__:'):
         return _eval_lcm_count(expr_str[len('__lcm_count__:'):])
+
+    if expr_str.startswith('__lcm3_count__:'):
+        return _eval_lcm3_count(expr_str[len('__lcm3_count__:'):])
+
+    if expr_str.startswith('__tangent__:'):
+        return None  # handled via __tangent__ special path in use()
+
+    if expr_str.startswith('__func_eq__:'):
+        return _eval_func_eq(expr_str[len('__func_eq__:'):])
 
     if expr_str.startswith('__fraction__:'):
         return _eval_fraction(expr_str[len('__fraction__:'):])
@@ -843,6 +1003,33 @@ class SympyDirectTool(Tool):
         return None
 
     @staticmethod
+    def _match_linear(slope: float, intercept: float, options: tuple) -> Optional[int]:
+        """Match a tangent line y=mx+b against options like 'y = 2x + 1' or 'y = 2x'."""
+        _num = r'(-?\d+(?:\.\d+)?)'
+        # Pattern: y = mx + b  or  y = mx  (intercept may be absent if 0)
+        pat_full = re.compile(rf'y\s*=\s*{_num}\s*x\s*([+\-])\s*{_num}')
+        pat_no_b = re.compile(rf'y\s*=\s*{_num}\s*x\s*$')
+        for i, opt in enumerate(options):
+            m = pat_full.search(opt)
+            if m:
+                try:
+                    om = float(m.group(1))
+                    ob = float(m.group(3)) * (1 if m.group(2) == '+' else -1)
+                    if abs(om - slope) < 1e-6 and abs(ob - intercept) < 1e-6:
+                        return i
+                except ValueError:
+                    pass
+            m2 = pat_no_b.search(opt)
+            if m2:
+                try:
+                    om = float(m2.group(1))
+                    if abs(om - slope) < 1e-6 and abs(intercept) < 1e-6:
+                        return i
+                except ValueError:
+                    pass
+        return None
+
+    @staticmethod
     def _match_range(lo: float, hi: float, options: tuple) -> Optional[int]:
         """Match a [lo, hi] range against options like '2 ≤ y ≤ 8' or '-2 <= y <= 8'."""
         _num = r'(-?\d+(?:\.\d+)?)'
@@ -884,6 +1071,22 @@ class SympyDirectTool(Tool):
                         rationale=f"SympyDirectTool[fraction]: {spec}",
                         extras={"tool": "sympy_direct", "expr": expr, "result": spec},
                     )
+                continue
+
+            # ── Special: tangent line ────────────────────────────────────
+            if expr.startswith('__tangent__:'):
+                mb = _eval_tangent(expr[len('__tangent__:'):])
+                if mb is not None:
+                    slope, intercept = mb
+                    idx = self._match_linear(slope, intercept, inp.options)
+                    if idx is not None:
+                        return StrategyOutput(
+                            chosen_index=idx,
+                            confidence=0.97,
+                            rationale=f"SympyDirectTool[tangent]: y={slope}x+{intercept}",
+                            extras={"tool": "sympy_direct", "expr": expr,
+                                    "result": f"slope={slope},intercept={intercept}"},
+                        )
                 continue
 
             # ── Special: range result ────────────────────────────────────
