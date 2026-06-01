@@ -327,7 +327,8 @@ INDEX_OVERLAP      = 50           # word overlap between adjacent chunks
 INDEX_SKIP_BM25    = False        # True  → skip BM25 sidecar (dense-only, faster)
 INDEX_LEGACY_SEEDS = False        # True  → hand-curated TOPIC_SEEDS (~95 titles)
 INDEX_HARVEST_MAX_PER_CATEGORY = 500   # cap per seed-category in the harvester
-INDEX_HARVEST_MAX_DEPTH        = 0     # 0 = no subcategory recursion (safe)
+INDEX_HARVEST_MAX_DEPTH        = 0     # entity seeds: 0 = no recursion. Concept seeds always recurse 1 level.
+INDEX_GAP_QUEUE    = None         # path to gap_titles.json (scripts/mine_corpus_gaps.py) to back-fill, or None
 # ─────────────────────────────────────────────────────────────────────
 
 _index_faiss = RAG_INDEX_PATH.with_suffix('.faiss')
@@ -340,7 +341,7 @@ else:
     import time as _time
     from polimibot.config import Category as _Category
     from polimibot.rag.corpus import (
-        fetch_articles, fetch_articles_from_categories,
+        fetch_articles, fetch_articles_from_categories, fetch_articles_by_title,
         load_raw_corpus, save_raw_corpus, clean_wikipedia_text,
         CORPUS_VERSION, CLEANUP_VERSION,
     )
@@ -378,6 +379,27 @@ else:
                 max_depth=INDEX_HARVEST_MAX_DEPTH,
                 verbose=True,
             )
+        # Log-mined gap back-fill: fetch the queued titles directly (see
+        # scripts/mine_corpus_gaps.py). Skips titles already harvested.
+        if INDEX_GAP_QUEUE:
+            import json as _json
+            from pathlib import Path as _Path
+            _gap_path = _Path(INDEX_GAP_QUEUE)
+            if _gap_path.is_file():
+                _gap_raw = _json.loads(_gap_path.read_text(encoding='utf-8'))
+                _gap_tbc = {}
+                for _v, _ts in _gap_raw.items():
+                    try:
+                        _gap_tbc[_Category(_v)] = list(_ts)
+                    except ValueError:
+                        pass
+                _gap_arts = fetch_articles_by_title(
+                    _gap_tbc, existing_titles={a.title for a in _articles}, verbose=True,
+                )
+                print(f'Gap queue added {len(_gap_arts)} articles')
+                _articles = _articles + _gap_arts
+            else:
+                print(f'  ! INDEX_GAP_QUEUE {_gap_path} not found — skipping gap back-fill')
         save_raw_corpus(_articles, _corpus_path)
 
     if not _articles:
@@ -392,6 +414,7 @@ else:
             chunk_size=INDEX_CHUNK_SIZE, overlap=INDEX_OVERLAP,
             category=_art.category.value,
             url=_art.url,
+            aliases=_art.aliases or None,
         ))
     print(f'  → {len(_all_chunks)} chunks '
           f'(avg {len(_all_chunks) // max(len(_articles), 1)} per article)')
@@ -540,7 +563,7 @@ RERANK_OVERSEARCH      = 5                               # dense pool size = k �
 # index load (Section 1.3), and the IndexGrower embedder (Section 1.4).
 # Switching models requires rebuilding the index (REBUILD_INDEX=True in 0.4).
 # Prefixes auto-derive from the model name (BGE / E5 / symmetric MiniLM-style).
-EMBEDDER_MODEL         = 'BAAI/bge-small-en-v1.5'        # 384-dim, asymmetric
+EMBEDDER_MODEL         = 'BAAI/bge-m3'                   # 1024-dim dense, no query instruction; rebuild index after changing (REBUILD_INDEX=True in 0.4)
 
 # Hybrid + multi-query (lexical complement + per-option queries, both via RRF)
 RAG_USE_HYBRID         = True                           # dense + BM25 fused per query

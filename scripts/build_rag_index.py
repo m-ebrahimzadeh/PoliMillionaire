@@ -41,7 +41,7 @@ from polimibot.rag.chunker import (
 )
 from polimibot.rag.corpus import (
     CLEANUP_VERSION, CORPUS_VERSION, clean_wikipedia_text,
-    fetch_articles, fetch_articles_from_categories,
+    fetch_articles, fetch_articles_by_title, fetch_articles_from_categories,
     load_raw_corpus, save_raw_corpus,
 )
 from polimibot.rag.embedder import Embedder, EmbedderSpec
@@ -108,6 +108,30 @@ def main() -> None:
             verbose=True,
         )
 
+    # Gap queue: fetch the log-mined back-fill titles directly (bypasses the
+    # category crawl). Skips titles already in the index or just fetched.
+    if args.gap_queue:
+        import json as _json
+        gap_path = Path(args.gap_queue)
+        if not gap_path.is_file():
+            print(f"  ! --gap-queue {gap_path} not found — skipping gap back-fill")
+        else:
+            raw = _json.loads(gap_path.read_text(encoding="utf-8"))
+            titles_by_cat = {}
+            for val, titles in raw.items():
+                try:
+                    titles_by_cat[Category(val)] = list(titles)
+                except ValueError:
+                    continue  # unknown category value in the queue file
+            if categories:
+                titles_by_cat = {c: t for c, t in titles_by_cat.items() if c in categories}
+            already = existing_titles | {a.title for a in fetched_articles}
+            gap_articles = fetch_articles_by_title(
+                titles_by_cat, existing_titles=already, verbose=True,
+            )
+            print(f"Gap queue added {len(gap_articles)} new articles from {gap_path.name}")
+            fetched_articles = fetched_articles + gap_articles
+
     # Deduplicate: keep only articles not already in the index
     new_articles = [a for a in fetched_articles if a.title not in existing_titles]
     print(f"\nFetched {len(fetched_articles)} articles, {len(new_articles)} are new (not in existing index)")
@@ -138,6 +162,7 @@ def main() -> None:
             overlap=args.overlap,
             category=article.category.value,
             url=article.url,
+            aliases=article.aliases or None,
         )
         new_chunks.extend(chunks)
     print(f"  → {len(new_chunks)} new chunks total "
@@ -243,7 +268,11 @@ def _parse_args() -> argparse.Namespace:
                    help="Cap on titles per seed-category during harvest (default 500)")
     p.add_argument("--max-depth", type=int, default=0, dest="max_depth",
                    help="Subcategory recursion depth for the harvester. 0 = this "
-                        "category only (safe default); 1 = one level of subcats.")
+                        "category only (safe default); 1 = one level of subcats. "
+                        "Concept seeds always recurse one level regardless.")
+    p.add_argument("--gap-queue", default=None, dest="gap_queue",
+                   help="Path to a gap_titles.json (from scripts/mine_corpus_gaps.py) "
+                        "whose titles are fetched directly and added to the corpus.")
     return p.parse_args()
 
 

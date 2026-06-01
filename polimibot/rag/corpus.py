@@ -519,6 +519,43 @@ def fetch_articles_from_categories(
     return articles
 
 
+def fetch_articles_by_title(
+    titles_by_category: dict[Category, list[str]],
+    *,
+    existing_titles: Optional[set[str]] = None,
+    fetch_aliases: bool = True,
+    sleep_seconds: float = 0.3,
+    verbose: bool = True,
+) -> list[Article]:
+    """Fetch an explicit, per-category set of article titles via ``_fetch_one``.
+
+    Used for the log-mined gap queue (``build_rag_index.py --gap-queue``): a
+    ``{Category: [title, ...]}`` map of articles to add directly, reusing the
+    same retry/disambiguation/cleanup pipeline as the category crawl. Titles in
+    ``existing_titles`` (already in the index) and cross-title duplicates are
+    skipped. Failed fetches are skipped with a warning.
+    """
+    import wikipedia  # lazy — only needed when this actually runs
+    wikipedia.set_lang("en")
+
+    existing = set(existing_titles or ())
+    seen: set[str] = set()
+    out: list[Article] = []
+    for cat, titles in titles_by_category.items():
+        for title in titles:
+            if title in seen or title in existing:
+                continue
+            seen.add(title)
+            art = _fetch_one(title, cat, verbose=verbose, fetch_aliases=fetch_aliases)
+            if art is not None:
+                out.append(art)
+            time.sleep(sleep_seconds)
+    if verbose:
+        n_req = sum(len(v) for v in titles_by_category.values())
+        print(f"Gap queue: fetched {len(out)} / {n_req} requested titles.")
+    return out
+
+
 # ── Persistence ───────────────────────────────────────────────────────────────
 
 def save_raw_corpus(articles: list[Article], path: Path) -> None:
