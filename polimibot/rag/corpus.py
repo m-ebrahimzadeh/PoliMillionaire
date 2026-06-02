@@ -556,19 +556,20 @@ def _harvest_bulk_concurrent(
     workers: int,
     checkpoint_path: Optional[Path],
     checkpoint_every: int,
+    batch_size: int = _EXTRACTS_BATCH_SIZE,
     verbose: bool,
 ) -> list[Article]:
     """Fetch ``[(title, category), …]`` concurrently in batched extract requests.
 
-    Splits the work into ``_EXTRACTS_BATCH_SIZE`` batches run over a thread pool,
+    Splits the work into ``batch_size`` batches run over a thread pool,
     with a single second pass over any batch whose request hard-failed (a
     rate-limit casualty). Checkpoints the running corpus every ``checkpoint_every``
     articles so a crash is never total loss.
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    batches = [items[i:i + _EXTRACTS_BATCH_SIZE]
-               for i in range(0, len(items), _EXTRACTS_BATCH_SIZE)]
+    batches = [items[i:i + batch_size]
+               for i in range(0, len(items), batch_size)]
 
     def _run(batch):
         """Return (articles, failed_batch_or_None)."""
@@ -593,7 +594,7 @@ def _harvest_bulk_concurrent(
                     print(f"  ... {label}: {done}/{len(batch_list)} batches "
                           f"({len(out)} articles)")
                 if (checkpoint_path is not None and out
-                        and len(out) % checkpoint_every < _EXTRACTS_BATCH_SIZE
+                        and len(out) % checkpoint_every < batch_size
                         and len(out) >= checkpoint_every):
                     save_raw_corpus(out, checkpoint_path)
         return out, failed
@@ -656,6 +657,7 @@ def fetch_articles_from_categories(
     checkpoint_path: Optional[Path] = None,
     checkpoint_every: int = 250,
     harvest_workers: int = _HARVEST_WORKERS_DEFAULT,
+    batch_size: int = _EXTRACTS_BATCH_SIZE,
     verbose: bool = True,
 ) -> list[Article]:
     """Fetch Wikipedia articles seeded from the MediaWiki category graph.
@@ -696,6 +698,10 @@ def fetch_articles_from_categories(
         checkpoint_every: article interval between checkpoint writes (default 250).
         harvest_workers: concurrent extract batches (default
             ``_HARVEST_WORKERS_DEFAULT``). Higher = faster but less polite.
+        batch_size: titles per extract request (default ``_EXTRACTS_BATCH_SIZE``,
+            the anonymous MediaWiki cap of 20). Lower values mean more requests
+            but smaller response bodies — useful if the API returns truncated
+            extracts on large batches.
         verbose: print progress.
 
     Returns:
@@ -753,7 +759,7 @@ def fetch_articles_from_categories(
     # Step 3: fetch bodies through the fast batched + concurrent extracts path
     # (~20x fewer round-trips than per-title, plus thread-pool concurrency).
     articles = _harvest_bulk_concurrent(
-        flat, workers=harvest_workers,
+        flat, workers=harvest_workers, batch_size=batch_size,
         checkpoint_path=checkpoint_path, checkpoint_every=checkpoint_every,
         verbose=verbose,
     )

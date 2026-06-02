@@ -316,6 +316,7 @@ Two phases so the **GPU-free harvest** and the **GPU embed/index** can run on di
 | `INDEX_LEGACY_SEEDS` | Use the hand-curated `TOPIC_SEEDS` (~95 titles) instead of the category-graph harvest |
 | `INDEX_HARVEST_MAX_PER_CATEGORY` / `INDEX_HARVEST_MAX_DEPTH` | Harvester breadth / subcategory depth |
 | `INDEX_HARVEST_WORKERS` | Concurrent extract batches (default 5 — polite + fast; raise for speed) |
+| `INDEX_HARVEST_BATCH_SIZE` | Titles per extract request (default 20 — the anonymous MediaWiki cap) |
 | `INDEX_GAP_QUEUE` | Path to `gap_titles.json` (scripts/mine_corpus_gaps.py) to back-fill, or `None` |
 """))
 
@@ -336,6 +337,7 @@ INDEX_LEGACY_SEEDS = False        # True  → hand-curated TOPIC_SEEDS (~95 titl
 INDEX_HARVEST_MAX_PER_CATEGORY = 500   # cap per seed-category in the harvester
 INDEX_HARVEST_MAX_DEPTH        = 0     # entity seeds: 0 = no recursion. Concept seeds always recurse 1 level.
 INDEX_HARVEST_WORKERS          = 5     # concurrent extract batches (default 5 — polite + fast)
+INDEX_HARVEST_BATCH_SIZE       = 20    # titles per extract request (MediaWiki cap is 20 for anonymous)
 INDEX_GAP_QUEUE    = None         # path to gap_titles.json (scripts/mine_corpus_gaps.py) to back-fill, or None
 # ─────────────────────────────────────────────────────────────────────
 
@@ -409,6 +411,7 @@ else:
             max_per_category=INDEX_HARVEST_MAX_PER_CATEGORY,
             max_depth=INDEX_HARVEST_MAX_DEPTH,
             harvest_workers=INDEX_HARVEST_WORKERS,
+            batch_size=INDEX_HARVEST_BATCH_SIZE,
             checkpoint_path=_corpus_path,   # durable partial harvest — see corpus.py §8c
             verbose=True,
         )
