@@ -35,17 +35,34 @@ search (online). Drop it to emit raw phrases. NEWS and Maths are excluded.
 
 ## 2. Rebuild the index from scratch (Colab, Section 0.4)
 
-Set the Section 0.4 knobs and run the build cell:
+Section 0.4 is split into two cells so the GPU-free harvest and the GPU embed
+can run on different runtimes. Set the shared knobs cell, then run **0.4a** then
+**0.4b**:
 
 ```python
 REBUILD_INDEX      = True
 INDEX_REFETCH      = True
 EMBEDDER_MODEL     = 'BAAI/bge-m3'          # already the default after this branch
 INDEX_GAP_QUEUE    = 'data/cache/gap_titles.json'   # or None
+INDEX_DRIVE_DIR    = '/content/drive/MyDrive/polimi'  # or None to stay in one runtime
 # INDEX_HARVEST_MAX_DEPTH stays 0 for entity seeds; concept seeds always recurse 1 level.
 ```
 
-Equivalent CLI (if not using the notebook cell):
+- **0.4a — Harvest corpus (CPU runtime).** Fetches Wikipedia → `corpus.jsonl`,
+  checkpointing as it goes and saving *before* the gap-queue fetch, then copies
+  the corpus to `INDEX_DRIVE_DIR`. Pure network/CPU — no GPU hours burned.
+- Switch to a **GPU runtime** (re-run 0.1–0.3 + the knobs cell).
+- **0.4b — Embed & index (GPU runtime).** Restores `corpus.jsonl` from Drive,
+  chunks, embeds with `bge-m3`, writes FAISS + BM25, and persists the index back
+  to Drive.
+
+With `INDEX_DRIVE_DIR=None`, run both cells in the same runtime (no Drive round-trip).
+
+> Why the split: a single cell forced the CPU-only harvest onto a GPU runtime, and
+> a crash in the gap phase (which ran before the corpus was saved) discarded the
+> entire download. 0.4a now makes the harvest durable before anything else.
+
+Equivalent CLI (if not using the notebook cells — fetches + embeds in one run):
 
 ```bash
 python scripts/build_rag_index.py --fresh --refetch \
