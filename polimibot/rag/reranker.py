@@ -79,9 +79,17 @@ class CrossEncoderReranker:
         from sentence_transformers import CrossEncoder
         model = CrossEncoder(spec.model_name)
         # Half-precision weights on GPU — ~2x smaller VRAM, negligible quality
-        # loss. The HF transformer is exposed as CrossEncoder.model.
+        # loss. The HF transformer is exposed as the read-only ``CrossEncoder.model``
+        # property (getter: ``self[0].model``). Do NOT write it back as
+        # ``model.model = model.model.half()``: there is no setter, so st's
+        # ``nn.Module.__setattr__`` instead REGISTERS the returned module as a second
+        # child named "model". The forward loop then calls that stray child with the
+        # tokenized features dict as a positional arg, so a ``BatchEncoding`` lands in
+        # ``input_ids`` and the model blows up on ``input_ids.device`` ("AttributeError"
+        # / "list indices must be integers"). ``.half()`` mutates in place and returns
+        # self, so just call it — never reassign.
         if _resolve_fp16(spec.fp16):
-            model.model = model.model.half()
+            model.model.half()
 
         def _score(pairs: List[Tuple[str, str]]) -> List[float]:
             # CrossEncoder.predict returns numpy ndarray of floats.

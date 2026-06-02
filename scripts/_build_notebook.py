@@ -674,7 +674,7 @@ RAG_MAX_TOTAL_CHARS    = 2400                            # joined context budget
 
 # Reranker (cross-encoder over the dense pool — precision win, +~30 ms/query)
 RAG_USE_RERANKER       = True                           # set True to load + use
-RERANKER_MODEL         = 'BAAI/bge-reranker-base'       # lighter CE (278M), fp16; recalibrate RAG_MIN_SCORE_RERANK after swap
+RERANKER_MODEL         = 'BAAI/bge-reranker-base'       # lighter CE (278M), fp32; recalibrate RAG_MIN_SCORE_RERANK after swap
 RERANK_OVERSEARCH      = 5                               # dense pool size = k × this
 
 # Embedding model — single source of truth for index build (Section 0.4),
@@ -790,7 +790,7 @@ if need_retriever:
         from polimibot.rag.reranker import CrossEncoderReranker, RerankerSpec
         print(f'Loading cross-encoder reranker: {RERANKER_MODEL} …')
         reranker_obj = CrossEncoderReranker.load(
-            RerankerSpec(model_name=RERANKER_MODEL)
+            RerankerSpec(model_name=RERANKER_MODEL, fp16=False)  # fp32: no half-precision
         )
         LOADED_RERANKER_MODEL = RERANKER_MODEL
     elif not RAG_USE_RERANKER:
