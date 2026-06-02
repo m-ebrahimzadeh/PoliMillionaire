@@ -143,8 +143,13 @@ cells.append(md("### 0.1 Install"))
 cells.append(code("""
 # Install the project as an editable package, this cell does. Once per session, run it.
 %pip install -q -e .
-%pip install -q "transformers>=4.46,<4.50" "accelerate>=1.0,<1.5" "bitsandbytes>=0.45"
-%pip install -q "faiss-cpu>=1.7" "sentence-transformers>=2.7" "wikipedia>=1.4"
+%pip install -q "transformers>=4.50" "accelerate>=1.0" "bitsandbytes>=0.45"
+# sentence-transformers 5.x and transformers 4.50+ are a MATCHED PAIR: the 5.x
+# CrossEncoder uses the new transformers processor API. Mixing st 5.x with an
+# older transformers (the previous <4.50 pin) made the reranker warm-up raise
+# "list indices must be integers or slices, not tuple". Keep both modern so
+# newer causal LLMs (which need transformers>=4.50) also work.
+%pip install -q "faiss-cpu>=1.7" "sentence-transformers>=5.0" "wikipedia>=1.4"
 %pip install -q matplotlib pandas
 %pip install -q "openai-whisper>=20231117" "scipy>=1.11"
 """))
