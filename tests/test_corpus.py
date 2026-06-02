@@ -355,41 +355,37 @@ def test_configure_wikipedia_sets_ua_and_rate_limiting():
 
 
 def test_fetch_from_categories_checkpoints_partial_harvest(tmp_path, monkeypatch):
-    """§8c: the crawl rewrites a checkpoint file every `checkpoint_every` fetches,
-    so a crash mid-harvest leaves a durable partial corpus on disk."""
+    """§8c/§9: the batched harvest writes a checkpoint file, so a crash mid-harvest
+    leaves a durable partial corpus on disk."""
     import sys
     from polimibot.config import Category
     from polimibot.rag import corpus as corpus_mod
     from polimibot.rag import category_seeds as cs
 
-    titles = [f"Article {n}" for n in range(5)]
+    titles = [f"Article {n}" for n in range(45)]   # spans >2 batches of 20
     monkeypatch.setattr(cs, "harvest_titles",
                         lambda categories, **kw: {Category.SCIENCE: list(titles)})
     monkeypatch.setattr(cs, "CONCEPT_TITLES", {})
 
-    class _Page:
-        def __init__(self, title):
-            self.title, self.url = title, ""
-            self.content = self.summary = f"Body of {title}."
+    def fake_api_get(params):
+        reqs = params["titles"].split("|")
+        return {"query": {"pages": [
+            {"title": t, "extract": f"Body of {t}.", "fullurl": ""} for t in reqs]}}
+    monkeypatch.setattr(cs, "_api_get", fake_api_get)
 
-    class _Wiki:
-        class DisambiguationError(Exception): ...
-        class PageError(Exception): ...
+    class _Wiki:   # only _configure_wikipedia's set_lang is needed
         @staticmethod
         def set_lang(_): pass
-        @staticmethod
-        def page(name, auto_suggest=False): return _Page(name)
     monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
 
     ckpt = tmp_path / "corpus.partial.jsonl"
     arts = corpus_mod.fetch_articles_from_categories(
         categories=[Category.SCIENCE], cache_path=None, fetch_aliases=False,
-        checkpoint_path=ckpt, checkpoint_every=2, sleep_seconds=0, verbose=False,
+        checkpoint_path=ckpt, checkpoint_every=20, harvest_workers=2, verbose=False,
     )
-    assert len(arts) == 5
-    assert ckpt.exists(), "checkpoint file should exist after a multi-fetch crawl"
-    # Checkpoints fired at i=2 and i=4 → at least 4 articles are durable on disk.
-    assert len(corpus_mod.load_raw_corpus(ckpt)) >= 4
+    assert len(arts) == 45
+    assert ckpt.exists(), "checkpoint file should exist after the batched harvest"
+    assert len(corpus_mod.load_raw_corpus(ckpt)) == 45   # final checkpoint has all
 
 
 def test_fetch_by_title_resolves_and_drops_unresolvable(monkeypatch):
@@ -476,48 +472,40 @@ def test_failure_cooldown_pauses_once_failures_cluster(monkeypatch):
     assert sleeps == []
 
 
-def test_fetch_from_categories_second_pass_recovers_throttled_titles(monkeypatch):
-    """A title that errors on the first pass but succeeds on the second (a
-    rate-limit casualty) is recovered, not left out of the corpus."""
+def test_fetch_from_categories_attaches_aliases_to_curated_only(monkeypatch):
+    """§9c: only the curated CONCEPT_TITLES get redirect aliases (one batched
+    prop=redirects query); bulk harvested titles get none."""
     import sys
     from polimibot.config import Category
     from polimibot.rag import corpus as corpus_mod
     from polimibot.rag import category_seeds as cs
 
     monkeypatch.setattr(cs, "harvest_titles",
-                        lambda categories, **kw: {Category.SCIENCE: ["Good", "Flaky"]})
-    monkeypatch.setattr(cs, "CONCEPT_TITLES", {})
+                        lambda categories, **kw: {Category.SCIENCE: ["Bulk One"]})
+    monkeypatch.setattr(cs, "CONCEPT_TITLES", {Category.SCIENCE: ["Photosynthesis"]})
 
-    class _Page:
-        def __init__(self, title):
-            self.title, self.url = title, ""
-            self.content = self.summary = f"About {title}."
-
-    state = {"flaky_seen": 0}
+    def fake_api_get(params):
+        if params.get("prop", "").startswith("extracts"):
+            reqs = params["titles"].split("|")
+            return {"query": {"pages": [
+                {"title": t, "extract": f"About {t}.", "fullurl": ""} for t in reqs]}}
+        return {"query": {"pages": [          # the prop=redirects query
+            {"title": "Photosynthesis",
+             "redirects": [{"title": "Photosynthetic"}, {"title": "Photo synthesis"}]}]}}
+    monkeypatch.setattr(cs, "_api_get", fake_api_get)
 
     class _Wiki:
-        class DisambiguationError(Exception): ...
-        class PageError(Exception): ...
         @staticmethod
         def set_lang(_): pass
-        @staticmethod
-        def page(name, auto_suggest=False):
-            # Flaky fails *both* first-pass attempts (so the cheap inline retry
-            # can't save it), then succeeds — only the second pass recovers it.
-            if name == "Flaky" and state["flaky_seen"] < corpus_mod._FETCH_MAX_ATTEMPTS:
-                state["flaky_seen"] += 1
-                raise ValueError("Expecting value: line 1 column 1 (char 0)")
-            return _Page(name)
     monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
-    monkeypatch.setattr(corpus_mod.time, "sleep", lambda *_: None)
 
     arts = corpus_mod.fetch_articles_from_categories(
-        categories=[Category.SCIENCE], cache_path=None, fetch_aliases=False,
-        sleep_seconds=0, verbose=False,
+        categories=[Category.SCIENCE], cache_path=None, fetch_aliases=True,
+        harvest_workers=2, verbose=False,
     )
-    titles = {a.title for a in arts}
-    assert titles == {"Good", "Flaky"}        # Flaky recovered on the second pass
-    assert state["flaky_seen"] == corpus_mod._FETCH_MAX_ATTEMPTS  # failed first pass, then retried
+    by = {a.title: a for a in arts}
+    assert by["Photosynthesis"].aliases == ("Photosynthetic", "Photo synthesis")
+    assert by["Bulk One"].aliases == ()
 
 
 def test_fetch_extracts_batch_maps_redirects_and_skips_missing_disambig(monkeypatch):

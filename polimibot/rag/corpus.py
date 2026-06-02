@@ -613,6 +613,38 @@ def _harvest_bulk_concurrent(
     return articles
 
 
+def _fetch_redirects_batch(titles: list[str], *,
+                           verbose: bool = False) -> dict[str, tuple[str, ...]]:
+    """Fetch redirect aliases for many titles via batched ``prop=redirects``.
+
+    Returns ``{resolved_title: (alias, …)}`` capped at ``_MAX_ALIASES``. Aliases
+    are pure enrichment, so a failed batch simply yields none for its titles.
+    """
+    from .category_seeds import _api_get
+
+    _REDIR_BATCH = 50   # no extracts here → the higher 50-title limit applies
+    out: dict[str, tuple[str, ...]] = {}
+    for i in range(0, len(titles), _REDIR_BATCH):
+        chunk = titles[i:i + _REDIR_BATCH]
+        params = {
+            "action": "query", "format": "json", "formatversion": "2",
+            "prop": "redirects", "rdlimit": "max", "rdnamespace": "0",
+            "redirects": "1", "titles": "|".join(chunk),
+        }
+        try:
+            data = _api_get(params)
+        except Exception as exc:   # noqa: BLE001 — aliases are optional
+            if verbose:
+                print(f"    (redirects batch failed: {exc!r})")
+            continue
+        for p in data.get("query", {}).get("pages", []):
+            t = p.get("title")
+            rs = [r.get("title") for r in (p.get("redirects") or []) if r.get("title")]
+            if t and rs:
+                out[t] = tuple(rs[:_MAX_ALIASES])
+    return out
+
+
 def fetch_articles_from_categories(
     categories: list[Category] | None = None,
     *,
@@ -623,6 +655,7 @@ def fetch_articles_from_categories(
     fetch_aliases: bool = True,
     checkpoint_path: Optional[Path] = None,
     checkpoint_every: int = 250,
+    harvest_workers: int = _HARVEST_WORKERS_DEFAULT,
     verbose: bool = True,
 ) -> list[Article]:
     """Fetch Wikipedia articles seeded from the MediaWiki category graph.
@@ -630,9 +663,10 @@ def fetch_articles_from_categories(
     Drop-in alternative to ``fetch_articles()``. Instead of consuming the
     hand-curated ``TOPIC_SEEDS`` (~95 titles total), this calls the
     MediaWiki ``categorymembers`` API via ``category_seeds.harvest_titles``
-    and then runs the same per-title ``_fetch_one`` pipeline (retry,
-    disambiguation, citation cleanup) over the resulting ~500-2000 titles
-    per category.
+    and then fetches the ~500-2000 titles per category through the fast
+    **batched + concurrent** extracts path (``_harvest_bulk_concurrent`` →
+    ``_fetch_extracts_batch``): full plaintext for 20 titles per request, over
+    a small thread pool, instead of one ``wikipedia.page()`` call per title.
 
     A title appearing under multiple categories is kept under its first
     occurrence in ``categories`` order — same dedup policy as
@@ -648,19 +682,20 @@ def fetch_articles_from_categories(
         max_depth: subcategory recursion depth for the harvester. 0 means
             "this category only" (the safe default — depth >= 2 produces
             tens of thousands of titles).
-        sleep_seconds: polite delay between Wikipedia article fetches
-            (separate from the harvester's internal API politeness).
+        sleep_seconds: retained for API compatibility; the batched path needs no
+            per-title sleep (batching already cuts the request count ~20x), so it
+            is unused here.
         fetch_aliases: when True (default), attach redirect titles as
             ``Article.aliases`` — but only for the curated ``CONCEPT_TITLES``,
-            not the bulk harvested titles. Aliases matter most for the proven
-            gap concepts (e.g. "Dr. Drake Ramoray"), and skipping the redirect
-            call on the ~thousands of bulk titles roughly halves the API volume,
-            which is the main rate-limit pressure on a shared Colab IP. Set
-            False to skip aliases entirely.
+            fetched in one batched ``prop=redirects`` query. Aliases matter most
+            for the proven gap concepts (e.g. "Dr. Drake Ramoray"); the bulk
+            titles skip them. Set False to skip aliases entirely.
         checkpoint_path: if set, the running article list is rewritten to this
-            path every ``checkpoint_every`` fetches, so a mid-crawl failure
-            leaves a durable partial corpus instead of losing the whole harvest.
-        checkpoint_every: fetch interval between checkpoint writes (default 250).
+            path periodically, so a mid-crawl failure leaves a durable partial
+            corpus instead of losing the whole harvest.
+        checkpoint_every: article interval between checkpoint writes (default 250).
+        harvest_workers: concurrent extract batches (default
+            ``_HARVEST_WORKERS_DEFAULT``). Higher = faster but less polite.
         verbose: print progress.
 
     Returns:
@@ -715,58 +750,30 @@ def fetch_articles_from_categories(
             n = sum(1 for _, c in flat if c == cat)
             print(f"  [{cat.value}] {n} articles to fetch")
 
-    # Step 3: per-article body fetch with retry / disambiguation, reusing
-    # the existing pipeline so we inherit all of its robustness.
-    def _attempt(_title, _cat, _aliases):
-        try:
-            return _fetch_one(_title, _cat, verbose=verbose, fetch_aliases=_aliases)
-        except Exception as exc:   # belt-and-braces — one title must never kill the crawl
+    # Step 3: fetch bodies through the fast batched + concurrent extracts path
+    # (~20x fewer round-trips than per-title, plus thread-pool concurrency).
+    articles = _harvest_bulk_concurrent(
+        flat, workers=harvest_workers,
+        checkpoint_path=checkpoint_path, checkpoint_every=checkpoint_every,
+        verbose=verbose,
+    )
+
+    # Step 3b: enrich just the curated concept titles with redirect aliases, in
+    # one batched prop=redirects query (alt-phrasing matters most there).
+    if fetch_aliases and curated_titles:
+        curated_present = [a.title for a in articles if a.title in curated_titles]
+        if curated_present:
             if verbose:
-                print(f"  ! unhandled error for '{_title}': {exc!r} — skipped")
-            return None
-
-    articles: list[Article] = []
-    failed: list[tuple[str, Category, bool]] = []
-    cooldown = _make_failure_cooldown(verbose)
-    for i, (title, cat) in enumerate(flat, start=1):
-        # Redirects only for the curated concept titles — the bulk harvested
-        # titles skip the extra call to keep the crawl under the rate limit.
-        want_aliases = fetch_aliases and title in curated_titles
-        article = _attempt(title, cat, want_aliases)
-        if article is not None:
-            articles.append(article)
-        else:
-            failed.append((title, cat, want_aliases))
-        cooldown(article is not None)
-        # Progress dot every 50 fetches so a multi-thousand crawl shows life.
-        if verbose and i % 50 == 0:
-            print(f"  ... fetched {i}/{len(flat)} ({len(articles)} successes)")
-        # Checkpoint the harvest periodically so a crash mid-crawl never throws
-        # away hours of fetching — the partial corpus is durable on disk.
-        if checkpoint_path is not None and articles and i % checkpoint_every == 0:
-            save_raw_corpus(articles, checkpoint_path)
-        time.sleep(sleep_seconds)
-
-    # Second pass: most first-pass failures are rate-limit casualties (real
-    # titles emptied out inside a throttle window), not genuine misses. Retry
-    # them once on a now-calmer connection — this recovers most of a throttled
-    # cluster instead of leaving holes in the corpus.
-    if failed:
-        if verbose:
-            print(f"\nSecond pass: retrying {len(failed)} titles skipped on the first pass…")
-        cooldown = _make_failure_cooldown(verbose)
-        recovered = 0
-        for title, cat, want_aliases in failed:
-            article = _attempt(title, cat, want_aliases)
-            if article is not None:
-                articles.append(article)
-                recovered += 1
-            cooldown(article is not None)
-            time.sleep(sleep_seconds)
-        if verbose:
-            print(f"  recovered {recovered}/{len(failed)} on the second pass.")
-        if checkpoint_path is not None and articles:
-            save_raw_corpus(articles, checkpoint_path)
+                print(f"\nFetching redirect aliases for {len(curated_present)} curated titles…")
+            alias_map = _fetch_redirects_batch(curated_present, verbose=verbose)
+            if alias_map:
+                from dataclasses import replace as _replace
+                articles = [
+                    _replace(a, aliases=alias_map[a.title]) if a.title in alias_map else a
+                    for a in articles
+                ]
+                if checkpoint_path is not None and articles:
+                    save_raw_corpus(articles, checkpoint_path)
 
     if verbose:
         print(f"\nFetched {len(articles)} / {len(flat)} articles successfully.")
