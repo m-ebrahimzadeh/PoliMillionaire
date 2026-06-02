@@ -213,7 +213,7 @@ def fetch_articles(
     """
     import wikipedia  # lazy import — only needed at corpus-build time
 
-    wikipedia.set_lang("en")
+    _configure_wikipedia(wikipedia)
     targets = categories or list(TOPIC_SEEDS.keys())
     flat_seeds = _dedupe_seeds(targets, verbose=verbose)
 
@@ -301,6 +301,29 @@ _WIKI_API_USER_AGENT = (
     "PoliMillionaire-RAG/1.0 "
     "(https://github.com/your-org/polimibot; contact: ebrahimzadeh.meh@gmail.com)"
 )
+
+# Minimum spacing between `wikipedia` library API calls. Wikimedia throttles
+# anonymous high-volume clients (a shared Colab IP fetching thousands of titles
+# trips this), returning empty 0-byte bodies that surface as JSONDecodeError.
+# A small global floor keeps the crawl under the throttle far better than the
+# per-title back-off alone (which kicks in only *after* a failure).
+_WIKI_MIN_REQUEST_INTERVAL_MS = 200
+
+
+def _configure_wikipedia(wikipedia) -> None:
+    """One-time politeness setup for the `wikipedia` library: English, a
+    contact-bearing User-Agent (API:Etiquette), and a global minimum request
+    interval. Safe to call repeatedly — it just re-asserts the settings."""
+    from datetime import timedelta
+    wikipedia.set_lang("en")
+    # set_user_agent / set_rate_limiting exist on the standard `wikipedia`
+    # package; guard so a stripped stub (e.g. in tests) can't break the crawl.
+    if hasattr(wikipedia, "set_user_agent"):
+        wikipedia.set_user_agent(_WIKI_API_USER_AGENT)
+    if hasattr(wikipedia, "set_rate_limiting"):
+        wikipedia.set_rate_limiting(
+            True, min_wait=timedelta(milliseconds=_WIKI_MIN_REQUEST_INTERVAL_MS))
+
 
 # Cap on redirect titles kept per article. Most pages have a handful; a few
 # popular ones have dozens of near-duplicate redirects that add no signal.
@@ -451,9 +474,13 @@ def fetch_articles_from_categories(
             tens of thousands of titles).
         sleep_seconds: polite delay between Wikipedia article fetches
             (separate from the harvester's internal API politeness).
-        fetch_aliases: when True (default), attach each article's Wikipedia
-            redirect titles as ``Article.aliases`` (one extra lightweight API
-            call per article). Set False to skip for a faster, lighter build.
+        fetch_aliases: when True (default), attach redirect titles as
+            ``Article.aliases`` — but only for the curated ``CONCEPT_TITLES``,
+            not the bulk harvested titles. Aliases matter most for the proven
+            gap concepts (e.g. "Dr. Drake Ramoray"), and skipping the redirect
+            call on the ~thousands of bulk titles roughly halves the API volume,
+            which is the main rate-limit pressure on a shared Colab IP. Set
+            False to skip aliases entirely.
         verbose: print progress.
 
     Returns:
@@ -465,7 +492,7 @@ def fetch_articles_from_categories(
 
     import wikipedia  # lazy — only needed when this function actually runs
 
-    wikipedia.set_lang("en")
+    _configure_wikipedia(wikipedia)
     targets = categories or list(Category)
 
     # Step 1: title harvest (cache-aware).
@@ -481,9 +508,12 @@ def fetch_articles_from_categories(
     # These bypass the category caps and lead the per-category list so they win
     # the cross-category dedup below and are fetched first. Merged here (not in
     # harvest_titles) so they're never lost to the harvested-titles cache.
+    # Track them so only these (not the bulk titles) pay the redirect-fetch call.
+    curated_titles: set[str] = set()
     for cat in targets:
         explicit = CONCEPT_TITLES.get(cat, [])
         if explicit:
+            curated_titles.update(explicit)
             harvested[cat] = explicit + harvested.get(cat, [])
 
     # Step 2: flatten with cross-category dedup. First category in
@@ -509,8 +539,11 @@ def fetch_articles_from_categories(
     # the existing pipeline so we inherit all of its robustness.
     articles: list[Article] = []
     for i, (title, cat) in enumerate(flat, start=1):
+        # Redirects only for the curated concept titles — the bulk harvested
+        # titles skip the extra call to keep the crawl under the rate limit.
+        want_aliases = fetch_aliases and title in curated_titles
         try:
-            article = _fetch_one(title, cat, verbose=verbose, fetch_aliases=fetch_aliases)
+            article = _fetch_one(title, cat, verbose=verbose, fetch_aliases=want_aliases)
         except Exception as exc:   # belt-and-braces — one title must never kill the crawl
             if verbose:
                 print(f"  ! unhandled error for '{title}': {exc!r} — skipped")
@@ -544,7 +577,7 @@ def fetch_articles_by_title(
     skipped. Failed fetches are skipped with a warning.
     """
     import wikipedia  # lazy — only needed when this actually runs
-    wikipedia.set_lang("en")
+    _configure_wikipedia(wikipedia)
 
     existing = set(existing_titles or ())
     seen: set[str] = set()

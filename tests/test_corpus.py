@@ -324,6 +324,36 @@ def test_fetch_one_returns_none_when_every_disambig_option_errors(monkeypatch):
     assert out is None
 
 
+def test_configure_wikipedia_sets_ua_and_rate_limiting():
+    """§8b: _configure_wikipedia must set a contact UA and enable rate limiting
+    (the throttle defence) — and tolerate a stub missing the optional setters."""
+    from datetime import timedelta
+    from polimibot.rag import corpus
+
+    calls = {}
+
+    class _FullWiki:
+        @staticmethod
+        def set_lang(lang): calls["lang"] = lang
+        @staticmethod
+        def set_user_agent(ua): calls["ua"] = ua
+        @staticmethod
+        def set_rate_limiting(on, min_wait=None):
+            calls["rate"] = (on, min_wait)
+
+    corpus._configure_wikipedia(_FullWiki)
+    assert calls["lang"] == "en"
+    assert "PoliMillionaire" in calls["ua"] and "contact:" in calls["ua"]
+    on, min_wait = calls["rate"]
+    assert on is True and isinstance(min_wait, timedelta) and min_wait.microseconds > 0
+
+    # A stripped stub with only set_lang must not raise.
+    class _BareWiki:
+        @staticmethod
+        def set_lang(lang): pass
+    corpus._configure_wikipedia(_BareWiki)  # no exception = pass
+
+
 def test_corpus_version_is_positive_int():
     from polimibot.rag.corpus import CORPUS_VERSION
     assert isinstance(CORPUS_VERSION, int) and CORPUS_VERSION >= 2
