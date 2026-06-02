@@ -302,7 +302,7 @@ Two phases so the **GPU-free harvest** and the **GPU embed/index** can run on di
 
 - **0.4a — Harvest corpus (CPU-friendly).** Downloads the Wikipedia corpus and writes `data/cache/corpus.jsonl`. Pure network/CPU — run it on a **CPU runtime** to save GPU hours.
 - **0.4a-news — Seed recent Guardian news (CPU).** Appends the Guardian's last `INDEX_NEWS_GUARDIAN_DAYS` days to `corpus.jsonl` so recent dated News questions are answered offline first (key-gated; skips when `GUARDIAN_API_KEY` is unset).
-- **0.4b — Embed & index (GPU).** Loads `corpus.jsonl`, embeds with `bge-large-en-v1.5`, and writes the FAISS + BM25 index. Run it on a **GPU runtime**.
+- **0.4b — Embed & index (GPU).** Loads `corpus.jsonl`, embeds with `bge-base-en-v1.5`, and writes the FAISS + BM25 index. Run it on a **GPU runtime**.
 
 > **The CPU→GPU handoff is automatic** — no extra copying. Cell 1 symlinks `data/` to Drive (or you work directly from Drive), so `data/cache/corpus.jsonl` and the index already live on Drive and survive a runtime-type switch. To go CPU→GPU: run 0.4a, switch the runtime to GPU, re-run cells 0.1–0.3 + the knobs cell, then run 0.4b — it picks the corpus up from `data/cache` on its own.
 
@@ -327,7 +327,7 @@ cells.append(code('''
 # RAG_INDEX_PATH / EMBEDDER_MODEL are also set in Section 1.1; mirrored here so
 # 0.4 runs standalone — e.g. on a fresh GPU runtime after the CPU harvest.
 RAG_INDEX_PATH     = PATHS.cache_dir / 'knowledge'
-EMBEDDER_MODEL     = 'BAAI/bge-large-en-v1.5'   # must match Section 1.1; rebuild index after changing
+EMBEDDER_MODEL     = 'BAAI/bge-base-en-v1.5'   # must match Section 1.1; rebuild index after changing
 REBUILD_INDEX      = False        # True  → (re)build index in 0.4b even if it exists
 INDEX_REFETCH      = False        # True  → re-harvest in 0.4a even if corpus.jsonl exists
 INDEX_CATEGORIES   = None         # None  → all four; or e.g. ['history', 'science']
@@ -676,7 +676,7 @@ RERANK_OVERSEARCH      = 5                               # dense pool size = k �
 # index load (Section 1.3), and the IndexGrower embedder (Section 1.4).
 # Switching models requires rebuilding the index (REBUILD_INDEX=True in 0.4).
 # Prefixes auto-derive from the model name (BGE / E5 / symmetric MiniLM-style).
-EMBEDDER_MODEL         = 'BAAI/bge-large-en-v1.5'        # 1024-dim dense, BGE query instruction (auto), fp16; rebuild index after changing (REBUILD_INDEX=True in 0.4)
+EMBEDDER_MODEL         = 'BAAI/bge-base-en-v1.5'        # 768-dim dense, BGE query instruction (auto), fp16; rebuild index after changing (REBUILD_INDEX=True in 0.4)
 
 # Hybrid + multi-query (lexical complement + per-option queries, both via RRF)
 RAG_USE_HYBRID         = True                           # dense + BM25 fused per query

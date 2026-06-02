@@ -53,7 +53,7 @@ The implementation is a modular Python package (`polimibot`) with a Jupyter note
 | **RAG** | `faiss-cpu>=1.7`, `sentence-transformers>=2.7`, `wikipedia>=1.4` |
 | **Tools** | `sympy>=1.13` (optional for MathsTool) |
 | **Testing** | `pytest>=8` |
-| **Embedding Model** | BAAI/bge-small-en-v1.5 (configurable) |
+| **Embedding Model** | BAAI/bge-base-en-v1.5 (configurable) |
 | **Game Client** | Custom HTTP client for PoliMillionaire server |
 
 ---
@@ -588,7 +588,7 @@ python scripts/_build_notebook.py
 
 - **Politecnico di Milano NLP Course 2025/26**: Assignment framework and game server
 - **millionaire_client**: Provided HTTP client library (treated as read-only)
-- **BAAI/bge-small-en-v1.5**: Embedding model for dense retrieval
+- **BAAI/bge-base-en-v1.5**: Embedding model for dense retrieval
 - **FAISS**: Efficient similarity search library from Meta AI
 - **Hugging Face Transformers**: LLM inference backend
 
