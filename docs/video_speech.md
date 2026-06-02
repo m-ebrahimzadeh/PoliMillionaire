@@ -22,9 +22,9 @@ index plus a BM25 sparse sidecar, from Wikipedia. It runs once.
 ### SECTION 1 — Configure (~2:00)  ⟵ core
 Section 1 is where the work lives. Our process had three steps. First, baseline evaluation
 with no knobs enabled — **Phi-4** and **Qwen3-8B** were consistently the strongest
-backbones. Second, prompt style — few-shot and zero-shot won; chain-of-thought hurt
-accuracy, speed, and calibration at once, so we dropped it. Third, strategy composition,
-which the rest of this section documents.
+backbones. Second, prompt style — few-shot and zero-shot won; chain-of-thought gave no
+accuracy gain but pushed calibration error twelvefold and latency from under two seconds to
+nearly thirty, so we dropped it. Third, strategy composition, which the rest documents.
 
 *[1.1]* loads the chosen model. *[1.2]* sets game parameters, including a speech mode: when
 enabled, a Whisper transcriber turns spoken questions and options into text before the same
@@ -35,17 +35,15 @@ four option tokens directly in one forward pass instead of generating free text,
 fast and well-calibrated; the composition flags, each turning on an architectural layer;
 and the retrieval and news knobs.
 
-*[1.3.1]* is our final per-category configuration, and the reasoning. **Entertainment and
-Science** use Qwen3-8B with hybrid retrieval — dense plus BM25 — because these are broad
-factual pools where semantic search and exact entity matching both help; Science drops
-multi-query since the question is already specific. **History and Philosophy** use Phi-4,
-few-shot, and a confidence gate: always-on RAG distracted the model, so we commit its
-answer when it's confident and only call live Wikipedia when it's genuinely unsure.
-**Maths** takes a different route — no article computes an answer, so we run three
-deterministic tools first; if none fires, the model answers, and when it's unsure we have
-it rewrite the question as a SymPy expression, which fixes its arithmetic slips. **Current
-news** bypasses the confidence check entirely — the model can't know post-cutoff facts —
-so every news question goes straight to the Guardian API.
+*[1.3.1]* is our final per-category configuration. **Entertainment and Science** use
+Qwen3-8B with hybrid retrieval — dense plus BM25 — because semantic and exact-entity
+matching both help; Science drops multi-query since its questions are already specific.
+**History and Philosophy** use Phi-4 with a confidence gate: always-on RAG distracted the
+model, so we commit its answer when confident and call live Wikipedia only when it's unsure.
+**Maths** runs three deterministic tools first, and when unsure the model rewrites the
+question as a SymPy expression — which fixes its arithmetic slips and lifts Maths from about
+75 to 88 percent. **Current news** skips the gate entirely — the model can't know
+post-cutoff facts — so every news question goes straight to the Guardian API.
 
 *[1.4]* builds the retriever lazily, only if a RAG knob is on. *[1.5]* composes the final
 strategy — the one place everything is wired together.
@@ -66,9 +64,11 @@ gold set. This is our data flywheel — every live game makes offline evaluation
 ### SECTION 4 — Compare (~30s)  ⟵ punchline
 Section 4 is the synthesis. *[4.1]* aggregates every saved report into one leaderboard;
 *[4.3]* plots accuracy and latency across all strategies. And *[4.4]*, the per-category
-heatmap, is the punchline: there is no single best strategy. The confidence gate dominates
-History and Philosophy, the tool chain dominates Maths, and hybrid RAG serves Entertainment
-and Science. Each category needed a different solution.
+heatmap, is the punchline: there is no single best strategy — the confidence gate wins
+History and Philosophy, the tool chain wins Maths, hybrid RAG serves Entertainment and
+Science. Our best single configuration — a confidence gate that escalates to live retrieval
+only when the model is unsure — reaches **96.8%** on the gold set with near-perfect
+calibration, and in live play it climbed to **level 15, the full €1,024,000 prize**.
 
 ### CONCLUSION + FUTURE WORK (~25s)
 In short: per-category specialisation clearly beats any universal strategy — each category
