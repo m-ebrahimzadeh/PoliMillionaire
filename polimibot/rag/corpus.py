@@ -328,8 +328,8 @@ def _page_with_retry(title: str, *, verbose: bool):
 
 # Wikimedia's API:Etiquette requires a contact-bearing User-Agent.
 _WIKI_API_USER_AGENT = (
-    "PoliMillionaire-RAG/1.0 "
-    "(https://github.com/your-org/polimibot; contact: ebrahimzadeh.meh@gmail.com)"
+    "PoliMillionaire/1.0 "
+    "(https://github.com/m-ebrahimzadeh/PoliMillionaire; contact: ebrahimzadeh.meh@gmail.com)"
 )
 
 # Minimum spacing between `wikipedia` library API calls. Wikimedia throttles
@@ -337,7 +337,7 @@ _WIKI_API_USER_AGENT = (
 # trips this), returning empty 0-byte bodies that surface as JSONDecodeError.
 # A small global floor keeps the crawl under the throttle far better than the
 # per-title back-off alone (which kicks in only *after* a failure).
-_WIKI_MIN_REQUEST_INTERVAL_MS = 200
+_WIKI_MIN_REQUEST_INTERVAL_MS = 300
 
 
 def _configure_wikipedia(wikipedia) -> None:
