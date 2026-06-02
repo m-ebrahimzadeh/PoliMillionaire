@@ -6,12 +6,11 @@ carry the argument — keep them strong; trim Sections 0/2/3 first if you run lo
 
 ---
 
-### INTRO (~30s)
-Welcome. This is the experimentation notebook for our NLP group assignment. Our team —
-Future Millionaires — built an AI bot that plays *Who Wants to Be a PoliMillionaire?*
-The core challenge is that no single strategy works across all categories. History and
-Philosophy reward factual recall, Maths needs computation, and current news needs facts
-the model has never seen. Our work is about finding the right architecture for each.
+### INTRO (~20s)
+Welcome — we're Future Millionaires. This is our notebook for an AI bot that plays
+*Who Wants to Be a PoliMillionaire?* The core challenge: no single strategy works across
+all six categories — recall, computation, and current events each need something different
+— so we built a tailored architecture for each.
 
 ### SECTION 0 — Setup (~30s)
 Section 0 is the one-time session setup. Three cells get us running: we mount Google Drive
@@ -71,9 +70,10 @@ heatmap, is the punchline: there is no single best strategy. The confidence gate
 History and Philosophy, the tool chain dominates Maths, and hybrid RAG serves Entertainment
 and Science. Each category needed a different solution.
 
-### CONCLUSION + FUTURE WORK (~20s)
+### CONCLUSION + FUTURE WORK (~25s)
 In short: per-category specialisation clearly beats any universal strategy — each category
 needed a different model, prompt style, and retrieval architecture. For future work, the
 ensemble and tiered-routing knobs are implemented but were superseded by these targeted
-approaches, and chain-of-thought showed conceptual promise but exceeded the time budget.
-Thank you.
+approaches, and chain-of-thought showed promise but exceeded the time budget. A full
+write-up of our architecture and experiments is on our documentation site, linked in the
+notebook header — *m-ebrahimzadeh.github.io/PoliMillionaire*. Thank you.
