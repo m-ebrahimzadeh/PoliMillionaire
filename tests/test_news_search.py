@@ -7,6 +7,7 @@ fully offline and are safe in CI.
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import types
 from unittest.mock import MagicMock, patch
 
@@ -203,6 +204,57 @@ def test_search_uses_disk_cache(tmp_path):
     assert get.call_count == 1            # second call hit the cache
     assert a1[0].title == a2[0].title
     assert list(tmp_path.glob("*.json"))  # cache file written
+
+
+def test_empty_result_cache_expires(tmp_path, monkeypatch):
+    """An empty ('nothing found') result expires so a recent article can appear.
+
+    The Guardian may not have indexed a very recent article yet; caching that
+    empty result forever would mean a re-attempt / eval replay never finds it.
+    """
+    src = GuardianNewsSource(_cfg(empty_cache_ttl_seconds=10.0), cache_dir=tmp_path)
+    clock = [1000.0]
+    monkeypatch.setattr(ns.time, "time", lambda: clock[0])
+    with patch.object(ns.requests, "get",
+                      return_value=_resp(_payload([]))) as get:
+        assert src.search("q") == []          # empty, cached at t=1000
+        clock[0] = 1005.0                       # within the 10s TTL
+        assert src.search("q") == []
+        assert get.call_count == 1              # still served from cache
+        clock[0] = 1020.0                       # past the TTL
+        assert src.search("q") == []
+        assert get.call_count == 2              # expired → re-fetched
+
+
+def test_nonempty_result_cache_is_permanent_by_default(tmp_path, monkeypatch):
+    """A non-empty result stays cached indefinitely (cache_ttl_seconds=None)."""
+    src = GuardianNewsSource(_cfg(), cache_dir=tmp_path)  # cache_ttl_seconds=None
+    clock = [1000.0]
+    monkeypatch.setattr(ns.time, "time", lambda: clock[0])
+    with patch.object(ns.requests, "get",
+                      return_value=_resp(_payload([_result()]))) as get:
+        a1 = src.search("museum")
+        clock[0] = 1000.0 + 10 ** 9             # ~30 years later
+        a2 = src.search("museum")
+    assert get.call_count == 1                  # still cached, no re-fetch
+    assert a1[0].title == a2[0].title
+
+
+def test_legacy_bare_cache_entry_is_read(tmp_path):
+    """A pre-TTL cache file (bare response, no envelope) is still honoured."""
+    src = GuardianNewsSource(_cfg(), cache_dir=tmp_path)
+    with patch.object(ns.requests, "get",
+                      return_value=_resp(_payload([_result()]))) as get:
+        src.search("museum")
+    assert get.call_count == 1
+    # Rewrite the cache file in the legacy shape: just the inner response.
+    cache_file = next(tmp_path.glob("*.json"))
+    enveloped = json.loads(cache_file.read_text(encoding="utf-8"))
+    cache_file.write_text(json.dumps(enveloped["response"]), encoding="utf-8")
+    with patch.object(ns.requests, "get") as get2:
+        articles = src.search("museum")
+    get2.assert_not_called()                    # legacy entry read without network
+    assert articles[0].title == "Living museum in Brazil"
 
 
 # ── fetch_range (harvest) ───────────────────────────────────────────────────────

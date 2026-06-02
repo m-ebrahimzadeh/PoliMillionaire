@@ -11,6 +11,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Optional
 
 
 # ──────────────────────────── Categories ────────────────────────────
@@ -147,6 +148,15 @@ class NewsConfig:
     # limit refills almost immediately); a longer wait (daily-quota 429) is not
     # worth blocking the question budget, so we give up instead.
     max_retry_seconds: float = 2.0
+    # Disk-cache freshness. Non-empty results are stable — a date-windowed query
+    # for an already-published article does not change — so they default to
+    # permanent (``None``), which keeps eval replays free of quota and network.
+    # Empty results are the staleness risk: a query made *before* the Guardian
+    # indexed a very recent article would otherwise cache "nothing found"
+    # forever, so a re-attempt / eval replay never sees the now-published
+    # article. Expire empty results after a short window so they get re-fetched.
+    cache_ttl_seconds: Optional[float] = None   # non-empty results: None = never expire
+    empty_cache_ttl_seconds: float = 900.0      # empty results: re-fetch after 15 min
 
 
 # ──────────────────────────── Singletons ────────────────────────────

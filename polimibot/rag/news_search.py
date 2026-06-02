@@ -424,17 +424,44 @@ class GuardianNewsSource:
         if not path.is_file():
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            blob = json.loads(path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001 — corrupt cache entry → treat as miss
             return None
+        if not isinstance(blob, dict):
+            return None
+
+        # Legacy bare-response entries (written before TTL support) carry no
+        # ``cached_at`` envelope — honour them permanently so existing caches
+        # stay valid after the upgrade.
+        if "cached_at" not in blob:
+            return blob
+
+        response = blob.get("response")
+        if not isinstance(response, dict):
+            return None
+
+        # Differential freshness. Empty results are the staleness risk (the
+        # query may have run before the Guardian indexed a very recent
+        # article), so they expire after ``empty_cache_ttl_seconds``. Non-empty
+        # windowed results are stable and default to permanent
+        # (``cache_ttl_seconds is None``) so eval replays cost no quota.
+        ttl = (
+            self.config.empty_cache_ttl_seconds
+            if not response.get("results")
+            else self.config.cache_ttl_seconds
+        )
+        if ttl is not None and (time.time() - float(blob.get("cached_at", 0.0))) > ttl:
+            return None
+        return response
 
     def _cache_put(self, key: str, response: dict) -> None:
         if self.cache_dir is None:
             return
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
+            envelope = {"cached_at": time.time(), "response": response}
             (self.cache_dir / f"{key}.json").write_text(
-                json.dumps(response, ensure_ascii=False), encoding="utf-8"
+                json.dumps(envelope, ensure_ascii=False), encoding="utf-8"
             )
         except Exception as exc:  # noqa: BLE001 — cache is best-effort
             print(f"[news_search] WARNING: cache write failed: {exc}")
