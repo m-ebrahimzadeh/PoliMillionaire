@@ -517,6 +517,12 @@ class NewsLiveSearch:
         self.guardian = guardian or GuardianNewsSource(self.config)
         self.use_wiki_fallback = use_wiki_fallback
         self._wiki = wiki_fallback  # may be lazily built in search()
+        # Per-query provenance, read by RAGStrategy into ``extras`` so the
+        # observability layer can tell a Guardian hit apart from the Wikipedia
+        # fallback (the dashboards otherwise mislabel every News live result as
+        # "Wikipedia").  Set fresh on each ``search()`` call.
+        self.last_provider: str = "none"   # guardian_window | guardian_broad | wikipedia | none
+        self.last_date_extracted: bool = False
 
     def search(
         self,
@@ -531,11 +537,14 @@ class NewsLiveSearch:
             category: passed through to the Wikipedia fallback so its results
                 are tagged correctly; Guardian results are always ``NEWS``.
         """
+        self.last_provider = "none"
+        self.last_date_extracted = False
         if not query or not query.strip():
             return []
 
         date = extract_question_date(query)
         q = _build_news_query(query)
+        self.last_date_extracted = date is not None
 
         articles: list[Article] = []
         if date is not None:
@@ -543,17 +552,19 @@ class NewsLiveSearch:
             articles = self.guardian.search(
                 q, from_date=date - window, to_date=date + window
             )
+            if articles:
+                self.last_provider = "guardian_window"
+                return articles[: self.config.max_articles]
             # If that call hit a 429 / timeout / no-key, the Guardian is
             # unavailable right now — a second unconstrained call would only
             # earn a second 429. Degrade straight to Wikipedia instead.
-            if not articles and self.guardian.last_call_failed:
+            if self.guardian.last_call_failed:
                 return self._wiki_search(query, category)
 
         # Healthy but empty (window too tight) or no date stated → broaden once.
-        if not articles:
-            articles = self.guardian.search(q)
-
+        articles = self.guardian.search(q)
         if articles:
+            self.last_provider = "guardian_broad"
             return articles[: self.config.max_articles]
 
         # ── Secondary fallback: Wikipedia ──────────────────────────────────
@@ -568,7 +579,10 @@ class NewsLiveSearch:
         wiki = self._wiki_source()
         if wiki is None:
             return []
-        return wiki.search(query, category=category or Category.NEWS)
+        results = wiki.search(query, category=category or Category.NEWS)
+        if results:
+            self.last_provider = "wikipedia"
+        return results
 
     def _wiki_source(self):
         if self._wiki is None and self.use_wiki_fallback:

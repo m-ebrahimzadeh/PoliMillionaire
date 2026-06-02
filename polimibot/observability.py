@@ -48,6 +48,19 @@ def _safe(d: dict, key: str, default="—"):
     return default if v is None else v
 
 
+def _live_source_label(extras: dict) -> str:
+    """Label the live source that served a result.
+
+    NEWS routes its live fallback through the Guardian (with a Wikipedia
+    secondary); every other category uses Wikipedia. ``live_provider`` (set by
+    NewsLiveSearch) distinguishes them; when absent — a non-NEWS question or an
+    older log — default to "Wikipedia", the historical label.
+    """
+    if extras.get("live_provider") in ("guardian_window", "guardian_broad"):
+        return "Guardian"
+    return "Wikipedia"
+
+
 # ── Live-game per-question retrieval summary ─────────────────────────────
 
 def print_retrieval_summary(extras: dict) -> None:
@@ -98,17 +111,18 @@ def print_retrieval_summary(extras: dict) -> None:
 
     if live_attempted or live_fired:
         lat_str = f"{live_latency:.2f}s" if live_latency is not None else "?"
+        src_label = _live_source_label(extras)
         if live_query:
             q_preview = str(live_query)[:80] + ("…" if len(str(live_query)) > 80 else "")
             print(f"     ↳ live query : \"{q_preview}\"")
 
         if not live_articles:
-            print(f"     ↳ Wikipedia  : (no articles found)  [{lat_str}]")
+            print(f"     ↳ {src_label:<9}: (no articles found)  [{lat_str}]")
         else:
             art_str = ", ".join(f'"{a}"' for a in live_articles[:3])
             if len(live_articles) > 3:
                 art_str += f", +{len(live_articles) - 3} more"
-            print(f"     ↳ Wikipedia  : {art_str}  [{lat_str}]")
+            print(f"     ↳ {src_label:<9}: {art_str}  [{lat_str}]")
 
             if all_below:
                 score_str = f"  best={live_top_score:.4f}" if live_top_score is not None else ""
@@ -310,9 +324,18 @@ def print_game_summary(result: "GameResult") -> None:
         if a_live is not None and a_none is not None:
             boost = f"  (vs no-context: {a_none:.0%}, boost +{(a_live - a_none)*100:.0f}pp)"
 
+        # Provenance: NEWS routes the live fallback through the Guardian.
+        from collections import Counter
+        prov = Counter(r.extras.get("live_provider") for r in records
+                       if r.extras.get("live_search_fired"))
+        n_guardian = prov.get("guardian_window", 0) + prov.get("guardian_broad", 0)
+        n_wiki     = prov.get("wikipedia", 0)
+
         print(f"\n  ④ LIVE SEARCH EFFICIENCY")
         print(f"    Gated (offline weak)        : {n_gated}/{n}  ({_pct(n_gated, n)})")
-        print(f"    Wikipedia found articles    : {n_fired}/{n_gated}  ({_pct(n_fired, n_gated)})")
+        print(f"    Live source found articles  : {n_fired}/{n_gated}  ({_pct(n_fired, n_gated)})")
+        if n_guardian or n_wiki:
+            print(f"      ↳ by source               : Guardian={n_guardian}  Wikipedia={n_wiki}")
         if n_fired:
             print(f"    Passages above threshold    : {n_above}/{n_fired}  ({_pct(n_above, n_fired)})")
         if n_all_below:
@@ -607,12 +630,21 @@ def retrieval_dashboard(report: "EvalReport") -> None:
         n_gated_total = sum(1 for s in live_samples if s.extras.get("gated_by_min_score"))
         latencies  = [s.extras["live_search_latency"] for s in live_samples
                       if s.extras.get("live_search_latency") is not None]
+        # Provenance: NEWS routes the live fallback through the Guardian.
+        from collections import Counter
+        prov = Counter(s.extras.get("live_provider") for s in live_samples
+                       if s.extras.get("live_search_fired"))
+        n_guardian = prov.get("guardian_window", 0) + prov.get("guardian_broad", 0)
+        n_wiki     = prov.get("wikipedia", 0)
+
         print(f"\n  LIVE SEARCH")
         print(f"    Fired / total : {n_fired}/{len(live_samples)}")
+        if n_guardian or n_wiki:
+            print(f"    By source     : Guardian={n_guardian}  Wikipedia={n_wiki}")
         if n_no_results:
             pct = n_no_results / n_gated_total if n_gated_total else 0.0
             print(f"    No results    : {n_no_results}/{n_gated_total}  "
-                  f"({pct:.1%})  ← gated but Wikipedia returned nothing")
+                  f"({pct:.1%})  ← gated but live search returned nothing")
         if n_fired:
             print(f"    Success rate  : {n_success}/{n_fired}  "
                   f"({n_success/n_fired:.1%})")

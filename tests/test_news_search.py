@@ -341,6 +341,39 @@ def test_news_live_search_empty_query():
     assert nls.search("   ") == []
 
 
+# ── NewsLiveSearch — provenance (observability) ─────────────────────────────────
+
+def test_provenance_guardian_window():
+    g = _FakeGuardian([Article("g", "Published 2026-05-17. body", Category.NEWS, "u")])
+    nls = NewsLiveSearch(_cfg(date_window_days=1), guardian=g, wiki_fallback=_FakeWiki([]))
+    nls.search("According to the 2026-05-17 article, who won?", category=Category.NEWS)
+    assert nls.last_provider == "guardian_window"
+    assert nls.last_date_extracted is True
+
+
+def test_provenance_guardian_broad_when_no_date():
+    # No date in the question → no windowed call; the broaden call serves it.
+    g = _FakeGuardian([Article("g", "body", Category.NEWS, "u")])
+    nls = NewsLiveSearch(_cfg(), guardian=g, wiki_fallback=_FakeWiki([]))
+    nls.search("which charity advocates for benefit cap changes?", category=Category.NEWS)
+    assert nls.last_provider == "guardian_broad"
+    assert nls.last_date_extracted is False
+
+
+def test_provenance_wikipedia_on_guardian_miss():
+    g = _FakeGuardian([])                 # Guardian finds nothing
+    w = _FakeWiki([Article("w", "wiki text", Category.NEWS, "u")])
+    nls = NewsLiveSearch(_cfg(), guardian=g, wiki_fallback=w)
+    nls.search("On 2026-05-17 something happened", category=Category.NEWS)
+    assert nls.last_provider == "wikipedia"
+
+
+def test_provenance_none_when_all_empty():
+    nls = NewsLiveSearch(_cfg(), guardian=_FakeGuardian([]), wiki_fallback=_FakeWiki([]))
+    assert nls.search("On 2026-05-17 nothing was found", category=Category.NEWS) == []
+    assert nls.last_provider == "none"
+
+
 # ── RAGStrategy routing ─────────────────────────────────────────────────────────
 
 class _FakeSource:
