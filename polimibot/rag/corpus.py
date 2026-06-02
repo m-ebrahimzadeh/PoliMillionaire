@@ -388,17 +388,20 @@ def _fetch_one(title: str, category: Category, *, verbose: bool,
         for option in e.options[:5]:   # cap — disambiguation pages can be huge
             try:
                 page = _page_with_retry(option, verbose=verbose)
+                # page.summary / page.content are *lazy* MediaWiki calls in the
+                # `wikipedia` library — on a throttled endpoint they return an
+                # empty body and raise JSONDecodeError. They MUST stay inside
+                # this try: a failure here was escaping uncaught and killing the
+                # entire crawl (and discarding the in-memory harvest). One bad
+                # option is just a clean skip to the next.
+                preview = (page.summary or page.content[:500]).lower()
+                if not keywords or any(k in preview for k in keywords):
+                    if verbose and option != title:
+                        print(f"  ! disambiguation for '{title}' → resolved to '{option}'")
+                    return _make_article(page, category, fetch_aliases=fetch_aliases,
+                                         verbose=verbose)
             except Exception:
                 continue
-            # Use the first paragraph (cheap) as the relevance check; full
-            # body is fine too but more work, and the summary usually
-            # contains the entity nouns we care about.
-            preview = (page.summary or page.content[:500]).lower()
-            if not keywords or any(k in preview for k in keywords):
-                if verbose and option != title:
-                    print(f"  ! disambiguation for '{title}' → resolved to '{option}'")
-                return _make_article(page, category, fetch_aliases=fetch_aliases,
-                                     verbose=verbose)
         if verbose:
             print(f"  ! disambiguation for '{title}' — no relevant option found, skipped")
 
@@ -506,7 +509,12 @@ def fetch_articles_from_categories(
     # the existing pipeline so we inherit all of its robustness.
     articles: list[Article] = []
     for i, (title, cat) in enumerate(flat, start=1):
-        article = _fetch_one(title, cat, verbose=verbose, fetch_aliases=fetch_aliases)
+        try:
+            article = _fetch_one(title, cat, verbose=verbose, fetch_aliases=fetch_aliases)
+        except Exception as exc:   # belt-and-braces — one title must never kill the crawl
+            if verbose:
+                print(f"  ! unhandled error for '{title}': {exc!r} — skipped")
+            article = None
         if article is not None:
             articles.append(article)
         # Progress dot every 50 fetches so a multi-thousand crawl shows life.
@@ -546,7 +554,12 @@ def fetch_articles_by_title(
             if title in seen or title in existing:
                 continue
             seen.add(title)
-            art = _fetch_one(title, cat, verbose=verbose, fetch_aliases=fetch_aliases)
+            try:
+                art = _fetch_one(title, cat, verbose=verbose, fetch_aliases=fetch_aliases)
+            except Exception as exc:   # belt-and-braces — see fetch_articles_from_categories
+                if verbose:
+                    print(f"  ! unhandled error for '{title}': {exc!r} — skipped")
+                art = None
             if art is not None:
                 out.append(art)
             time.sleep(sleep_seconds)

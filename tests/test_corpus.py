@@ -242,6 +242,88 @@ def test_fetch_one_skips_when_no_disambig_option_matches(monkeypatch):
     assert out is None
 
 
+def _install_disambig_wiki(monkeypatch, seed, options, lookup):
+    """Install a stand-in `wikipedia` module where `wikipedia.page(seed)` raises
+    a DisambiguationError over `options`, and each option resolves via `lookup`.
+    Returns nothing — call `_fetch_one` afterwards."""
+    import sys
+
+    class _Dis(Exception):
+        def __init__(self, opts): self.options = opts
+    class _PageErr(Exception):
+        pass
+
+    def _page(name, auto_suggest=False):
+        if name == seed:
+            raise _Dis(options)
+        return lookup[name]
+
+    class _Wiki:
+        DisambiguationError = _Dis
+        PageError = _PageErr
+        page = staticmethod(_page)
+        @staticmethod
+        def set_lang(_): pass
+
+    monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
+
+
+class _BoomSummaryPage:
+    """A page whose *lazy* .summary access raises like a throttled/empty
+    MediaWiki response — the exact failure that crashed the Colab crawl."""
+    def __init__(self, title):
+        self.title, self.url, self.content = title, "", "body text"
+    @property
+    def summary(self):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+
+class _PlainPage:
+    def __init__(self, title, summary):
+        self.title, self.url, self.content, self.summary = title, "", summary, summary
+
+
+def test_fetch_one_skips_disambig_option_with_failing_lazy_summary(monkeypatch):
+    """Regression (§8a): when a disambiguation option's lazy .summary raises,
+    _fetch_one must skip it and walk on — not let the error escape and kill the
+    whole crawl. Here the first option booms, the second resolves cleanly."""
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+
+    _install_disambig_wiki(
+        monkeypatch, seed="Charlie",
+        options=["Charlie (elephant)", "Charlie Chaplin"],
+        lookup={
+            "Charlie (elephant)": _BoomSummaryPage("Charlie (elephant)"),
+            "Charlie Chaplin": _PlainPage("Charlie Chaplin",
+                                          "Charlie Chaplin was a comic actor."),
+        },
+    )
+    article = corpus_mod._fetch_one("Charlie", Category.ENTERTAINMENT,
+                                    verbose=False, fetch_aliases=False)
+    assert article is not None
+    assert article.title == "Charlie Chaplin"
+
+
+def test_fetch_one_returns_none_when_every_disambig_option_errors(monkeypatch):
+    """Regression (§8a): if *every* option's lazy fetch raises, _fetch_one returns
+    None — it never propagates the exception out of the per-title fetch."""
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+
+    _install_disambig_wiki(
+        monkeypatch, seed="Charlie",
+        options=["Charlie (elephant)", "Charlie (parrot)"],
+        lookup={
+            "Charlie (elephant)": _BoomSummaryPage("Charlie (elephant)"),
+            "Charlie (parrot)": _BoomSummaryPage("Charlie (parrot)"),
+        },
+    )
+    out = corpus_mod._fetch_one("Charlie", Category.ENTERTAINMENT,
+                                verbose=False, fetch_aliases=False)
+    assert out is None
+
+
 def test_corpus_version_is_positive_int():
     from polimibot.rag.corpus import CORPUS_VERSION
     assert isinstance(CORPUS_VERSION, int) and CORPUS_VERSION >= 2
