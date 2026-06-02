@@ -40,6 +40,23 @@ def _prefixes_for_model(model_name: str) -> tuple[str, str]:
     return ("", "")
 
 
+def _resolve_fp16(flag: Optional[bool]) -> bool:
+    """Decide whether to load encoder weights in fp16.
+
+    ``flag`` wins when set explicitly. When ``None`` (the default) we auto-pick:
+    fp16 on CUDA (halves the encoder's VRAM with negligible recall loss), fp32
+    on CPU (half-precision matmul is unsupported / slow there, and the test
+    suite stubs ``torch.cuda.is_available`` to False so CI stays fp32).
+    """
+    if flag is not None:
+        return flag
+    try:
+        import torch
+        return bool(torch.cuda.is_available())
+    except ImportError:
+        return False
+
+
 @dataclass(frozen=True)
 class EmbedderSpec:
     """Config for the embedding model. Frozen → safe to share across objects.
@@ -56,6 +73,7 @@ class EmbedderSpec:
     normalize: bool = True   # L2-normalize → cosine sim becomes dot product
     query_prefix: Optional[str] = None    # None → auto-derive from model_name
     passage_prefix: Optional[str] = None  # None → auto-derive from model_name
+    fp16: Optional[bool] = None  # None → auto (fp16 on CUDA, fp32 on CPU)
 
     def __post_init__(self) -> None:
         if self.query_prefix is None or self.passage_prefix is None:
@@ -79,6 +97,10 @@ class Embedder:
         from sentence_transformers import SentenceTransformer
         self.spec = spec or EmbedderSpec()
         self._model = SentenceTransformer(self.spec.model_name)
+        # Half-precision weights on GPU — ~2x smaller VRAM, no measurable recall
+        # loss. SentenceTransformer is an nn.Module, so .half() converts in place.
+        if _resolve_fp16(self.spec.fp16):
+            self._model = self._model.half()
         self.dim: int = self._model.get_sentence_embedding_dimension()
 
     def _encode(self, texts: list[str], *, prefix: str) -> np.ndarray:

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from .chunker import Chunk
+from .embedder import _resolve_fp16
 
 # A scoring function takes a list of (query, doc) string pairs and
 # returns one float per pair (higher = more relevant). The CrossEncoder
@@ -35,6 +36,7 @@ class RerankerSpec:
     """Config for the cross-encoder. Frozen → safe to share."""
     model_name: str = "BAAI/bge-reranker-base"
     batch_size: int = 32
+    fp16: Optional[bool] = None  # None → auto (fp16 on CUDA, fp32 on CPU)
 
 
 class CrossEncoderReranker:
@@ -76,6 +78,10 @@ class CrossEncoderReranker:
         # sentence-transformers installed (tests use the injected path).
         from sentence_transformers import CrossEncoder
         model = CrossEncoder(spec.model_name)
+        # Half-precision weights on GPU — ~2x smaller VRAM, negligible quality
+        # loss. The HF transformer is exposed as CrossEncoder.model.
+        if _resolve_fp16(spec.fp16):
+            model.model = model.model.half()
 
         def _score(pairs: List[Tuple[str, str]]) -> List[float]:
             # CrossEncoder.predict returns numpy ndarray of floats.

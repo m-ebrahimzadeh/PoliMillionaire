@@ -222,6 +222,30 @@ def test_chunk_word_count_property_tracks_text():
     assert merged[-1].word_count == len(merged[-1].text.split())
 
 
+# ── EmbedderSpec fp16 (no model load) ───────────────────────────────────────
+
+def test_embedder_spec_fp16_defaults_to_auto():
+    """fp16 defaults to None (auto: fp16 on CUDA, fp32 on CPU) for back-compat."""
+    from polimibot.rag.embedder import EmbedderSpec
+    assert EmbedderSpec().fp16 is None
+    assert EmbedderSpec(fp16=True).fp16 is True
+    assert EmbedderSpec(fp16=False).fp16 is False
+
+
+def test_resolve_fp16_explicit_flag_wins():
+    """An explicit True/False short-circuits the CUDA probe."""
+    from polimibot.rag.embedder import _resolve_fp16
+    assert _resolve_fp16(True) is True
+    assert _resolve_fp16(False) is False
+
+
+def test_resolve_fp16_auto_is_false_without_cuda():
+    """Auto mode (None) → False when CUDA is unavailable (CPU / test stub),
+    so the suite never tries half-precision matmul off-GPU."""
+    from polimibot.rag.embedder import _resolve_fp16
+    assert _resolve_fp16(None) is False
+
+
 # ── FAISSIndex (requires faiss-cpu) ─────────────────────────────────────────
 
 from polimibot.rag.index import FAISSIndex

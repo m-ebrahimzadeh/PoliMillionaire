@@ -130,3 +130,10 @@ def test_default_spec_targets_bge_reranker():
     spec = RerankerSpec()
     assert spec.model_name == "BAAI/bge-reranker-base"
     assert spec.batch_size == 32
+
+
+def test_reranker_spec_fp16_defaults_to_auto():
+    """fp16 defaults to None (auto: fp16 on CUDA, fp32 on CPU) for back-compat."""
+    assert RerankerSpec().fp16 is None
+    assert RerankerSpec(fp16=True).fp16 is True
+    assert RerankerSpec(fp16=False).fp16 is False
