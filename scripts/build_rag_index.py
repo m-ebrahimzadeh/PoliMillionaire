@@ -105,6 +105,7 @@ def main() -> None:
             cache_path=PATHS.cache_dir / "harvested_titles.json",
             max_per_category=args.max_per_category,
             max_depth=args.max_depth,
+            harvest_workers=args.workers,
             # Durable partial harvest: a crash mid-crawl leaves a usable corpus.
             checkpoint_path=PATHS.cache_dir / "corpus.partial.jsonl",
             verbose=True,
@@ -275,6 +276,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--gap-queue", default=None, dest="gap_queue",
                    help="Path to a gap_titles.json (from scripts/mine_corpus_gaps.py) "
                         "whose titles are fetched directly and added to the corpus.")
+    from polimibot.rag.corpus import _HARVEST_WORKERS_DEFAULT
+    p.add_argument("--workers", type=int, default=_HARVEST_WORKERS_DEFAULT,
+                   dest="workers",
+                   help=f"Concurrent extract batches during the category harvest "
+                        f"(default {_HARVEST_WORKERS_DEFAULT}). Higher is faster; "
+                        f"keep <=10 to stay polite to Wikimedia.")
     return p.parse_args()
 
 
