@@ -1182,7 +1182,7 @@ graph TD
     end
     
     subgraph "Knowledge Layer"
-        FAISS[FAISS Dense Index<br/>384-dim vectors]
+        FAISS[FAISS Dense Index<br/>768-dim vectors]
         BM25[BM25 Sparse Index<br/>Token frequencies]
         WIKI[Live Wikipedia API<br/>Real-time fallback]
         IG[IndexGrower Buffer<br/>Self-improving memory]
@@ -1190,7 +1190,7 @@ graph TD
     
     subgraph "Model Layer"
         LLM[LLM<br/>Qwen/DeepSeek]
-        EMB[Embedder<br/>BGE-small-en-v1.5]
+        EMB[Embedder<br/>BGE-base-en-v1.5]
         CE[Cross-Encoder<br/>Reranker]
     end
     

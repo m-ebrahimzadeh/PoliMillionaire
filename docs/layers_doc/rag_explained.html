@@ -316,6 +316,7 @@ code:not([class*="language-"]) {
         <span class="tag">IndexGrower</span>
         <span class="tag">Wikipedia API</span>
         <span class="tag">Category Graph</span>
+        <span class="tag">Guardian News</span>
     </div>
 </div>
 
@@ -331,11 +332,12 @@ code:not([class*="language-"]) {
         <a href="#s7">7. RRF Fusion</a>
         <a href="#s8">8. Score Gating</a>
         <a href="#s9">9. Live Search</a>
-        <a href="#s10">10. Reranking</a>
-        <a href="#s11">11. LLM Scoring</a>
-        <a href="#s12">12. IndexGrower</a>
-        <a href="#s13">13. Trace Example</a>
-        <a href="#s14">14. Config</a>
+        <a href="#s10">10. News (Guardian)</a>
+        <a href="#s11">11. Reranking</a>
+        <a href="#s12">12. LLM Scoring</a>
+        <a href="#s13">13. IndexGrower</a>
+        <a href="#s14">14. Trace Example</a>
+        <a href="#s15">15. Config</a>
     </div>
 </nav>
 
@@ -471,8 +473,8 @@ flowchart TD
     <div class="pipeline-step">
         <div class="step-num">3</div>
         <div class="step-content">
-            <strong>Embed each chunk</strong> into a 384-dimensional vector (numeric fingerprint)
-            <div class="step-example">"Rome was annexed in 1870..." → [0.023, -0.157, 0.890, ... ] (384 numbers)</div>
+            <strong>Embed each chunk</strong> into a 768-dimensional vector (numeric fingerprint)
+            <div class="step-example">"Rome was annexed in 1870..." → [0.023, -0.157, 0.890, ... ] (768 numbers)</div>
         </div>
     </div>
     <div class="pipeline-step">
@@ -512,7 +514,7 @@ REBUILD_INDEX   = False
 
 # Embedding model — must match at retrieval time!
 from polimibot.rag import EmbedderSpec
-embedder_spec = EmbedderSpec()  # defaults to BAAI/bge-small-en-v1.5, 384-dim</code></pre>
+embedder_spec = EmbedderSpec()  # defaults to BAAI/bge-base-en-v1.5, 768-dim</code></pre>
     </div>
 
     <div class="card warning">
@@ -611,7 +613,7 @@ class Chunk:
 
     <div class="code-block">
         <div class="filename">Conceptual: similar meanings → similar vectors</div>
-        <pre><code class="language-python"># Each text gets converted to a list of 384 numbers (its "GPS coordinates")
+        <pre><code class="language-python"># Each text gets converted to a list of 768 numbers (its "GPS coordinates")
 "Who invented the telephone?"  →  [0.023, -0.157,  0.890, ...]  # Point A
 "Who created the phone?"       →  [0.031, -0.142,  0.882, ...]  # Point B  ← very close!
 "What's the weather today?"    →  [0.912,  0.231, -0.451, ...]  # Point C  ← far away
@@ -620,15 +622,19 @@ similarity(A, B) = 0.96   # almost identical meaning → these match!
 similarity(A, C) = 0.12   # completely different topic → no match</code></pre>
     </div>
 
-    <h3>The Model: BAAI/bge-small-en-v1.5</h3>
+    <h3>The Model: BAAI/bge-base-en-v1.5</h3>
 
     <table class="comparison-table">
         <tr><th>Property</th><th>Value</th><th>Why it matters</th></tr>
-        <tr><td>Dimensions</td><td>384</td><td>Each text → 384 numbers. Compact yet expressive.</td></tr>
-        <tr><td>Size</td><td>~130 MB</td><td>Fits in CPU RAM. No GPU needed for embedding.</td></tr>
+        <tr><td>Dimensions</td><td>768</td><td>Each text → 768 numbers. Richer representation than the 384-dim "small" model — sharper retrieval on the long-tail trivia entities.</td></tr>
+        <tr><td>Size</td><td>~440 MB</td><td>Fits in CPU RAM. No GPU needed for embedding; on GPU it loads in fp16 to halve VRAM.</td></tr>
         <tr><td>Max tokens</td><td>512</td><td>~300 words. This is why we chunk to 300 words!</td></tr>
         <tr><td>Type</td><td>Asymmetric</td><td>Queries and passages use different prefixes (see below)</td></tr>
     </table>
+
+    <div class="card tip">
+        <p><strong>Why <code>base</code>, not <code>small</code>?</strong> The default was upgraded from <code>bge-small-en-v1.5</code> (384-dim) to <code>bge-base-en-v1.5</code> (768-dim) so the embedder matches the model the shipped FAISS index was actually built with. The manifest check (below) hard-fails on any mismatch, so the default and the index must agree.</p>
+    </div>
 
     <h3>The Asymmetry Trick</h3>
 
@@ -640,7 +646,7 @@ similarity(A, C) = 0.12   # completely different topic → no match</code></pre>
         <div class="filename">polimibot/rag/embedder.py — asymmetric encoding</div>
         <pre><code class="language-python">@dataclass(frozen=True)
 class EmbedderSpec:
-    model_name:     str = "BAAI/bge-small-en-v1.5"
+    model_name:     str = "BAAI/bge-base-en-v1.5"   # 768-dim, ~440 MB
     normalize:      bool = True     # L2-normalize → dot product = cosine similarity
     query_prefix:   str = "Represent this sentence for searching relevant passages: "
     passage_prefix: str = ""        # passages get NO prefix
@@ -674,9 +680,9 @@ class Embedder:
 
     <h3>FAISS — Semantic Search (Dense)</h3>
 
-    <p>FAISS stores all chunk embeddings (384-dim vectors) in a flat index. At search time:</p>
+    <p>FAISS stores all chunk embeddings (768-dim vectors) in a flat index. At search time:</p>
     <ol style="margin: 12px 0 16px 24px; color: var(--text-secondary); font-size: 0.88rem; line-height: 2;">
-        <li>Embed the query using <code>encode_query()</code> → get a 384-dim vector</li>
+        <li>Embed the query using <code>encode_query()</code> → get a 768-dim vector</li>
         <li>Compute dot product against <strong>every</strong> stored vector (brute-force)</li>
         <li>Return the top-K vectors with highest scores (= most similar meaning)</li>
     </ol>
@@ -848,9 +854,98 @@ gated = (active_threshold is not None
     </div>
 </section>
 
-<!-- ═══════════════════ SECTION 10: Reranking ═══════════════════ -->
+<!-- ═══════════════════ SECTION 10: News (Guardian) ═══════════════════ -->
 <section class="section" id="s10">
     <div class="section-number">Section 10</div>
+    <h2>The News Category — Guardian-Backed Hybrid RAG</h2>
+
+    <div class="card analogy">
+        <p><strong>Five of the six categories answer well from a library; one needs today's newspaper.</strong> Entertainment, History, Science, Maths and Philosophy all live comfortably in Wikipedia. <strong>News</strong> does not — its questions point at a <em>specific dated article</em>:</p>
+        <p style="margin-top:12px;font-style:italic;color:var(--accent2)">"According to the article published on <strong>2026-05-17</strong>, which charity is advocating for changes to the benefit cap?"</p>
+        <p style="margin-top:12px;">Wikipedia has no such article. A news API with full-text search, a real archive, and precise date filtering does. So the News category swaps Wikipedia for <strong>The Guardian Open Platform</strong> — everywhere else the RAG pipeline is identical.</p>
+    </div>
+
+    <div class="card concept">
+        <p><strong>Why The Guardian?</strong> A free developer key, the full article body via <code>show-fields=bodyText</code>, a complete archive back to 1999, and <code>from-date</code>/<code>to-date</code> publication-date filtering. That combination is what lets a dated question resolve to the exact piece it references.</p>
+    </div>
+
+    <h3>Two Halves of One Pipeline</h3>
+    <p>The News path is <strong>hybrid</strong>: an offline harvest seeds the index so most recent-date questions are answerable with no network, and an online live source covers anything the harvest missed. Both produce ordinary <code>Article</code> objects, so they flow through the <em>same</em> chunk → embed → index machinery as every other category.</p>
+
+    <table class="comparison-table">
+        <tr><th></th><th>Offline harvest</th><th>Online live source</th></tr>
+        <tr><td><strong>Code</strong></td><td><code>scripts/fetch_news_corpus.py</code> · notebook §0.4a-news · <code>harvest_news_range()</code></td><td><code>NewsLiveSearch</code> (the object handed to <code>RAGStrategy(news_search=…)</code>)</td></tr>
+        <tr><td><strong>When</strong></td><td>At index-build time</td><td>At question time, only when offline retrieval is gated (<a href="#s8">Section 8</a>)</td></tr>
+        <tr><td><strong>What</strong></td><td>Paginates a date window day-by-day and appends the articles to <code>corpus.jsonl</code></td><td>Extracts the question's date, queries that window, returns up to <code>max_articles</code> passages</td></tr>
+        <tr><td><strong>Guardian call</strong></td><td><code>GuardianNewsSource.fetch_range()</code></td><td><code>GuardianNewsSource.search()</code></td></tr>
+    </table>
+
+    <div class="card warning">
+        <p><strong>Why harvest day-by-day?</strong> The Guardian publishes hundreds of pieces a day. A single multi-day query returns only the newest <code>page-size × max-pages</code> results and silently drops the <em>older</em> end of the range — exactly where the dated questions live. So <code>harvest_news_range()</code> walks the window one day at a time and de-duplicates by title. In the notebook this runs automatically in §0.4a-news (last <code>INDEX_NEWS_GUARDIAN_DAYS</code> days, default 45), key-gated so it skips cleanly when no key is set.</p>
+    </div>
+
+    <h3>The Online Source — Drop-In for Live Search</h3>
+    <p><code>NewsLiveSearch</code> implements the <em>same</em> <code>search(query, *, category) -&gt; list[Article]</code> contract as the Wikipedia <code>LiveSearchFallback</code> from <a href="#s9">Section 9</a>. That's the whole trick: it plugs straight into the existing gated live-fallback seam. Pass it to the strategy and NEWS questions route through the Guardian; every other category is untouched.</p>
+
+    <div class="code-block">
+        <div class="filename">polimibot/rag/news_search.py — the lookup order, simplified</div>
+        <pre><code class="language-python">class NewsLiveSearch:
+    """Date-aware Guardian live search with a Wikipedia safety net."""
+
+    def search(self, query, *, category=None):
+        date = extract_question_date(query)      # "2026-05-17" → date(2026,5,17)
+        q    = _build_news_query(query)          # strip the date + "according to…" boilerplate
+
+        # 1. Ask the Guardian for a ±date_window_days window around the stated date
+        if date is not None:
+            window = timedelta(days=self.config.date_window_days)   # ±2 days
+            hits = self.guardian.search(q, from_date=date-window, to_date=date+window)
+            if hits:
+                return hits                       # provenance: "guardian_window"
+            if self.guardian.last_call_failed:    # 429 / timeout / no key
+                return self._wiki_search(query, category)
+
+        # 2. Healthy but empty (window too tight, or no date) → broaden once
+        hits = self.guardian.search(q)
+        if hits:
+            return hits                           # provenance: "guardian_broad"
+
+        # 3. Still nothing → delegate to Wikipedia so we never go dark
+        return self._wiki_search(query, category) # provenance: "wikipedia"</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="extract_question_date">Pulls the publication date out of the question. Handles ISO (<code>2026-05-17</code>), dotted/slashed variants, the concatenated speech form (<code>2026.0518</code>), and English prose (<code>17 May 2026</code> / <code>May 17, 2026</code>).<span class="purpose">Speech-mode transcripts mangle dates; the parser recovers them so the right window is queried.</span></li>
+        <li data-line="±date_window_days">The window is <code>date ± 2 days</code>, not the exact date. An article "published on the 17th" may carry a 16th or 18th <code>webPublicationDate</code> (publish-vs-update and timezone skew).<span class="purpose">A widened by ±2 days after a live game showed exact-date windows missing the article.</span></li>
+        <li data-line="_build_news_query">Strips the date token and stock lead-ins ("According to the article published on …") that only dilute the search, leaving the salient entities for the Guardian's relevance ranking.<span class="purpose">The window handles the date; in the query text the date and boilerplate only hurt.</span></li>
+        <li data-line="last_call_failed">Distinguishes "the Guardian is unavailable right now" (429 / timeout / no key — don't retry into a throttled endpoint) from "the Guardian answered but found nothing" (a broader query may still help).<span class="purpose">Avoids wasting the question's time budget on a second doomed call.</span></li>
+        <li data-line="_wiki_search">If the Guardian yields nothing — empty result, missing key, or any error — it delegates to the Wikipedia <code>LiveSearchFallback</code>.<span class="purpose">Graceful degradation: News never goes dark, even with no API key (CI, offline dev).</span></li>
+    </ul>
+
+    <div class="card warning">
+        <p><strong>Degrades gracefully with no key.</strong> The Guardian key is read from the <code>GUARDIAN_API_KEY</code> env var (mirrors the <code>POLIMI_USER</code>/<code>POLIMI_PASS</code> convention). With no key set, <code>GuardianNewsSource</code> skips the network entirely, logs once, and the source falls through to Wikipedia — nothing crashes.</p>
+    </div>
+
+    <h3>Caching — Differential Freshness</h3>
+    <p>Guardian responses are cached on disk under <code>data/cache/news/</code> (keyed <em>without</em> the API key, so a key rotation doesn't invalidate the cache and the key never lands in a path). Cache freshness is deliberately asymmetric:</p>
+    <table class="comparison-table">
+        <tr><th>Result</th><th>TTL</th><th>Why</th></tr>
+        <tr><td>Non-empty (≥1 article)</td><td>Never expires (<code>cache_ttl_seconds=None</code>)</td><td>A date-windowed query for an already-published article is stable — so eval replays cost zero quota and no network.</td></tr>
+        <tr><td>Empty (0 articles)</td><td>15 minutes (<code>empty_cache_ttl_seconds</code>)</td><td>The query may have run <em>before</em> the Guardian indexed a very recent article; expiring lets a re-attempt find it.</td></tr>
+    </table>
+
+    <div class="card concept">
+        <p><strong>Provenance for observability.</strong> Each query records which source actually answered — <code>guardian_window</code>, <code>guardian_broad</code>, or <code>wikipedia</code> — into the strategy's <code>extras</code>, plus cumulative routing and HTTP counters (<code>hits</code>, <code>cache_hits</code>, <code>http_429</code>, <code>timeouts</code>, …). The notebook's <code>print_news_stats()</code> surfaces them, so a Guardian hit is never mislabelled as a Wikipedia fallback in the dashboards.</p>
+    </div>
+
+    <div class="card tip">
+        <p><strong>In-band datelines.</strong> Each Guardian article is prefixed with a <code>"Published YYYY-MM-DD. "</code> dateline before chunking. That date informs both the passage embedding and BM25 <em>without</em> changing the <code>Chunk</code> schema — so date-sensitive questions retrieve better. And because the live source returns ordinary <code>Article</code> objects, confirmed-correct live articles are learned into the offline index by the same <a href="#s13">IndexGrower</a> as every other category — News coverage grows over time.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════ SECTION 11: Reranking ═══════════════════ -->
+<section class="section" id="s11">
+    <div class="section-number">Section 11</div>
     <h2>Reranking — The Second Opinion</h2>
 
     <div class="card analogy">
@@ -897,9 +992,9 @@ gated = (active_threshold is not None
     </ul>
 </section>
 
-<!-- ═══════════════════ SECTION 11: LLM Scoring ═══════════════════ -->
-<section class="section" id="s11">
-    <div class="section-number">Section 11</div>
+<!-- ═══════════════════ SECTION 12: LLM Scoring ═══════════════════ -->
+<section class="section" id="s12">
+    <div class="section-number">Section 12</div>
     <h2>LLM Answer Scoring — Making the Final Decision</h2>
 
     <div class="card analogy">
@@ -939,9 +1034,9 @@ P(next_token = "D") = 0.03
     </div>
 </section>
 
-<!-- ═══════════════════ SECTION 12: IndexGrower ═══════════════════ -->
-<section class="section" id="s12">
-    <div class="section-number">Section 12</div>
+<!-- ═══════════════════ SECTION 13: IndexGrower ═══════════════════ -->
+<section class="section" id="s13">
+    <div class="section-number">Section 13</div>
     <h2>The Self-Growing Index — Learning From Experience</h2>
 
     <div class="card analogy">
@@ -1019,9 +1114,9 @@ stateDiagram-v2
     </div>
 </section>
 
-<!-- ═══════════════════ SECTION 13: Trace Example ═══════════════════ -->
-<section class="section" id="s13">
-    <div class="section-number">Section 13</div>
+<!-- ═══════════════════ SECTION 14: Trace Example ═══════════════════ -->
+<section class="section" id="s14">
+    <div class="section-number">Section 14</div>
     <h2>Tracing a Real Question — End to End</h2>
 
     <p>Let's follow a single question through the entire pipeline to see every component in action:</p>
@@ -1087,9 +1182,9 @@ stateDiagram-v2
     </div>
 </section>
 
-<!-- ═══════════════════ SECTION 14: Configuration ═══════════════════ -->
-<section class="section" id="s14">
-    <div class="section-number">Section 14</div>
+<!-- ═══════════════════ SECTION 15: Configuration ═══════════════════ -->
+<section class="section" id="s15">
+    <div class="section-number">Section 15</div>
     <h2>Configuration Reference</h2>
 
     <p>All RAG behavior is controlled from the notebook's configuration cell. Here's every knob:</p>
@@ -1105,6 +1200,7 @@ stateDiagram-v2
         <tr><td><code>RAG_USE_SCORE_OPTIONS</code></td><td>True</td><td>Logit scoring (fast) vs free generation + parse (slow)</td></tr>
         <tr><td><code>RAG_GATED_BY_MIN_SCORE</code></td><td>True</td><td>Drop low-quality retrieval instead of feeding noise</td></tr>
         <tr><td><code>RAG_USE_LIVE_FALLBACK</code></td><td>True</td><td>Fall back to real-time Wikipedia when offline fails</td></tr>
+        <tr><td><code>USE_NEWS_LIVE_SEARCH</code></td><td>True</td><td>Route the NEWS category's live fallback through the date-aware Guardian source (<a href="#s10">Section 10</a>) instead of Wikipedia</td></tr>
         <tr><td><code>RAG_USE_INDEX_GROWER</code></td><td>True</td><td>Learn from correct answers (self-growing index)</td></tr>
         <tr><td><code>RAG_MAX_PASSAGE_CHARS</code></td><td>800</td><td>Max characters per passage (truncated at sentence boundary)</td></tr>
         <tr><td><code>RAG_MAX_TOTAL_CHARS</code></td><td>2400</td><td>Total character budget for all passages combined</td></tr>
