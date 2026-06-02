@@ -118,6 +118,18 @@ def print_retrieval_summary(extras: dict) -> None:
                 score_str = f"  top_score={live_top_score:.4f}" if live_top_score is not None else ""
                 print(f"     ↳ live passages used: {live_n}{score_str} ✓")
 
+    # ── Tool hit line (shown only when a deterministic tool answered) ─────
+    tool_name = extras.get("tool")
+    if tool_name:
+        # Direct tools store "expr"; rewrite path stores "rewrite_expr"
+        expr   = extras.get("expr") or extras.get("rewrite_expr", "")
+        result = extras.get("result", "")
+        path   = extras.get("path", "")
+        expr_str   = f"  expr={str(expr)[:60]}"    if expr   else ""
+        result_str = f"  result={str(result)[:30]}" if result and result != "complex" else ""
+        path_str   = f"  [{path}]"                  if path and path not in ("direct_tool",) else ""
+        print(f"     TOOL HIT [{tool_name}]{path_str}{expr_str}{result_str}")
+
     # ── Decoding / parse line ──────────────────────────────────────────────
     decoding  = extras.get("decoding_path", "—")
     parse_ok  = extras.get("parse_ok")

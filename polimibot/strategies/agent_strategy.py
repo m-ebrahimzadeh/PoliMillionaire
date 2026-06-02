@@ -3,11 +3,14 @@
 Protocol (per question, bounded by max_iterations + time_budget):
   1. Prompt the LLM with a tool-aware system message.
   2. Generate free text.
-  3a. If output contains   CALL: calc(<expr>)   → execute, inject result, re-prompt.
-  3b. If output contains   Answer: <letter>     → done.
+  3a. If output contains   CALL: calc(<expr>)    → execute via safe_eval, inject result, re-prompt.
+  3b. If output contains   CALL: solve(<expr>)   → execute via sympy_solve, inject result, re-prompt.
+  3c. If output contains   Answer: <letter>      → done.
   4. If iterations exhausted → parse last text; if still unparseable, abstain.
 
-Only `calc` is wired. Sympy / Python sandbox deferred to Stage 9.
+Two tools are wired:
+  calc  — fast arithmetic (safe_eval AST sandbox); use for direct numeric computation.
+  solve — symbolic math (SymPy); use for equations, modular arithmetic, exact combinatorics.
 """
 from __future__ import annotations
 
@@ -19,28 +22,74 @@ from ..models.llm import LLM
 from ..models.mock import MockLLM
 from ..prompts.templates import parse_answer
 from ..tools.calculator import safe_eval
+from ..tools.sympy_tool import sympy_solve
 from .base import Strategy, StrategyInput, StrategyOutput
 
 _AnyLLM = LLM | MockLLM
+
+# ── Worked demonstration exchanges ───────────────────────────────────────────
+# Two fake prior turns injected before every real question.
+# Purpose: show the exact tool-call protocol in action so the model copies the
+# pattern rather than ignoring the system-prompt description and generating a
+# full prose reasoning trace (which consumes the entire token budget).
+#
+# calc demo — percentage arithmetic, options are numeric.
+_DEMO_CALC_Q = (
+    "Question: What is 15% of 200?\n\n"
+    "Options:\n"
+    "A. 25\nB. 30\nC. 35\nD. 40\n\n"
+    "Think step by step. Use CALL: calc(...) for arithmetic or "
+    "CALL: solve(...) for algebra/equations/modular problems, "
+    "then write your Answer."
+)
+_DEMO_CALC_A1 = "15% of 200 means 15/100 * 200.\nCALL: calc(15/100 * 200)"
+_DEMO_CALC_OBS = "Tool result: 30.0\nNow give your final answer."
+_DEMO_CALC_A2 = "Answer: B"
+
+# solve demo — modular arithmetic / cycle pattern, options are numeric.
+_DEMO_SOLVE_Q = (
+    "Question: What is the units digit of 3^100?\n\n"
+    "Options:\n"
+    "A. 1\nB. 3\nC. 7\nD. 9\n\n"
+    "Think step by step. Use CALL: calc(...) for arithmetic or "
+    "CALL: solve(...) for algebra/equations/modular problems, "
+    "then write your Answer."
+)
+_DEMO_SOLVE_A1 = "The units digit of 3^100 is 3^100 mod 10.\nCALL: solve(Mod(3**100, 10))"
+_DEMO_SOLVE_OBS = "Tool result: 1\nNow give your final answer."
+_DEMO_SOLVE_A2 = "Answer: A"
+
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 # The protocol the model must follow is described concisely.
 # One CALL per turn; wait for result; final line must be "Answer: <letter>".
 
 _AGENT_SYSTEM = """\
-You are a careful quiz contestant. You have one tool:
+You are a careful quiz contestant. You have two tools:
 
   CALL: calc(<expression>)
-  Evaluates a Python arithmetic expression and returns the numeric result.
-  Example: CALL: calc(15/100 * 400)
+    Fast arithmetic. Use for direct numeric computation.
+    Example: CALL: calc(15/100 * 400)
+
+  CALL: solve(<expression>)
+    Symbolic math via SymPy. Use for:
+      - equations with an unknown   e.g. solve("3*x + 7 - 22", "x")
+      - modular / exact arithmetic  e.g. solve("Mod(3**100, 10)")
+      - exact combinatorics         e.g. solve("binomial(10, 3)")
+      - geometric / trig formulas   e.g. solve("pi * 5**2")
+    Example: CALL: solve(Mod(3**100, 10))
 
 Rules:
-  1. Think step by step in at most 3 sentences.
-  2. If computation is needed, emit EXACTLY one line: CALL: calc(<expression>)
-     Then STOP — you will receive the result.
+  1. Think step by step in at most 2 sentences.
+  2. For ANY question involving algebra, geometry, or numeric calculation, you MUST
+     emit a tool call BEFORE reasoning further. Do not attempt multi-step arithmetic
+     or algebra in your head — use the tool immediately, then conclude.
+     Choose calc for plain arithmetic, solve for equations, geometry, or symbolic results.
   3. When you know the final answer, write EXACTLY: Answer: <letter>
      where <letter> is one of A, B, C, D.
-  4. Never guess a number — use the tool if unsure.
+  4. Never guess a number — use the appropriate tool if unsure.
+  5. If the question is purely factual (a name, a theorem, a definition), skip
+     the tools and answer directly.
 """
 
 # ── Call-detection helpers ────────────────────────────────────────────────────
@@ -76,6 +125,14 @@ def _run_calc(expression: str) -> str:
         return f"Error: {exc}"
 
 
+def _run_solve(expression: str) -> str:
+    """Execute expression via sympy_solve. Returns result string or error message."""
+    try:
+        return sympy_solve(expression)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
 # ── Strategy ──────────────────────────────────────────────────────────────────
 
 class AgentStrategy(Strategy):
@@ -91,8 +148,8 @@ class AgentStrategy(Strategy):
         self,
         llm: _AnyLLM,
         *,
-        max_iterations: int = 3,
-        per_turn_tokens: int = 200,
+        max_iterations: int = 2,
+        per_turn_tokens: int = 150,
     ) -> None:
         self.llm = llm
         self.max_iterations = max_iterations
@@ -142,8 +199,10 @@ class AgentStrategy(Strategy):
                 tool_name, expression = call
                 if tool_name == "calc":
                     observation = _run_calc(expression)
+                elif tool_name == "solve":
+                    observation = _run_solve(expression)
                 else:
-                    observation = f"Unknown tool '{tool_name}' — only 'calc' is available."
+                    observation = f"Unknown tool '{tool_name}' — available tools: calc, solve."
                 n_tool_calls += 1
                 trace.append(f"[obs {iteration}] {tool_name}({expression}) → {observation}")
 
@@ -208,10 +267,26 @@ class AgentStrategy(Strategy):
         user = (
             f"Question: {inp.question}\n\n"
             f"Options:\n{options_text}\n\n"
-            "Think step by step. Use CALL: calc(...) if computation helps, "
+            "Think step by step. Use CALL: calc(...) for arithmetic or "
+            "CALL: solve(...) for algebra/equations/modular problems, "
             "then write your Answer."
         )
         return [
-            {"role": "system", "content": _AGENT_SYSTEM},
-            {"role": "user",   "content": user},
+            {"role": "system",    "content": _AGENT_SYSTEM},
+            # ── Worked examples ───────────────────────────────────────────
+            # These fake prior exchanges show the exact tool-call protocol
+            # the model must follow. Without them, chat-tuned models ignore
+            # the tool description and generate a full reasoning trace instead,
+            # consuming the entire token budget before emitting an answer.
+            # One calc example + one solve example covers both tool paths.
+            {"role": "user",      "content": _DEMO_CALC_Q},
+            {"role": "assistant", "content": _DEMO_CALC_A1},
+            {"role": "user",      "content": _DEMO_CALC_OBS},
+            {"role": "assistant", "content": _DEMO_CALC_A2},
+            {"role": "user",      "content": _DEMO_SOLVE_Q},
+            {"role": "assistant", "content": _DEMO_SOLVE_A1},
+            {"role": "user",      "content": _DEMO_SOLVE_OBS},
+            {"role": "assistant", "content": _DEMO_SOLVE_A2},
+            # ── Real question ─────────────────────────────────────────────
+            {"role": "user",      "content": user},
         ]

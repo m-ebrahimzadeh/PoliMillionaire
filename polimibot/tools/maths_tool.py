@@ -47,9 +47,22 @@ _NORMALIZATIONS = [
     (re.compile(r'÷'), '/'),
 ]
 
-# Question patterns that signal a computable expression follows
+# Question patterns that signal a computable expression follows.
+# Covers direct-compute verbs AND word-problem openers ("how many/much/far/long",
+# "what is the <noun>") so that phrasing like "How many ways can 5 books be
+# arranged?" and "A train travels 60 km/h for 2.5 hours. How far does it go?"
+# reach the arithmetic layer instead of falling through to the LLM.
 _COMPUTE_PREFIX = re.compile(
-    r'(?:what\s+is|calculate|compute|find\s+the\s+value\s+of|evaluate|simplify)'
+    r'(?:'
+    r'what\s+is(?:\s+the(?:\s+\w+){0,3})?'      # "what is" / "what is the value"
+    r'|calculate'
+    r'|compute'
+    r'|find\s+the\s+value\s+of'
+    r'|evaluate'
+    r'|simplify'
+    r'|how\s+(?:many|much|far|long)'             # word-problem openers
+    r'|(?:find|determine)\s+the\s+(?:total|sum|product|result|answer)'
+    r')'
     r'\s+(.+)',
     re.IGNORECASE,
 )

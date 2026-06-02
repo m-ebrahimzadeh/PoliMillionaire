@@ -84,6 +84,14 @@ class CategoryStats:
 
 
 @dataclass
+class ToolStats:
+    """Aggregate metrics for one tool (e.g. maths_tool, sympy_direct)."""
+    n_fired: int          # questions where this tool returned an answer
+    n_correct: int        # of those, how many were correct
+    accuracy: float       # n_correct / n_fired  (0.0 if n_fired == 0)
+
+
+@dataclass
 class EvalReport:
     """Aggregate metrics from one evaluate_strategy() run."""
     strategy_name: str
@@ -94,6 +102,9 @@ class EvalReport:
     latency_p50: float
     latency_p95: float
     latency_mean: float
+    tool_stats: dict[str, ToolStats] = field(default_factory=dict)
+    n_tool_answered: int = 0     # questions answered by any tool (not fallback LLM)
+    n_llm_answered: int = 0      # questions that fell through to the LLM
     samples: list[EvalSample] = field(default_factory=list, repr=False)
 
     def print_summary(self) -> None:
@@ -104,6 +115,14 @@ class EvalReport:
         print(f"  Accuracy : {self.accuracy:.1%}")
         print(f"  ECE      : {self.ece:.4f}  (lower = better calibrated)")
         print(f"  Latency  : p50={self.latency_p50:.2f}s  p95={self.latency_p95:.2f}s")
+        if self.n_tool_answered or self.tool_stats:
+            pct = self.n_tool_answered / self.n_total if self.n_total else 0.0
+            print(f"\n  Tool coverage : {self.n_tool_answered}/{self.n_total} "
+                  f"({pct:.1%} answered by a tool, "
+                  f"{self.n_llm_answered} fell to LLM)")
+            for tname, ts in sorted(self.tool_stats.items()):
+                print(f"    {tname:<20} fired={ts.n_fired}  "
+                      f"correct={ts.n_correct}  acc={ts.accuracy:.1%}")
         print(f"\n  Per-category:")
         for cat, stats in sorted(self.by_category.items()):
             print(f"    {cat:<16} acc={stats.accuracy:.1%}  ece={stats.ece:.4f}  n={stats.n}")
@@ -114,10 +133,7 @@ class EvalReport:
         path.parent.mkdir(parents=True, exist_ok=True)
         d = asdict(self)
         d.pop("samples")                        # keep file small
-        # Category keys are enums → stringify
-        d["by_category"] = {
-            k: v for k, v in d["by_category"].items()
-        }
+        # Category keys are enums → already strings via asdict
         path.write_text(json.dumps(d, indent=2, ensure_ascii=False))
         print(f"Report saved → {path}")
 
@@ -220,6 +236,26 @@ def _build_report(strategy_name: str, samples: list[EvalSample]) -> EvalReport:
             ece=cat_ece,
         )
 
+    # ── Tool-hit metrics ──────────────────────────────────────────────────
+    tool_hits: dict[str, list[bool]] = defaultdict(list)  # tool_name → [correct, ...]
+    for s in samples:
+        t = s.extras.get("tool")
+        if t:
+            tool_hits[t].append(s.correct)
+
+    tool_stats: dict[str, ToolStats] = {}
+    for tname, results in tool_hits.items():
+        fired   = len(results)
+        correct = sum(results)
+        tool_stats[tname] = ToolStats(
+            n_fired=fired,
+            n_correct=correct,
+            accuracy=correct / fired if fired else 0.0,
+        )
+
+    n_tool_answered = sum(len(v) for v in tool_hits.values())
+    n_llm_answered  = n - n_tool_answered
+
     latencies = [s.elapsed_seconds for s in samples]
     return EvalReport(
         strategy_name=strategy_name,
@@ -230,5 +266,8 @@ def _build_report(strategy_name: str, samples: list[EvalSample]) -> EvalReport:
         latency_p50=_percentile(latencies, 0.5),
         latency_p95=_percentile(latencies, 0.95),
         latency_mean=sum(latencies) / n,
+        tool_stats=tool_stats,
+        n_tool_answered=n_tool_answered,
+        n_llm_answered=n_llm_answered,
         samples=samples,
     )
