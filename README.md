@@ -149,7 +149,10 @@ NEWS questions reference a *specific dated article* ("the article published on `
   The harvest pulls the window **day by day** so every date is covered evenly — a
   single multi-day query would only return the newest ~`page-size × max-pages`
   results and silently drop the older end of the range (where dated questions
-  live). Narrow a focused harvest with `--sections world,politics,us-news,uk-news,business,technology,sport,science,society` and/or widen `--days`.
+  live). NEWS questions span the **whole** Guardian (sport, environment, society,
+  culture, australia-news, lifestyle, education, …), not just hard news, so the
+  default harvest covers a broad set of sections; pass `--sections` to focus it
+  (or omit it to harvest every section) and `--days` to widen the window.
 
   In the **notebook** this is automatic: Section **0.4a-news** harvests the last
   `INDEX_NEWS_GUARDIAN_DAYS` (default 30) days into `corpus.jsonl` before the embed/index

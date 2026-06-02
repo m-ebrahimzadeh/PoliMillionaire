@@ -343,8 +343,18 @@ INDEX_GAP_QUEUE    = None         # path to gap_titles.json (scripts/mine_corpus
 # News offline seed (The Guardian) — harvested in 0.4a-news so recent dated News
 # questions are answered from the offline index first; the online Guardian API
 # (NewsLiveSearch) then covers anything newer/missing. Needs GUARDIAN_API_KEY.
-INDEX_NEWS_GUARDIAN_DAYS     = 30      # days back from today to harvest into the corpus (0/None = skip)
-INDEX_NEWS_GUARDIAN_SECTIONS = 'world,uk-news,us-news,politics,business,technology,science'  # focus sections (None = every section — tens of thousands of articles)
+INDEX_NEWS_GUARDIAN_DAYS     = 45      # days back from today to harvest into the corpus (0/None = skip; live API covers older stragglers)
+# Broad section list — sampled NEWS questions span the WHOLE Guardian (sport,
+# environment, society, culture/film/music/art, australia-news, lifestyle/food,
+# education, media), not just hard news. A narrow list silently drops ~a third
+# of them. The per-day page budget (page_size×max_pages) caps volume regardless
+# of how many sections are listed. Set None to harvest literally every section.
+INDEX_NEWS_GUARDIAN_SECTIONS = (
+    'world,us-news,uk-news,australia-news,politics,business,economy,money,'
+    'technology,science,environment,society,global-development,sport,'
+    'culture,film,music,books,artanddesign,tv-and-radio,stage,'
+    'lifeandstyle,food,fashion,education,media'
+)
 # ─────────────────────────────────────────────────────────────────────
 # data/ is symlinked to Drive by cell 1, so everything written under
 # PATHS.cache_dir (corpus.jsonl, the index) is already durable across a
