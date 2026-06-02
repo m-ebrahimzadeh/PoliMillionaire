@@ -44,19 +44,19 @@ REBUILD_INDEX      = True
 INDEX_REFETCH      = True
 EMBEDDER_MODEL     = 'BAAI/bge-m3'          # already the default after this branch
 INDEX_GAP_QUEUE    = 'data/cache/gap_titles.json'   # or None
-INDEX_DRIVE_DIR    = '/content/drive/MyDrive/polimi'  # or None to stay in one runtime
 # INDEX_HARVEST_MAX_DEPTH stays 0 for entity seeds; concept seeds always recurse 1 level.
 ```
 
-- **0.4a — Harvest corpus (CPU runtime).** Fetches Wikipedia → `corpus.jsonl`,
-  checkpointing as it goes and saving *before* the gap-queue fetch, then copies
-  the corpus to `INDEX_DRIVE_DIR`. Pure network/CPU — no GPU hours burned.
+- **0.4a — Harvest corpus (CPU runtime).** Fetches Wikipedia → `data/cache/corpus.jsonl`,
+  checkpointing as it goes and saving *before* the gap-queue fetch. Pure
+  network/CPU — no GPU hours burned.
 - Switch to a **GPU runtime** (re-run 0.1–0.3 + the knobs cell).
-- **0.4b — Embed & index (GPU runtime).** Restores `corpus.jsonl` from Drive,
-  chunks, embeds with `bge-m3`, writes FAISS + BM25, and persists the index back
-  to Drive.
+- **0.4b — Embed & index (GPU runtime).** Loads `corpus.jsonl`, chunks, embeds
+  with `bge-m3`, writes the FAISS + BM25 index.
 
-With `INDEX_DRIVE_DIR=None`, run both cells in the same runtime (no Drive round-trip).
+`data/` is symlinked to Drive by cell 1 (or you work directly from Drive), so
+`corpus.jsonl` and the index already persist across the runtime switch — no
+explicit copy step. To stay in one runtime, just run 0.4a then 0.4b back to back.
 
 > Why the split: a single cell forced the CPU-only harvest onto a GPU runtime, and
 > a crash in the gap phase (which ran before the corpus was saved) discarded the

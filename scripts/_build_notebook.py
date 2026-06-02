@@ -303,13 +303,12 @@ Two phases so the **GPU-free harvest** and the **GPU embed/index** can run on di
 - **0.4a — Harvest corpus (CPU-friendly).** Downloads the Wikipedia corpus and writes `data/cache/corpus.jsonl`. Pure network/CPU — run it on a **CPU runtime** to save GPU hours.
 - **0.4b — Embed & index (GPU).** Loads `corpus.jsonl`, embeds with `bge-m3`, and writes the FAISS + BM25 index. Run it on a **GPU runtime**.
 
-> **Switching the runtime type wipes `/content`.** To go CPU→GPU, mount Drive and set `INDEX_DRIVE_DIR`: 0.4a copies the corpus there, 0.4b restores it (and persists the finished index back). With `INDEX_DRIVE_DIR=None`, run both phases in the same runtime.
+> **The CPU→GPU handoff is automatic** — no extra copying. Cell 1 symlinks `data/` to Drive (or you work directly from Drive), so `data/cache/corpus.jsonl` and the index already live on Drive and survive a runtime-type switch. To go CPU→GPU: run 0.4a, switch the runtime to GPU, re-run cells 0.1–0.3 + the knobs cell, then run 0.4b — it picks the corpus up from `data/cache` on its own.
 
 | Knob | Meaning |
 |---|---|
 | `REBUILD_INDEX` | Set `True` to (re)build the index in 0.4b even if one already exists |
 | `INDEX_REFETCH` | Set `True` to re-harvest in 0.4a even if `corpus.jsonl` exists |
-| `INDEX_DRIVE_DIR` | Mounted Drive folder to persist/restore the corpus + index across runtime switches (or `None`) |
 | `INDEX_CATEGORIES` | `None` → all four categories; or e.g. `['history', 'science']` |
 | `INDEX_CHUNK_SIZE` / `INDEX_OVERLAP` | Sentence-aware chunking parameters (default 300/50) |
 | `INDEX_SKIP_BM25` | Set `True` to skip the BM25 sidecar (dense-only — disables hybrid retrieval) |
@@ -328,7 +327,6 @@ RAG_INDEX_PATH     = PATHS.cache_dir / 'knowledge'
 EMBEDDER_MODEL     = 'BAAI/bge-m3'   # must match Section 1.1; rebuild index after changing
 REBUILD_INDEX      = False        # True  → (re)build index in 0.4b even if it exists
 INDEX_REFETCH      = False        # True  → re-harvest in 0.4a even if corpus.jsonl exists
-INDEX_DRIVE_DIR    = None         # e.g. '/content/drive/MyDrive/polimi' → persist across runtimes
 INDEX_CATEGORIES   = None         # None  → all four; or e.g. ['history', 'science']
 INDEX_CHUNK_SIZE   = 300          # words per chunk (sentence-boundary-aware)
 INDEX_OVERLAP      = 50           # word overlap between adjacent chunks
@@ -340,43 +338,9 @@ INDEX_HARVEST_WORKERS          = 5     # concurrent extract batches (default 5 �
 INDEX_HARVEST_BATCH_SIZE       = 20    # titles per extract request (MediaWiki cap is 20 for anonymous)
 INDEX_GAP_QUEUE    = None         # path to gap_titles.json (scripts/mine_corpus_gaps.py) to back-fill, or None
 # ─────────────────────────────────────────────────────────────────────
-
-# Drive persistence helpers — no-ops when INDEX_DRIVE_DIR is None. They let the
-# CPU harvest (0.4a) and the GPU index build (0.4b) live in different runtimes:
-# a runtime switch wipes /content, so corpus + index round-trip through Drive.
-import shutil as _shutil
-from pathlib import Path as _Path
-
-def _drive_dir():
-    if not INDEX_DRIVE_DIR:
-        return None
-    d = _Path(INDEX_DRIVE_DIR); d.mkdir(parents=True, exist_ok=True); return d
-
-def _persist_to_drive(*paths):
-    d = _drive_dir()
-    if d is None:
-        return
-    for p in paths:
-        p = _Path(p)
-        if p.exists():
-            _shutil.copy2(p, d / p.name); print(f'  drive: saved {p.name} -> {d}')
-
-def _restore_from_drive(*names):
-    d = _drive_dir()
-    if d is None:
-        return
-    for n in names:
-        src, dst = d / n, PATHS.cache_dir / n
-        if src.exists() and not dst.exists():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            _shutil.copy2(src, dst); print(f'  drive: restored {n} <- {d}')
-
-def _persist_index_to_drive():
-    d = _drive_dir()
-    if d is None:
-        return
-    for p in sorted(RAG_INDEX_PATH.parent.glob(RAG_INDEX_PATH.name + '*')):
-        _shutil.copy2(p, d / p.name); print(f'  drive: saved {p.name} -> {d}')
+# data/ is symlinked to Drive by cell 1, so everything written under
+# PATHS.cache_dir (corpus.jsonl, the index) is already durable across a
+# runtime-type switch — no extra copy/restore step is needed.
 
 print('RAG index knobs set. Run 0.4a (CPU harvest), then 0.4b (GPU embed/index).')
 '''))
@@ -391,7 +355,6 @@ _corpus_path = PATHS.cache_dir / 'corpus.jsonl'
 
 if _corpus_path.exists() and not INDEX_REFETCH:
     print(f'corpus.jsonl already present at {_corpus_path} — set INDEX_REFETCH=True to re-harvest.')
-    _persist_to_drive(_corpus_path)
 else:
     from polimibot.config import Category as _Category
     from polimibot.rag.corpus import (
@@ -416,14 +379,15 @@ else:
             verbose=True,
         )
     # Save the expensive harvest BEFORE the gap fetch, so nothing the gap phase
-    # does can throw away the corpus.
+    # does can throw away the corpus. corpus.jsonl lives under data/cache, which
+    # is symlinked to Drive (cell 1) — so this is already durable.
     save_raw_corpus(_articles, _corpus_path)
-    _persist_to_drive(_corpus_path)
 
     # Log-mined gap back-fill: fetch the queued titles directly (see
     # scripts/mine_corpus_gaps.py). Skips titles already harvested.
     if INDEX_GAP_QUEUE:
         import json as _json
+        from pathlib import Path as _Path
         _gap_path = _Path(INDEX_GAP_QUEUE)
         if _gap_path.is_file():
             _gap_raw = _json.loads(_gap_path.read_text(encoding='utf-8'))
@@ -439,7 +403,6 @@ else:
             print(f'Gap queue added {len(_gap_arts)} articles')
             _articles = _articles + _gap_arts
             save_raw_corpus(_articles, _corpus_path)
-            _persist_to_drive(_corpus_path)
         else:
             print(f'  ! INDEX_GAP_QUEUE {_gap_path} not found — skipping gap back-fill')
 
@@ -452,8 +415,8 @@ else:
 cells.append(md("#### 0.4b — Embed & index (GPU: `corpus.jsonl` → FAISS + BM25)"))
 
 cells.append(code('''
-# Phase B — embed + index. Run on a GPU runtime. Restores corpus.jsonl from
-# Drive first if a runtime switch wiped /content.
+# Phase B — embed + index. Run on a GPU runtime. corpus.jsonl is read from
+# data/cache (Drive-backed via cell 1), so the 0.4a harvest is already here.
 import time as _time
 from dataclasses import replace as _replace
 from polimibot.config import Category as _Category
@@ -470,7 +433,6 @@ from polimibot.rag.bm25 import BM25Index as _BM25Index
 
 PATHS.ensure()
 _corpus_path = PATHS.cache_dir / 'corpus.jsonl'
-_restore_from_drive('corpus.jsonl')          # bring the harvest back after a runtime switch
 _index_faiss = RAG_INDEX_PATH.with_suffix('.faiss')
 
 if _index_faiss.exists() and not REBUILD_INDEX:
@@ -478,8 +440,8 @@ if _index_faiss.exists() and not REBUILD_INDEX:
     print('Set REBUILD_INDEX=True to force a rebuild.')
 elif not _corpus_path.exists():
     raise RuntimeError(
-        f'No corpus at {_corpus_path}. Run 0.4a first (CPU harvest), or set '
-        f'INDEX_DRIVE_DIR so it can be restored from Drive.')
+        f'No corpus at {_corpus_path}. Run 0.4a first (the CPU harvest); it is '
+        f'saved under data/cache, which is Drive-backed and survives a runtime switch.')
 else:
     _cats = [_Category(c) for c in INDEX_CATEGORIES] if INDEX_CATEGORIES else None
     print(f'Loading corpus from {_corpus_path}…')
@@ -549,8 +511,8 @@ else:
     else:
         print('BM25 sidecar skipped (INDEX_SKIP_BM25=True).')
 
-    # Persist the finished index to Drive so it survives the next runtime reset.
-    _persist_index_to_drive()
+    # The index is written under data/cache (Drive-backed via cell 1), so it
+    # already survives a runtime reset — no extra copy needed.
     print('\\nIndex build complete. Re-run Section 1.3 to attach the new index to the retriever.')
 '''))
 
