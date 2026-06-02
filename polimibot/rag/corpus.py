@@ -8,8 +8,10 @@ Separation of concerns:
 from __future__ import annotations
 
 import json
+from random import random
 import re
 import time
+import random
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -574,10 +576,13 @@ def _harvest_bulk_concurrent(
     def _run(batch):
         """Return (articles, failed_batch_or_None)."""
         try:
-            return _fetch_extracts_batch(batch, verbose=verbose), None
+            result = _fetch_extracts_batch(batch, verbose=verbose)
+            time.sleep(random.uniform(1, 3.5))  # <--- ADD THIS: Random stagger (0.5s to 1.5s)
+            return result, None
         except Exception as exc:   # whole-batch request failure → retry-able
             if verbose:
                 print(f"    batch failed ({len(batch)} titles): {exc!r} — will retry")
+            time.sleep(random.uniform(6.0, 10.0))  # <--- ADD THIS: Random backoff on failure
             return [], batch
 
     def _drain(batch_list, label):
