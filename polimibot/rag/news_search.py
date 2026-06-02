@@ -671,3 +671,65 @@ def _build_news_query(question: str) -> str:
     q = _BOILERPLATE_RE.sub("", q).strip()
     q = re.sub(r"\s+", " ", q).strip(" ,.")
     return q or question.strip()
+
+
+# ── Offline harvest helper ───────────────────────────────────────────────────
+
+def harvest_news_range(
+    from_date: _dt.date,
+    to_date: _dt.date,
+    *,
+    source: Optional[GuardianNewsSource] = None,
+    sections: Optional[str] = None,
+    query: Optional[str] = None,
+    page_size: int = 50,
+    max_pages: int = 20,
+    verbose: bool = False,
+) -> list[Article]:
+    """Harvest Guardian articles across a date window, one day at a time.
+
+    Used by both the offline harvest script (``scripts/fetch_news_corpus.py``)
+    and the notebook's index build to seed the offline corpus with recent news.
+
+    The harvest is day-by-day because a single ``fetch_range`` over a multi-day
+    window only returns the newest ``page_size * max_pages`` results (the
+    Guardian publishes hundreds of pieces a day), silently dropping the older
+    end of the range — exactly where the dated News questions live. Articles are
+    de-duplicated by title across the whole window (paging / adjacent days can
+    re-surface an article).
+
+    Args:
+        from_date / to_date: inclusive publication-date bounds.
+        source: an existing ``GuardianNewsSource`` (constructed if omitted, so
+            the current ``NEWS`` config / key is honoured).
+        sections: comma-separated Guardian section ids to focus the harvest
+            (e.g. ``"world,uk-news,business"``); ``None`` harvests every section.
+        query: optional full-text filter; ``None`` harvests everything in-window.
+        page_size / max_pages: per-day pagination budget (see ``fetch_range``).
+        verbose: print per-day counts and a final unique total.
+
+    Returns:
+        Unique ``Article`` objects (``Category.NEWS``) gathered across the window.
+    """
+    src = source or GuardianNewsSource()
+    seen: set[str] = set()
+    unique: list[Article] = []
+    total = 0
+    day = from_date
+    while day <= to_date:
+        day_articles = src.fetch_range(
+            day, day,
+            query=query, sections=sections,
+            page_size=page_size, max_pages=max_pages,
+        )
+        total += len(day_articles)
+        for a in day_articles:
+            if a.title not in seen:
+                seen.add(a.title)
+                unique.append(a)
+        if verbose:
+            print(f"  {day}: {len(day_articles)} article(s)")
+        day += _dt.timedelta(days=1)
+    if verbose:
+        print(f"Fetched {total} results → {len(unique)} unique articles.")
+    return unique

@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from polimibot.rag.corpus import CLEANUP_VERSION, clean_wikipedia_text
+from polimibot.config import Category
+from polimibot.rag.corpus import (
+    CLEANUP_VERSION, Article, append_raw_corpus, clean_wikipedia_text,
+    load_raw_corpus, save_raw_corpus,
+)
 
 
 def test_clean_wiki_strips_citation_markers():
@@ -681,3 +685,32 @@ def test_fetch_redirects_returns_empty_on_failure(monkeypatch):
 
     monkeypatch.setattr(corpus.urllib.request, "urlopen", boom)
     assert corpus._fetch_redirects("Anything", verbose=False) == ()
+
+
+# ── append_raw_corpus (dedup-by-title append) ───────────────────────────────────
+
+def test_append_raw_corpus_creates_and_dedupes(tmp_path):
+    path = tmp_path / "corpus.jsonl"
+    a = Article("Recent news A", "Published 2026-05-01. body", Category.NEWS, "u1")
+    b = Article("Recent news B", "Published 2026-05-02. body", Category.NEWS, "u2")
+
+    # First append creates the file with both articles.
+    assert append_raw_corpus([a, b], path) == 2
+    assert {x.title for x in load_raw_corpus(path)} == {"Recent news A", "Recent news B"}
+
+    # Re-appending an existing title plus a new one only adds the new one.
+    c = Article("Recent news C", "Published 2026-05-03. body", Category.NEWS, "u3")
+    assert append_raw_corpus([a, c], path) == 1
+    titles = [x.title for x in load_raw_corpus(path)]
+    assert titles.count("Recent news A") == 1          # no duplicate row written
+    assert "Recent news C" in titles
+
+
+def test_append_raw_corpus_preserves_existing_wikipedia_rows(tmp_path):
+    path = tmp_path / "corpus.jsonl"
+    wiki = Article("Newton", "An English mathematician.", Category.SCIENCE, "w")
+    save_raw_corpus([wiki], path)
+    news = Article("Recent news", "Published 2026-05-01. body", Category.NEWS, "u")
+    assert append_raw_corpus([news], path) == 1
+    loaded = {x.title: x.category for x in load_raw_corpus(path)}
+    assert loaded == {"Newton": Category.SCIENCE, "Recent news": Category.NEWS}

@@ -18,6 +18,7 @@ from polimibot.rag import news_search as ns
 from polimibot.rag.corpus import Article
 from polimibot.rag.news_search import (
     GuardianNewsSource, NewsLiveSearch, _build_news_query, extract_question_date,
+    harvest_news_range,
 )
 
 
@@ -268,6 +269,36 @@ def test_fetch_range_paginates(tmp_path):
                                    sections="world", page_size=2, max_pages=5)
     assert get.call_count == 2
     assert [a.title for a in articles] == ["p1a", "p1b", "p2a"]
+
+
+# ── harvest_news_range (offline harvest) ────────────────────────────────────────
+
+class _FakeHarvestGuardian:
+    """Returns canned articles per day; records fetch_range calls."""
+    def __init__(self, by_day):
+        self.by_day = by_day          # dict[date] -> list[Article]
+        self.calls = []
+
+    def fetch_range(self, from_date, to_date, *, query=None, sections=None,
+                    page_size=50, max_pages=20):
+        self.calls.append((from_date, to_date, sections))
+        return list(self.by_day.get(from_date, []))
+
+
+def test_harvest_news_range_iterates_days_and_dedupes():
+    d1, d2, d3 = _dt.date(2026, 5, 1), _dt.date(2026, 5, 2), _dt.date(2026, 5, 3)
+    a1  = Article("A1", "Published 2026-05-01. x", Category.NEWS, "u1")
+    a2  = Article("A2", "Published 2026-05-02. y", Category.NEWS, "u2")
+    dup = Article("A1", "Published 2026-05-03. dup", Category.NEWS, "u1b")  # same title
+    g = _FakeHarvestGuardian({d1: [a1], d2: [a2], d3: [dup]})
+
+    out = harvest_news_range(d1, d3, source=g, sections="world")
+
+    # One fetch_range per day across the inclusive window, section passed through.
+    assert [c[0] for c in g.calls] == [d1, d2, d3]
+    assert all(c[2] == "world" for c in g.calls)
+    # Cross-day title-dedup keeps the first occurrence only.
+    assert [a.title for a in out] == ["A1", "A2"]
 
 
 # ── NewsLiveSearch — Guardian + Wikipedia fallback ──────────────────────────────
