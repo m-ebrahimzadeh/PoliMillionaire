@@ -84,8 +84,12 @@ class CrossEncoderReranker:
             model.model = model.model.half()
 
         def _score(pairs: List[Tuple[str, str]]) -> List[float]:
-            # CrossEncoder.predict returns numpy ndarray of floats.
-            return [float(s) for s in model.predict(pairs, batch_size=spec.batch_size)]
+            # convert_to_numpy=True avoids a TypeError in newer transformers versions
+            # where warn_if_padding_and_no_attention_mask receives a plain list instead
+            # of a tensor when sentence-transformers returns raw Python lists.
+            return [float(s) for s in model.predict(
+                pairs, batch_size=spec.batch_size, convert_to_numpy=True
+            )]
 
         return cls(_score, name=spec.model_name, batch_size=spec.batch_size)
 
