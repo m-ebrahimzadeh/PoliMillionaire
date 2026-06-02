@@ -48,6 +48,7 @@ import hashlib
 import json
 import re
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -160,6 +161,22 @@ class GuardianNewsSource:
         # Set by ``_request``: True when the most recent call hit a transport
         # failure (no-key / 429 / timeout / network) rather than a clean result.
         self._last_call_failed = False
+        # Cumulative health counters for observability (see ``stats``). Kept
+        # cheap (a dict of ints) so a live game incurs no measurable overhead.
+        self._stats: dict[str, int] = {
+            "calls": 0,       # network requests actually sent (cache misses)
+            "cache_hits": 0,  # served from the on-disk cache (no network)
+            "hits": 0,        # ok response with >=1 result
+            "empty_ok": 0,    # ok response with 0 results
+            "http_429": 0,    # rate-limited (after the short-retry logic)
+            "timeouts": 0,    # request timed out
+            "errors": 0,      # non-ok status / network / parse errors
+        }
+
+    @property
+    def stats(self) -> dict[str, int]:
+        """A snapshot copy of the cumulative request counters."""
+        return dict(self._stats)
 
     @property
     def last_call_failed(self) -> bool:
@@ -305,6 +322,7 @@ class GuardianNewsSource:
         cache_key = self._cache_key(params)
         cached = self._cache_get(cache_key)
         if cached is not None:
+            self._stats["cache_hits"] += 1
             return cached
 
         # Client-side throttle (free tier ~1 req/s).
@@ -312,6 +330,7 @@ class GuardianNewsSource:
         if 0 < elapsed < self.config.min_delay_seconds:
             time.sleep(self.config.min_delay_seconds - elapsed)
 
+        self._stats["calls"] += 1
         payload = None
         for attempt in range(2):  # at most one retry, only on a short-wait 429
             try:
@@ -336,6 +355,7 @@ class GuardianNewsSource:
                         f"[news_search] RATE LIMIT (HTTP 429){remaining} — "
                         "backing off to fallback"
                     )
+                    self._stats["http_429"] += 1
                     self._last_call_failed = True
                     return None
                 r.raise_for_status()
@@ -343,23 +363,31 @@ class GuardianNewsSource:
                 break
             except requests.Timeout:
                 print(f"[news_search] TIMEOUT after {self.config.timeout_seconds}s")
+                self._stats["timeouts"] += 1
                 self._last_call_failed = True
                 return None
             except Exception as exc:  # noqa: BLE001
                 print(f"[news_search] EXCEPTION: {type(exc).__name__}: {exc}")
+                self._stats["errors"] += 1
                 self._last_call_failed = True
                 return None
 
         if payload is None:  # defensive: retries exhausted without a payload
+            self._stats["errors"] += 1
             self._last_call_failed = True
             return None
 
         response = payload.get("response") if isinstance(payload, dict) else None
         if not response or response.get("status") != "ok":
             print(f"[news_search] non-ok response: {str(payload)[:200]}")
+            self._stats["errors"] += 1
             self._last_call_failed = True
             return None
 
+        if response.get("results"):
+            self._stats["hits"] += 1
+        else:
+            self._stats["empty_ok"] += 1
         self._cache_put(cache_key, response)
         return response
 
@@ -523,6 +551,14 @@ class NewsLiveSearch:
         # "Wikipedia").  Set fresh on each ``search()`` call.
         self.last_provider: str = "none"   # guardian_window | guardian_broad | wikipedia | none
         self.last_date_extracted: bool = False
+        # Cumulative routing counters for observability (see ``stats``):
+        # ``queries``, ``with_date`` and one ``provider_<name>`` per outcome.
+        self._stats: Counter = Counter()
+
+    @property
+    def stats(self) -> dict[str, int]:
+        """A snapshot copy of the cumulative routing counters."""
+        return dict(self._stats)
 
     def search(
         self,
@@ -532,11 +568,28 @@ class NewsLiveSearch:
     ) -> list[Article]:
         """Return up to ``config.max_articles`` Article objects for ``query``.
 
+        Thin wrapper over :meth:`_search` that folds the outcome into the
+        cumulative routing counters (``stats``) for observability.
+
         Args:
             query: the question text (the stated date is parsed out of it).
             category: passed through to the Wikipedia fallback so its results
                 are tagged correctly; Guardian results are always ``NEWS``.
         """
+        result = self._search(query, category=category)
+        if query and query.strip():
+            self._stats["queries"] += 1
+            if self.last_date_extracted:
+                self._stats["with_date"] += 1
+            self._stats[f"provider_{self.last_provider}"] += 1
+        return result
+
+    def _search(
+        self,
+        query: str,
+        *,
+        category: Optional[Category] = None,
+    ) -> list[Article]:
         self.last_provider = "none"
         self.last_date_extracted = False
         if not query or not query.strip():

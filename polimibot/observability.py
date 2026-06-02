@@ -395,6 +395,52 @@ def print_game_summary(result: "GameResult") -> None:
     print(f"\n{'╚' + '═' * W + '╝'}\n")
 
 
+# ── NEWS live-search stats ────────────────────────────────────────────────
+
+def print_news_stats(news_search) -> None:
+    """Print cumulative NEWS live-search health for a ``NewsLiveSearch``.
+
+    Call at the end of a session / eval. Covers the Guardian client (network
+    vs. cache requests, hit rate, rate limits, errors) and the NewsLiveSearch
+    routing (date-extraction rate, Guardian-vs-Wikipedia provenance). No-ops
+    cleanly when handed something without ``stats`` (e.g. a bare Wikipedia
+    fallback).
+
+    Args:
+        news_search: a :class:`~polimibot.rag.news_search.NewsLiveSearch`.
+    """
+    g = getattr(getattr(news_search, "guardian", None), "stats", None)
+    ls = getattr(news_search, "stats", None)
+    if not g and not ls:
+        print("print_news_stats: no NEWS stats (not a NewsLiveSearch?).")
+        return
+
+    def _pct(a, b):
+        return f"{a / b:.0%}" if b else "—"
+
+    print("\n  NEWS LIVE SEARCH STATS")
+
+    if ls:
+        q    = ls.get("queries", 0)
+        wd   = ls.get("with_date", 0)
+        gw   = ls.get("provider_guardian_window", 0)
+        gb   = ls.get("provider_guardian_broad", 0)
+        wiki = ls.get("provider_wikipedia", 0)
+        none = ls.get("provider_none", 0)
+        print(f"    Queries          : {q}  (date parsed: {wd}, {_pct(wd, q)})")
+        print(f"    Served by        : Guardian={gw + gb} (window={gw} broad={gb})  "
+              f"Wikipedia={wiki}  none={none}")
+
+    if g:
+        calls = g.get("calls", 0)
+        cache = g.get("cache_hits", 0)
+        print(f"    Guardian reqs    : {calls} network + {cache} cached  "
+              f"(cache-hit {_pct(cache, calls + cache)})")
+        print(f"    Guardian results : hits={g.get('hits', 0)}  "
+              f"empty={g.get('empty_ok', 0)}  429={g.get('http_429', 0)}  "
+              f"timeouts={g.get('timeouts', 0)}  errors={g.get('errors', 0)}")
+
+
 # ── Per-question trace ────────────────────────────────────────────────────
 
 def show_trace(sample: "EvalSample", idx: int = 0) -> None:

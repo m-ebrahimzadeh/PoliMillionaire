@@ -374,6 +374,47 @@ def test_provenance_none_when_all_empty():
     assert nls.last_provider == "none"
 
 
+# ── Stats counters (observability) ──────────────────────────────────────────────
+
+def test_guardian_stats_hit_then_cache(tmp_path):
+    src = GuardianNewsSource(_cfg(), cache_dir=tmp_path)
+    with patch.object(ns.requests, "get",
+                      return_value=_resp(_payload([_result()]))):
+        src.search("museum")          # network call → hit
+        src.search("museum")          # identical query → served from cache
+    st = src.stats
+    assert st["calls"] == 1
+    assert st["cache_hits"] == 1
+    assert st["hits"] == 1
+    assert st["empty_ok"] == 0
+
+
+def test_guardian_stats_empty_and_429(tmp_path):
+    empty_src = GuardianNewsSource(_cfg(), cache_dir=tmp_path / "a")
+    with patch.object(ns.requests, "get", return_value=_resp(_payload([]))):
+        empty_src.search("q")
+    assert empty_src.stats["empty_ok"] == 1
+    assert empty_src.stats["hits"] == 0
+
+    rl_src = GuardianNewsSource(_cfg(), cache_dir=tmp_path / "b")
+    with patch.object(ns.requests, "get",
+                      return_value=_resp(_payload([]), status_code=429)):
+        rl_src.search("q")
+    assert rl_src.stats["http_429"] == 1
+
+
+def test_news_live_search_routing_stats():
+    g = _FakeGuardian([Article("g", "Published 2026-05-17. body", Category.NEWS, "u")])
+    nls = NewsLiveSearch(_cfg(date_window_days=1), guardian=g, wiki_fallback=_FakeWiki([]))
+    nls.search("According to the 2026-05-17 article, who won?", category=Category.NEWS)
+    nls.search("which charity advocates for benefit cap changes?", category=Category.NEWS)
+    st = nls.stats
+    assert st["queries"] == 2
+    assert st["with_date"] == 1
+    assert st["provider_guardian_window"] == 1
+    assert st["provider_guardian_broad"] == 1
+
+
 # ── RAGStrategy routing ─────────────────────────────────────────────────────────
 
 class _FakeSource:
