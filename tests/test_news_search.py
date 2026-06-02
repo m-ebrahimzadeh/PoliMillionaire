@@ -66,11 +66,21 @@ def _resp(payload, *, status_code=200, raise_exc=None, headers=None):
     ("as reported on 2026-05-18?", _dt.date(2026, 5, 18)),
     ("an event on 16th May 2026 in London", _dt.date(2026, 5, 16)),
     ("released May 16, 2026 by the charity", _dt.date(2026, 5, 16)),
+    ("As per the 2026.05.06 report, who won", _dt.date(2026, 5, 6)),   # dotted
+    ("as reported on 2026/05/07", _dt.date(2026, 5, 7)),                # slashed
+    ("event on 2026.0518 involving BBC journalists", _dt.date(2026, 5, 18)),  # concatenated speech form
     ("no date here at all", None),
     ("not a date 2026-13-40 here", None),  # invalid → None
 ])
 def test_extract_question_date(text, expected):
     assert extract_question_date(text) == expected
+
+
+def test_build_news_query_strips_dotted_and_compact_dates():
+    q1 = _build_news_query("As per the 2026.05.06 report, which party claimed victory?")
+    assert "2026.05.06" not in q1 and "party" in q1
+    q2 = _build_news_query("What event occurred on 2026.0518 involving BBC journalists?")
+    assert "2026.0518" not in q2 and "BBC journalists" in q2
 
 
 def test_build_news_query_strips_date_and_boilerplate():

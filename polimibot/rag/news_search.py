@@ -69,7 +69,11 @@ _UNSET = object()
 
 # ── Date extraction ─────────────────────────────────────────────────────────
 
-_ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+# ISO and the dotted / slashed variants that show up in speech-transcribed and
+# older runs (2026-05-17, 2026.05.06, 2026/05/06).
+_ISO_DATE_RE = re.compile(r"\b(\d{4})[-./](\d{1,2})[-./](\d{1,2})\b")
+# Concatenated speech artifact: "2026.0518" → year "." MMDD (no inner separator).
+_COMPACT_DATE_RE = re.compile(r"\b(\d{4})\.(\d{2})(\d{2})\b")
 
 _MONTHS = {
     "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
@@ -92,9 +96,10 @@ _MDY_RE = re.compile(
 def extract_question_date(text: str) -> Optional[_dt.date]:
     """Pull the first publication date out of a question, if one is stated.
 
-    Handles ISO (``2026-05-17``) and the two common English prose forms
-    (``17 May 2026``, ``May 17, 2026``).  Returns ``None`` when no date is
-    present — the caller then queries without a date window.
+    Handles ISO and its dotted/slashed variants (``2026-05-17``, ``2026.05.06``,
+    ``2026/05/06``), the concatenated speech form (``2026.0518``), and the two
+    common English prose forms (``17 May 2026``, ``May 17, 2026``). Returns
+    ``None`` when no date is present — the caller then queries without a window.
 
     Args:
         text: the question string.
@@ -105,13 +110,14 @@ def extract_question_date(text: str) -> Optional[_dt.date]:
     if not text:
         return None
 
-    m = _ISO_DATE_RE.search(text)
-    if m:
-        y, mo, d = (int(g) for g in m.groups())
-        try:
-            return _dt.date(y, mo, d)
-        except ValueError:
-            pass
+    for rx in (_ISO_DATE_RE, _COMPACT_DATE_RE):
+        m = rx.search(text)
+        if m:
+            y, mo, d = (int(g) for g in m.groups())
+            try:
+                return _dt.date(y, mo, d)
+            except ValueError:
+                pass
 
     for rx, order in ((_DMY_RE, "dmy"), (_MDY_RE, "mdy")):
         m = rx.search(text)
@@ -666,6 +672,7 @@ def _build_news_query(question: str) -> str:
     q = question.strip()
     # Drop date tokens — the window param handles dates; in ``q`` they hurt.
     q = _ISO_DATE_RE.sub(" ", q)
+    q = _COMPACT_DATE_RE.sub(" ", q)
     q = _DMY_RE.sub(" ", q)
     q = _MDY_RE.sub(" ", q)
     q = _BOILERPLATE_RE.sub("", q).strip()
