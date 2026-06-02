@@ -520,6 +520,90 @@ def test_fetch_from_categories_second_pass_recovers_throttled_titles(monkeypatch
     assert state["flaky_seen"] == corpus_mod._FETCH_MAX_ATTEMPTS  # failed first pass, then retried
 
 
+def test_fetch_extracts_batch_maps_redirects_and_skips_missing_disambig(monkeypatch):
+    """§9a: a batched extracts response → Articles with the right category traced
+    back through normalize+redirect; missing and disambiguation pages dropped;
+    '== Header ==' markup preserved (exsectionformat=wiki)."""
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+    from polimibot.rag import category_seeds as cs
+
+    def fake_api_get(params):
+        return {"query": {
+            "normalized": [{"from": "dna", "to": "DNA"}],
+            "redirects": [{"from": "DNA", "to": "Deoxyribonucleic acid"}],
+            "pages": [
+                {"title": "Deoxyribonucleic acid",
+                 "extract": "DNA is a molecule.\n\n== Structure ==\nA double helix.",
+                 "fullurl": "http://x/DNA"},
+                {"title": "Cell (biology)", "extract": "A cell is the basic unit.",
+                 "fullurl": "http://x/Cell"},
+                {"title": "Nonexistent Page", "missing": True},
+                {"title": "Mercury", "extract": "many things",
+                 "pageprops": {"disambiguation": ""}, "fullurl": "http://x/Hg"},
+            ],
+        }}
+    monkeypatch.setattr(cs, "_api_get", fake_api_get)
+
+    items = [("dna", Category.SCIENCE), ("Cell (biology)", Category.SCIENCE),
+             ("Nonexistent Page", Category.SCIENCE), ("Mercury", Category.SCIENCE)]
+    arts = corpus_mod._fetch_extracts_batch(items, verbose=False)
+
+    by_title = {a.title: a for a in arts}
+    assert set(by_title) == {"Deoxyribonucleic acid", "Cell (biology)"}  # missing/disambig dropped
+    assert all(a.category is Category.SCIENCE for a in arts)             # redirect traced to category
+    assert "== Structure ==" in by_title["Deoxyribonucleic acid"].text  # section markup kept
+    assert by_title["Cell (biology)"].url == "http://x/Cell"
+
+
+def test_fetch_extracts_batch_drains_continue(monkeypatch):
+    """§9a: extracts split across a `continue` token are concatenated."""
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+    from polimibot.rag import category_seeds as cs
+
+    state = {"n": 0}
+
+    def fake_api_get(params):
+        state["n"] += 1
+        if state["n"] == 1:
+            return {"query": {"pages": [{"title": "Atom", "extract": "Part one. "}]},
+                    "continue": {"excontinue": 1}}
+        return {"query": {"pages": [{"title": "Atom", "extract": "Part two."}]}}
+    monkeypatch.setattr(cs, "_api_get", fake_api_get)
+
+    arts = corpus_mod._fetch_extracts_batch([("Atom", Category.SCIENCE)], verbose=False)
+    assert len(arts) == 1
+    assert arts[0].text == "Part one. Part two."
+    assert state["n"] == 2
+
+
+def test_harvest_bulk_concurrent_recovers_failed_batch(monkeypatch):
+    """§9b: a batch whose request hard-fails on the first pass is retried once and
+    recovered, so no title is silently dropped."""
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+
+    calls: dict = {}
+
+    def fake_batch(batch, *, verbose=False):
+        key = tuple(t for t, _ in batch)
+        calls[key] = calls.get(key, 0) + 1
+        if any(t == "Flaky" for t, _ in batch) and calls[key] == 1:
+            raise ValueError("empty response body from MediaWiki API")
+        return [corpus_mod.Article(title=t, text=f"about {t}", category=c)
+                for t, c in batch]
+    monkeypatch.setattr(corpus_mod, "_fetch_extracts_batch", fake_batch)
+
+    items = [(f"T{i}", Category.SCIENCE) for i in range(25)] + [("Flaky", Category.SCIENCE)]
+    arts = corpus_mod._harvest_bulk_concurrent(
+        items, workers=3, checkpoint_path=None, checkpoint_every=250, verbose=False)
+
+    titles = {a.title for a in arts}
+    assert "Flaky" in titles            # recovered on the second pass
+    assert len(arts) == 26
+
+
 def test_corpus_version_is_positive_int():
     from polimibot.rag.corpus import CORPUS_VERSION
     assert isinstance(CORPUS_VERSION, int) and CORPUS_VERSION >= 2

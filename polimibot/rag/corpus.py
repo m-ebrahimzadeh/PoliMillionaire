@@ -469,6 +469,150 @@ def _fetch_one(title: str, category: Category, *, verbose: bool,
     return None
 
 
+# ── Batched, concurrent harvest (fast path for the bulk category crawl) ─────────
+# The `wikipedia` library fetches one page at a time and can't batch content, so
+# a 5000-title crawl costs ~3 API calls/title plus a sleep between each. The
+# MediaWiki ``prop=extracts`` API returns full plaintext for up to 20 titles in a
+# single request, so batching cuts the round-trips ~20x; a small thread pool then
+# cuts wall-clock another ~Nx. ``exsectionformat=wiki`` keeps the ``== Header ==``
+# markup that the chunker parses, so the produced corpus is byte-for-byte the same
+# shape as the per-title path.
+_EXTRACTS_BATCH_SIZE = 20      # MediaWiki caps prop=extracts at 20 titles/request
+_HARVEST_WORKERS_DEFAULT = 5   # concurrent extract batches; polite + fast
+
+
+def _fetch_extracts_batch(items: list[tuple[str, "Category"]], *,
+                          verbose: bool = False) -> list[Article]:
+    """Fetch full plaintext for up to ``_EXTRACTS_BATCH_SIZE`` titles in one
+    MediaWiki request and return their Articles.
+
+    ``items`` is ``[(title, category), …]``. Pages flagged ``missing`` or carrying
+    a ``disambiguation`` pageprop are skipped. Raises whatever ``_api_get`` raises
+    on a hard request failure so the caller can retry the whole batch.
+    """
+    from .category_seeds import _api_get
+
+    title_to_cat = {t: c for t, c in items}
+    titles = list(title_to_cat)
+    if not titles:
+        return []
+
+    base = {
+        "action": "query", "format": "json", "formatversion": "2",
+        "prop": "extracts|info|pageprops",
+        "explaintext": "1", "exsectionformat": "wiki", "exlimit": "max",
+        "inprop": "url", "ppprop": "disambiguation", "redirects": "1",
+        "titles": "|".join(titles),
+    }
+
+    # Trace each returned/resolved title back to the requested one (the API may
+    # normalise casing and follow redirects), so we can recover its category.
+    req_of: dict[str, str] = {t: t for t in titles}
+    pages_by_title: dict[str, dict] = {}
+    cont: dict = {}
+    while True:
+        params = dict(base)
+        params.update(cont)
+        data = _api_get(params)
+        q = data.get("query", {})
+        for n in q.get("normalized", []):
+            req_of[n["to"]] = req_of.get(n["from"], n["from"])
+        for r in q.get("redirects", []):
+            req_of[r["to"]] = req_of.get(r["from"], r["from"])
+        for p in q.get("pages", []):
+            cur = pages_by_title.setdefault(p.get("title", ""), {})
+            for k, v in p.items():
+                if k != "extract":
+                    cur[k] = v
+            if p.get("extract"):
+                cur["extract"] = cur.get("extract", "") + p["extract"]
+        cont = data.get("continue") or {}
+        if not cont:
+            break
+
+    articles: list[Article] = []
+    for t, p in pages_by_title.items():
+        if p.get("missing") or "disambiguation" in (p.get("pageprops") or {}):
+            continue
+        extract = p.get("extract")
+        if not extract:
+            continue
+        cat = title_to_cat.get(req_of.get(t, t))
+        if cat is None:
+            continue   # couldn't trace back to a requested title — shouldn't happen
+        articles.append(Article(
+            title=p.get("title", t),
+            text=clean_wikipedia_text(extract),
+            category=cat,
+            url=p.get("fullurl", ""),
+            competition=_competition_for(cat),
+        ))
+    return articles
+
+
+def _harvest_bulk_concurrent(
+    items: list[tuple["Category", str]] | list[tuple[str, "Category"]],
+    *,
+    workers: int,
+    checkpoint_path: Optional[Path],
+    checkpoint_every: int,
+    verbose: bool,
+) -> list[Article]:
+    """Fetch ``[(title, category), …]`` concurrently in batched extract requests.
+
+    Splits the work into ``_EXTRACTS_BATCH_SIZE`` batches run over a thread pool,
+    with a single second pass over any batch whose request hard-failed (a
+    rate-limit casualty). Checkpoints the running corpus every ``checkpoint_every``
+    articles so a crash is never total loss.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    batches = [items[i:i + _EXTRACTS_BATCH_SIZE]
+               for i in range(0, len(items), _EXTRACTS_BATCH_SIZE)]
+
+    def _run(batch):
+        """Return (articles, failed_batch_or_None)."""
+        try:
+            return _fetch_extracts_batch(batch, verbose=verbose), None
+        except Exception as exc:   # whole-batch request failure → retry-able
+            if verbose:
+                print(f"    batch failed ({len(batch)} titles): {exc!r} — will retry")
+            return [], batch
+
+    def _drain(batch_list, label):
+        out: list[Article] = []
+        failed: list = []
+        done = 0
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            for arts, fail in pool.map(_run, batch_list):
+                out.extend(arts)
+                if fail:
+                    failed.append(fail)
+                done += 1
+                if verbose and done % 10 == 0:
+                    print(f"  ... {label}: {done}/{len(batch_list)} batches "
+                          f"({len(out)} articles)")
+                if (checkpoint_path is not None and out
+                        and len(out) % checkpoint_every < _EXTRACTS_BATCH_SIZE
+                        and len(out) >= checkpoint_every):
+                    save_raw_corpus(out, checkpoint_path)
+        return out, failed
+
+    articles, failed = _drain(batches, "fetching")
+    if failed:
+        if verbose:
+            print(f"\nSecond pass: retrying {len(failed)} failed batches "
+                  f"({sum(len(b) for b in failed)} titles) on a calmer connection…")
+        recovered, still_failed = _drain(failed, "second pass")
+        articles.extend(recovered)
+        if verbose and still_failed:
+            print(f"  {sum(len(b) for b in still_failed)} titles still unreachable — skipped.")
+
+    if checkpoint_path is not None and articles:
+        save_raw_corpus(articles, checkpoint_path)
+    return articles
+
+
 def fetch_articles_from_categories(
     categories: list[Category] | None = None,
     *,
