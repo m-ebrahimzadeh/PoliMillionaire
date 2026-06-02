@@ -1246,6 +1246,67 @@ report.print_summary()   # accuracy, ECE, latency, per-category</code></pre>
     </div>
 </section>
 
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION: Measured Results -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="results">
+    <div class="section-number">Results</div>
+    <h2>Measured Results</h2>
+
+    <p>All figures are measured on the <strong>gold set</strong> (questions with confirmed-correct answers mined from live games). Because the set is built from answerable questions, absolute accuracies run high — the meaningful signal is the <em>relative</em> comparison across strategies on the same set.</p>
+
+    <div class="metric-grid">
+        <div class="metric-card">
+            <div class="value">96.8%</div>
+            <div class="label">Best overall accuracy (gated, n=895)</div>
+        </div>
+        <div class="metric-card">
+            <div class="value">0.013</div>
+            <div class="label">ECE — near-perfect calibration</div>
+        </div>
+        <div class="metric-card">
+            <div class="value">1.4 s</div>
+            <div class="label">p50 latency (p95 1.8 s)</div>
+        </div>
+        <div class="metric-card">
+            <div class="value">Level 15</div>
+            <div class="label">€1,024,000 — top of the live ladder</div>
+        </div>
+    </div>
+
+    <p>The strongest single configuration is the <strong>confidence-gated</strong> strategy — a bare-LLM primary that escalates to live-RAG only when its top-two margin is below 0.30. In live play it reached <strong>level 15 / €1,024,000</strong> in Science, History, and Philosophy.</p>
+
+    <h3>Best Configuration per Category</h3>
+    <table class="comparison-table">
+        <tr><th>Category</th><th>Best configuration</th><th>Accuracy (n)</th><th>Why it works</th></tr>
+        <tr><td><strong>Entertainment</strong></td><td>Qwen3-8B · hybrid RAG</td><td><strong>94.0%</strong> (251)</td><td>Pop-culture facts — semantic + exact-entity retrieval both help</td></tr>
+        <tr><td><strong>Ancient History &amp; Politics</strong></td><td>Phi-4 · confidence-gated</td><td><strong>94.8%</strong> (484)</td><td>Strong parametric recall; the gate avoids RAG context-distraction</td></tr>
+        <tr><td><strong>Science &amp; Nature</strong></td><td>Qwen3-8B · hybrid RAG</td><td><strong>97.7%</strong> (894)</td><td>Entity-specific facts; reranked hybrid retrieval surfaces the right passage</td></tr>
+        <tr><td><strong>Maths</strong></td><td>Rewrite-tool chain (Phi-4)</td><td><strong>87.5%</strong> (273)</td><td>No article computes the answer; tools + SymPy fix arithmetic (best bare LLM &asymp; 75%)</td></tr>
+        <tr><td><strong>Philosophy &amp; Psychology</strong></td><td>Phi-4 · confidence-gated</td><td><strong>93.8%</strong> (80)</td><td>Same recall profile as History</td></tr>
+        <tr><td><strong>News</strong></td><td>Confidence-gated + Guardian</td><td>small sample</td><td>Date-aware retrieval supplies post-cutoff facts; live play reached <strong>level 14 (Qwen3-8B)</strong></td></tr>
+    </table>
+
+    <div class="card tip">
+        <p><strong>Chain-of-thought was ruled out by the data.</strong> For the same model, zero-shot vs. CoT leaves accuracy unchanged (95.7%) but blows calibration error from <strong>0.038 &rarr; 0.46</strong> and latency from <strong>1.5 s &rarr; 27 s</strong>. Logit-scoring the four option tokens in a single forward pass is both faster and far better calibrated.</p>
+    </div>
+
+    <div class="card warning">
+        <p><strong>Limitations.</strong> News is under-evaluated — the Guardian free tier rate-limits requests, so only a handful of dated news questions could be harvested. The gold set is mined from confirmed-correct answers, so absolute accuracies are optimistic and should be read as relative comparisons. Maths tops out near 88% on multi-step word problems, and the Philosophy/News samples are thin.</p>
+    </div>
+
+    <h3>Future Work</h3>
+    <table class="comparison-table">
+        <tr><th>Direction</th><th>Why</th></tr>
+        <tr><td>Wider news ingestion (multiple free APIs / RSS)</td><td>Remove the Guardian rate-limit bottleneck; grow the dated-question set</td></tr>
+        <tr><td>Wikidata for Entertainment</td><td>Relational queries (director-of, release-year) that prose retrieval handles poorly</td></tr>
+        <tr><td>Multi-hop / agentic Maths</td><td>Word problems needing more than one computation step</td></tr>
+        <tr><td>Stronger retrieval (bge-m3 + Recall@k study)</td><td>Push the RAG categories further with measured retrieval quality</td></tr>
+        <tr><td>Unify per-category backbones; revisit ensemble / tiered</td><td>One routed model instead of a separate model per category</td></tr>
+        <tr><td>Held-out, non-mined test set</td><td>Remove gold-set bias; report unbiased accuracy</td></tr>
+    </table>
+</section>
+
 </div>
 
 <script>
