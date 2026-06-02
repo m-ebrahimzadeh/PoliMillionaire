@@ -218,6 +218,166 @@ CATEGORY_SEEDS: dict[Category, list] = {
 }
 
 
+# ── Concept seed categories ─────────────────────────────────────────────────
+# CATEGORY_SEEDS above harvests NAMED ENTITIES (people, works, elements, events).
+# But the bulk of the real questions — Philosophy & Psychology dominates, and
+# Science leans conceptual too — are CONCEPTUAL/definitional ("the bystander
+# effect", "a GAN", "necessary vs sufficient cause", "reductive physicalism").
+# An entity harvest never surfaces those nodes. These concept categories cover
+# that demand, keyed to the same Category enum.
+#
+# Harvested with one level of subcategory recursion (``_CONCEPT_DEPTH``): concept
+# taxonomies routinely nest their pages a level below the top category, and the
+# per-category cap still bounds the crawl. Categories that don't exist are
+# skipped gracefully by the harvester — the explicit ``CONCEPT_TITLES`` list
+# (corpus.py) is the guaranteed-inclusion safety net for specific proven-gap
+# articles. MATHS (procedural) and NEWS (live Guardian path) get none.
+_CONCEPT_DEPTH = 1
+
+CONCEPT_SEEDS: dict[Category, list] = {
+    Category.PHILOSOPHY: [
+        ("Psychological_concepts", 300),
+        ("Cognitive_biases", 200),
+        "Psychotherapy",
+        "Interpersonal_relationships",
+        "Social_psychology",
+        "Cognitive_science",
+        "Philosophy_of_mind",
+        "Concepts_in_ethics",
+        "Concepts_in_epistemology",
+        "Concepts_in_metaphysics",
+        "Logical_fallacies",
+        ("Political_ideologies", 300),
+        "Political_theories",
+        "Forms_of_government",
+        "Existentialism",
+        "Schools_and_traditions_in_philosophy",
+    ],
+    Category.SCIENCE: [
+        ("Concepts_in_physics", 300),
+        "Cell_biology",
+        "Biological_processes",
+        ("Machine_learning", 200),
+        "Scientific_method",
+        "Metabolism",
+        "Branches_of_chemistry",
+        "Chemical_processes",
+        "States_of_matter",
+    ],
+    Category.HISTORY: [
+        "Roman_law",
+        "Social_classes_in_ancient_Rome",
+        ("Battles_involving_the_Roman_Republic", 200),
+        "Culture_of_ancient_Rome",
+        "Religion_in_ancient_Rome",
+        "Mystery_religions",
+        "Forms_of_government",
+        "Hellenistic_civilization",
+    ],
+    Category.ENTERTAINMENT: [
+        ("Friends_(TV_series)_episodes", 100),
+        "Music_genres",
+        "Film_genres",
+        "Narrative_techniques",
+    ],
+}
+
+
+# ── Explicit concept titles (guaranteed inclusion) ──────────────────────────
+# Category harvesting is breadth-first and alphabetical-capped, so a specific
+# node the bot has demonstrably missed can still fall outside the crawl. These
+# are exact Wikipedia article titles, fetched directly (bypassing the category
+# caps) so the proven-gap concepts are *guaranteed* present. Derived from every
+# question in the two run logs plus the gap analysis. A title that 404s or
+# disambiguates with no good option is skipped gracefully at fetch time.
+CONCEPT_TITLES: dict[Category, list[str]] = {
+    Category.ENTERTAINMENT: [
+        "Brad Pitt", "Marilyn Monroe", "Charlie Chaplin", "Bette Davis",
+        "James Cameron", "Martin Scorsese", "Steven Spielberg",
+        "John Williams", "Whitney Houston", "I Will Always Love You",
+        "Johnny Cash", "A Boy Named Sue", "Jimi Hendrix", "Audio feedback",
+        "The Beatles", "Paul McCartney", "Pink Floyd", "Psychedelic pop",
+        "U2", "Achtung Baby", "Electronic dance music", "Joey Tribbiani",
+        "The One Where Dr. Ramoray Dies", "Joker (The Dark Knight)",
+        "2001: A Space Odyssey (film)", "The Shawshank Redemption",
+        "Shared universe", "Broadway Danny Rose",
+    ],
+    Category.HISTORY: [
+        "Maat", "Peregrinus (Roman)", "Ancient Roman architecture",
+        "John Hyrcanus", "Edomites", "Battle of Actium", "Roman citizenship",
+        "Greco-Roman mysteries", "Achaeans (Homer)", "Homer", "Iliad",
+        "Acropolis of Athens", "Demography of the Roman Empire", "Babylonia",
+        "Hammurabi", "Assyria", "Battle of the Milvian Bridge", "Freedman",
+        "Cleopatra", "Ahhiyawa", "Tawagalawa letter", "Ancient Egypt",
+        "Parthenon", "Pericles", "Ancient Roman cuisine",
+        "Edict of Milan", "Constantine the Great", "Pharaoh",
+        "Classical antiquity", "Virtus", "Ancient Egyptian race controversy",
+        "Byzantine Empire", "Macedonia (ancient kingdom)", "Aristotle",
+        "Corpus Juris Civilis", "Roman law", "Ariarathes V of Cappadocia",
+        "Plato", "Theory of forms", "Autochthon (ancient Greece)",
+        "Names of Athens", "Antikythera mechanism", "Form of the Good",
+        "Roman historiography",
+    ],
+    Category.SCIENCE: [
+        "Unicellular organism", "Thermal insulation", "Wave function collapse",
+        "Quantum decoherence", "Giant-impact hypothesis", "Origin of the Moon",
+        "Whistle", "Sound", "Star", "Cell membrane", "Protein", "Quartz",
+        "Bird migration", "Water cycle", "Transpiration", "Protist",
+        "Paramecium", "Human digestive system", "Refraction", "Cooking oil",
+        "Fat", "Virial theorem",
+        "Globally Harmonized System of Classification and Labelling of Chemicals",
+        "Wind turbine", "Xanthan gum", "Cell (biology)", "Carbon cycle",
+        "Hydrolysis", "Inverted sugar syrup", "Sucrose",
+        "Necessity and sufficiency", "Causality", "Propylene glycol", "Diol",
+        "Henry's law", "Saccharomyces cerevisiae", "Entropy",
+        "Second law of thermodynamics", "Weathering", "Sedimentary rock",
+        "Scientific method", "Hypothesis", "Conservation of energy",
+        "Reflecting telescope", "Arthropod", "Chordate", "DNA",
+    ],
+    Category.PHILOSOPHY: [
+        "Thales of Miletus", "Central nervous system", "Reification (Marxism)",
+        "György Lukács", "Illiberal democracy", "Generative adversarial network",
+        "Neural oscillation", "Bertrand Russell", "Gottlob Frege",
+        "Logical atomism", "Pan-Slavism", "Zebrafish", "Stockholm syndrome",
+        "Posttraumatic stress disorder", "Will to power",
+        "The World as Will and Representation", "Communitarianism",
+        "Negative and positive rights", "George Santayana",
+        "The Sense of Beauty", "Peronism", "Right-wing populism", "Taboo",
+        "Separatism", "Existentialism", "Jean-Paul Sartre",
+        "Colorless green ideas sleep furiously", "Corporate social responsibility",
+        "Nick Bostrom", "Superintelligence", "Global catastrophic risk",
+        "Id, ego and superego", "Scientism", "Al-Kindi", "Active intellect",
+        "Stoic logic", "Supererogation", "Richard Rorty", "Codependency",
+        "David Hume", "Logical positivism", "Emmanuel Levinas",
+        "Other (philosophy)", "Categorical imperative", "Social isolation",
+        "Person-centered therapy", "Carl Rogers", "Bystander effect",
+        "Limerence", "Barbell strategy", "Nassim Nicholas Taleb",
+        "Self-regulation", "Cognitive dissonance", "John Henry Newman",
+        "Natural religion", "Chromesthesia", "Absolute pitch", "Synesthesia",
+        "Just-world hypothesis", "Victim blaming", "Attachment theory",
+        "Parasocial interaction", "Purity spiral", "Informal logic",
+        "Formal logic", "Queerplatonic relationship", "Embodied cognition",
+        "Simone de Beauvoir", "Polysemy", "Median voter theorem",
+        "Collective unconscious", "Jungian archetypes", "Physicalism",
+        "Theory of mind", "Computability theory", "Domino theory",
+        "Legalism (Chinese philosophy)", "Ad hominem", "Fiscal conservatism",
+        "Personal identity", "Pacifism", "Nonviolent resistance",
+        "New Left", "Jean Piaget", "Milgram experiment",
+        "Abstract and concrete", "Atlanticism", "Aphantasia", "Karl Marx",
+        "Carl Jung", "Sigmund Freud", "Friedrich Nietzsche",
+        "Arthur Schopenhauer",
+    ],
+    # MATHS: definitional anchors only — the procedural questions are tool work,
+    # but a handful of named concepts ("Type I error", "p-value") do appear.
+    Category.MATHS: [
+        "Type I and type II errors", "P-value", "Student's t-test",
+        "Statistical hypothesis testing", "Group (mathematics)",
+        "Field (mathematics)", "Integral domain", "Linear regression",
+        "Stratified sampling", "Sampling (statistics)",
+    ],
+}
+
+
 # ── Public API ───────────────────────────────────────────────────────────
 
 def harvest_titles(
@@ -275,37 +435,28 @@ def harvest_titles(
     out: dict[Category, list[str]] = {c: list(cached[c]) for c in cached_targets}
 
     for cat in missing_targets:
-        seeds = CATEGORY_SEEDS.get(cat, [])
+        entity_seeds = CATEGORY_SEEDS.get(cat, [])
+        concept_seeds = CONCEPT_SEEDS.get(cat, [])
         if verbose:
-            print(f"\n[{cat.value}] harvesting from {len(seeds)} seed categories…")
+            print(
+                f"\n[{cat.value}] harvesting from {len(entity_seeds)} entity + "
+                f"{len(concept_seeds)} concept seed categories…"
+            )
 
         titles: list[str] = []
         seen: set[str] = set()
-        for seed in seeds:
-            # Normalise seed entries: either bare string or (name, cap) tuple.
-            if isinstance(seed, tuple):
-                cat_name, cap = seed
-            else:
-                cat_name, cap = seed, max_per_category
-
-            try:
-                fetched = _fetch_category_members(
-                    cat_name, limit=cap, max_depth=max_depth, verbose=verbose,
-                )
-            except Exception as exc:  # noqa: BLE001 — never abort the whole harvest
-                if verbose:
-                    print(f"  ! failed to fetch Category:{cat_name}: {exc}")
-                continue
-
-            kept = 0
-            for title in fetched:
-                if title in seen:
-                    continue
-                seen.add(title)
-                titles.append(title)
-                kept += 1
-            if verbose:
-                print(f"  + Category:{cat_name}: {len(fetched)} → {kept} new (total {len(titles)})")
+        # Entity seeds at the caller's depth (0 by default — wide flat lists).
+        _harvest_seeds(
+            entity_seeds, titles=titles, seen=seen,
+            default_cap=max_per_category, max_depth=max_depth, verbose=verbose,
+        )
+        # Concept seeds one level deeper (taxonomies nest a level down), but
+        # never shallower than the caller asked for.
+        _harvest_seeds(
+            concept_seeds, titles=titles, seen=seen,
+            default_cap=max_per_category, max_depth=max(max_depth, _CONCEPT_DEPTH),
+            verbose=verbose,
+        )
 
         out[cat] = titles
         if verbose:
@@ -326,6 +477,48 @@ def harvest_titles(
             print(f"\nSaved harvested titles → {cache_path}")
 
     return out
+
+
+def _harvest_seeds(
+    seeds: list,
+    *,
+    titles: list[str],
+    seen: set[str],
+    default_cap: int,
+    max_depth: int,
+    verbose: bool,
+) -> None:
+    """Harvest one seed list into ``titles`` (deduped via ``seen``), in place.
+
+    Each seed is a bare ``"Category_Name"`` (uses ``default_cap``) or a
+    ``("Category_Name", cap)`` tuple. A failed category is logged and skipped —
+    one bad name never aborts the harvest. Used for both the entity and concept
+    seed lists, which differ only in their ``max_depth``.
+    """
+    for seed in seeds:
+        if isinstance(seed, tuple):
+            cat_name, cap = seed
+        else:
+            cat_name, cap = seed, default_cap
+
+        try:
+            fetched = _fetch_category_members(
+                cat_name, limit=cap, max_depth=max_depth, verbose=verbose,
+            )
+        except Exception as exc:  # noqa: BLE001 — never abort the whole harvest
+            if verbose:
+                print(f"  ! failed to fetch Category:{cat_name}: {exc}")
+            continue
+
+        kept = 0
+        for title in fetched:
+            if title in seen:
+                continue
+            seen.add(title)
+            titles.append(title)
+            kept += 1
+        if verbose:
+            print(f"  + Category:{cat_name}: {len(fetched)} → {kept} new (total {len(titles)})")
 
 
 # ── MediaWiki API plumbing ────────────────────────────────────────────────

@@ -28,6 +28,19 @@ def test_tokenize_lowercases_no_stopwords_flag():
     ]
 
 
+def test_bm25_matches_on_alias_absent_from_body():
+    """A lead chunk carrying an alias the body never spells out is still
+    retrievable by that alias — the redirect-phrasing recall fix."""
+    lead = Chunk(text="is the eighteenth episode of the second season.",
+                 source="The One Where Dr. Ramoray Dies", chunk_id=0,
+                 is_lead=True, aliases=("Dr. Drake Ramoray",))
+    other = Chunk(text="unrelated content about coffee.", source="Central Perk",
+                  chunk_id=0)
+    idx = BM25Index([lead, other])
+    hits = idx.search("Drake Ramoray", k=2)
+    assert hits and hits[0][0].source == "The One Where Dr. Ramoray Dies"
+
+
 def test_tokenize_drops_punctuation():
     # "it" and "s" come from "It's"; "it" is a stopword → removed.
     # "hello", "world", "s", "49", "bc" survive; "it" does not.

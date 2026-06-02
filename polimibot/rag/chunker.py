@@ -26,7 +26,8 @@ CHUNKER_VERSION = 2
 # Tracked separately from CHUNKER_VERSION because it does NOT alter the stored
 # ``Chunk.text`` — only the string handed to the passage embedder. Recorded in
 # the index manifest so a grounding change is visible to a future loader.
-EMBED_TEXT_VERSION = 1
+# v2: ground on the full path (title + aliases + section), not just the title.
+EMBED_TEXT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,10 @@ class Chunk:
       ``is_lead`` — ``True`` for chunks from the article's lead section, which
           concentrates the most-queried trivia facts (birth dates, "first X").
       ``url`` — source document URL, for citations and debugging.
+      ``aliases`` — redirect titles / alternate phrasings for the source
+          article, set on the lead chunk so a question that names the entity by
+          an alias still matches. Folded into ``embedding_text`` (dense) and the
+          BM25 token stream (lexical). ``None`` when the article has none.
     """
     text: str
     source: str             # document title / filename — shown in the prompt
@@ -55,6 +60,7 @@ class Chunk:
     section_title: Optional[str] = None
     is_lead: bool = False
     url: Optional[str] = None
+    aliases: Optional[tuple[str, ...]] = None
 
     @property
     def word_count(self) -> int:
@@ -64,14 +70,21 @@ class Chunk:
 
 
 def embedding_text(chunk: Chunk) -> str:
-    """Return the string fed to the passage embedder — chunk grounded in source.
+    """Return the string fed to the passage embedder — chunk grounded in its path.
 
     ``Chunk.text`` is kept pure: display, BM25, and the prompt all use it
-    verbatim. The *embedded* form, however, is prefixed with the source title
-    so every passage vector is anchored to its entity. Trivia questions name
-    the entity ("Who painted the Mona Lisa?"), so grounding each passage
-    embedding in its article title sharpens cross-article matching — a chunk
-    reading "was painted in 1503" embeds as "Mona Lisa: was painted in 1503".
+    verbatim. The *embedded* form is prefixed with the chunk's provenance path
+    so every passage vector is anchored to its entity AND its section:
+
+        ``"{title}[ (also known as: a; b)][ — {section}]: {text}"``
+
+    Grounding on the title sharpens cross-article matching (trivia questions
+    name the entity); adding the section path lets the cross-encoder tell a
+    deep-fact chunk apart from the generic lead of the same article — the
+    failure mode where a broad lead reranked to ~0 against a specific question.
+    Aliases fold redirect phrasings into the vector so "Dr. Drake Ramoray"
+    reaches the episode article. A sectionless, aliasless chunk reduces to the
+    prior ``"{title}: {text}"`` form, so old behaviour is preserved exactly.
 
     This must be applied identically at EVERY embed site (index build,
     live-search scoring, IndexGrower) or vectors land in inconsistent spaces.
@@ -81,7 +94,12 @@ def embedding_text(chunk: Chunk) -> str:
     source = chunk.source.strip() if chunk.source else ""
     if not source:
         return chunk.text
-    return f"{source}: {chunk.text}"
+    head = source
+    if chunk.aliases:
+        head += " (also known as: " + "; ".join(chunk.aliases) + ")"
+    if chunk.section_title:
+        head += f" — {chunk.section_title}"
+    return f"{head}: {chunk.text}"
 
 
 # Wikipedia section header line: "== Early life ==", "=== Career ===", ...
@@ -184,6 +202,7 @@ def chunk_text(
     min_chunk_words: Optional[int] = None,
     category: Optional[str] = None,
     url: Optional[str] = None,
+    aliases: Optional[tuple[str, ...]] = None,
 ) -> list[Chunk]:
     """Split text into overlapping word-windows that respect sentence and
     section boundaries.
@@ -202,6 +221,9 @@ def chunk_text(
         category: optional category tag stamped on every chunk produced from
             this document. The retriever's category filter reads it.
         url: optional source URL stamped on every chunk (provenance/citations).
+        aliases: optional redirect/alt phrasings for this document. Stamped on
+            the lead chunk(s) only, so the entity's alternate names join the
+            embedded form and BM25 stream without inflating every chunk.
 
     Returns:
         List of Chunk objects, in document order. ``chunk_id`` is the 0-based
@@ -241,6 +263,9 @@ def chunk_text(
                 section_title=section_title,
                 is_lead=is_lead,
                 url=url,
+                # Aliases ride the lead chunk only — that's the one most "about"
+                # the entity, so alt names belong there, not on every chunk.
+                aliases=aliases if is_lead else None,
             ))
             cid += 1
 

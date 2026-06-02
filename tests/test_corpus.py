@@ -242,6 +242,442 @@ def test_fetch_one_skips_when_no_disambig_option_matches(monkeypatch):
     assert out is None
 
 
+def _install_disambig_wiki(monkeypatch, seed, options, lookup):
+    """Install a stand-in `wikipedia` module where `wikipedia.page(seed)` raises
+    a DisambiguationError over `options`, and each option resolves via `lookup`.
+    Returns nothing — call `_fetch_one` afterwards."""
+    import sys
+
+    class _Dis(Exception):
+        def __init__(self, opts): self.options = opts
+    class _PageErr(Exception):
+        pass
+
+    def _page(name, auto_suggest=False):
+        if name == seed:
+            raise _Dis(options)
+        return lookup[name]
+
+    class _Wiki:
+        DisambiguationError = _Dis
+        PageError = _PageErr
+        page = staticmethod(_page)
+        @staticmethod
+        def set_lang(_): pass
+
+    monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
+
+
+class _BoomSummaryPage:
+    """A page whose *lazy* .summary access raises like a throttled/empty
+    MediaWiki response — the exact failure that crashed the Colab crawl."""
+    def __init__(self, title):
+        self.title, self.url, self.content = title, "", "body text"
+    @property
+    def summary(self):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+
+class _PlainPage:
+    def __init__(self, title, summary):
+        self.title, self.url, self.content, self.summary = title, "", summary, summary
+
+
+def test_fetch_one_skips_disambig_option_with_failing_lazy_summary(monkeypatch):
+    """Regression (§8a): when a disambiguation option's lazy .summary raises,
+    _fetch_one must skip it and walk on — not let the error escape and kill the
+    whole crawl. Here the first option booms, the second resolves cleanly."""
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+
+    _install_disambig_wiki(
+        monkeypatch, seed="Charlie",
+        options=["Charlie (elephant)", "Charlie Chaplin"],
+        lookup={
+            "Charlie (elephant)": _BoomSummaryPage("Charlie (elephant)"),
+            "Charlie Chaplin": _PlainPage("Charlie Chaplin",
+                                          "Charlie Chaplin was a comic actor."),
+        },
+    )
+    article = corpus_mod._fetch_one("Charlie", Category.ENTERTAINMENT,
+                                    verbose=False, fetch_aliases=False)
+    assert article is not None
+    assert article.title == "Charlie Chaplin"
+
+
+def test_fetch_one_returns_none_when_every_disambig_option_errors(monkeypatch):
+    """Regression (§8a): if *every* option's lazy fetch raises, _fetch_one returns
+    None — it never propagates the exception out of the per-title fetch."""
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+
+    _install_disambig_wiki(
+        monkeypatch, seed="Charlie",
+        options=["Charlie (elephant)", "Charlie (parrot)"],
+        lookup={
+            "Charlie (elephant)": _BoomSummaryPage("Charlie (elephant)"),
+            "Charlie (parrot)": _BoomSummaryPage("Charlie (parrot)"),
+        },
+    )
+    out = corpus_mod._fetch_one("Charlie", Category.ENTERTAINMENT,
+                                verbose=False, fetch_aliases=False)
+    assert out is None
+
+
+def test_configure_wikipedia_sets_ua_and_rate_limiting():
+    """§8b: _configure_wikipedia must set a contact UA and enable rate limiting
+    (the throttle defence) — and tolerate a stub missing the optional setters."""
+    from datetime import timedelta
+    from polimibot.rag import corpus
+
+    calls = {}
+
+    class _FullWiki:
+        @staticmethod
+        def set_lang(lang): calls["lang"] = lang
+        @staticmethod
+        def set_user_agent(ua): calls["ua"] = ua
+        @staticmethod
+        def set_rate_limiting(on, min_wait=None):
+            calls["rate"] = (on, min_wait)
+
+    corpus._configure_wikipedia(_FullWiki)
+    assert calls["lang"] == "en"
+    assert "PoliMillionaire" in calls["ua"] and "contact:" in calls["ua"]
+    on, min_wait = calls["rate"]
+    assert on is True and isinstance(min_wait, timedelta) and min_wait.microseconds > 0
+
+    # A stripped stub with only set_lang must not raise.
+    class _BareWiki:
+        @staticmethod
+        def set_lang(lang): pass
+    corpus._configure_wikipedia(_BareWiki)  # no exception = pass
+
+
+def test_fetch_from_categories_checkpoints_partial_harvest(tmp_path, monkeypatch):
+    """§8c/§9: the batched harvest writes a checkpoint file, so a crash mid-harvest
+    leaves a durable partial corpus on disk."""
+    import sys
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+    from polimibot.rag import category_seeds as cs
+
+    titles = [f"Article {n}" for n in range(45)]   # spans >2 batches of 20
+    monkeypatch.setattr(cs, "harvest_titles",
+                        lambda categories, **kw: {Category.SCIENCE: list(titles)})
+    monkeypatch.setattr(cs, "CONCEPT_TITLES", {})
+
+    def fake_api_get(params):
+        reqs = params["titles"].split("|")
+        return {"query": {"pages": [
+            {"title": t, "extract": f"Body of {t}.", "fullurl": ""} for t in reqs]}}
+    monkeypatch.setattr(cs, "_api_get", fake_api_get)
+
+    class _Wiki:   # only _configure_wikipedia's set_lang is needed
+        @staticmethod
+        def set_lang(_): pass
+    monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
+
+    ckpt = tmp_path / "corpus.partial.jsonl"
+    arts = corpus_mod.fetch_articles_from_categories(
+        categories=[Category.SCIENCE], cache_path=None, fetch_aliases=False,
+        checkpoint_path=ckpt, checkpoint_every=20, harvest_workers=2, verbose=False,
+    )
+    assert len(arts) == 45
+    assert ckpt.exists(), "checkpoint file should exist after the batched harvest"
+    assert len(corpus_mod.load_raw_corpus(ckpt)) == 45   # final checkpoint has all
+
+
+def test_fetch_by_title_resolves_and_drops_unresolvable(monkeypatch):
+    """§8d: the gap queue canonicalises each title via wikipedia.search before
+    fetching — valid fragments resolve to real titles, no-hit junk is skipped
+    so it never reaches wikipedia.page()."""
+    import sys
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+
+    search_map = {
+        "the bystander effect": ["Bystander effect"],
+        "Beatles To": [],   # fragment → no usable hit → skipped
+    }
+    fetched: list[str] = []
+
+    class _Page:
+        def __init__(self, title):
+            self.title, self.url = title, ""
+            self.content = self.summary = f"About {title}."
+
+    class _Wiki:
+        class DisambiguationError(Exception): ...
+        class PageError(Exception): ...
+        @staticmethod
+        def set_lang(_): pass
+        @staticmethod
+        def search(q, results=1): return search_map.get(q, [])
+        @staticmethod
+        def page(name, auto_suggest=False):
+            fetched.append(name)
+            return _Page(name)
+    monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
+
+    out = corpus_mod.fetch_articles_by_title(
+        {Category.PHILOSOPHY: ["the bystander effect", "Beatles To"]},
+        fetch_aliases=False, sleep_seconds=0, verbose=False,
+    )
+    assert [a.title for a in out] == ["Bystander effect"]
+    assert fetched == ["Bystander effect"]   # the junk fragment never hit page()
+
+
+def test_page_with_retry_is_cheap_one_retry(monkeypatch):
+    """A throttled (empty-body) title is retried at most once — not 3x — so the
+    crawl doesn't burn ~6s per failure hammering an active rate-limit window."""
+    import sys
+    from polimibot.rag import corpus as corpus_mod
+
+    calls = {"n": 0}
+
+    class _Wiki:
+        class DisambiguationError(Exception): ...
+        class PageError(Exception): ...
+        @staticmethod
+        def page(name, auto_suggest=False):
+            calls["n"] += 1
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+    monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
+    monkeypatch.setattr(corpus_mod.time, "sleep", lambda *_: None)
+
+    with pytest.raises(ValueError):
+        corpus_mod._page_with_retry("Karen Uhlenbeck", verbose=False)
+    assert calls["n"] == corpus_mod._FETCH_MAX_ATTEMPTS == 2
+
+
+def test_failure_cooldown_pauses_once_failures_cluster(monkeypatch):
+    """_make_failure_cooldown sleeps a one-off cooldown when consecutive failures
+    cross the threshold, and a success resets the streak."""
+    from polimibot.rag import corpus as corpus_mod
+    sleeps: list[float] = []
+    monkeypatch.setattr(corpus_mod.time, "sleep", lambda s: sleeps.append(s))
+
+    note = corpus_mod._make_failure_cooldown(verbose=False)
+    for _ in range(corpus_mod._COOLDOWN_AFTER_CONSECUTIVE_FAILURES - 1):
+        note(False)
+    assert sleeps == []                       # below threshold → no pause
+    note(False)                               # crosses threshold
+    assert corpus_mod._RATE_LIMIT_COOLDOWN_SECONDS in sleeps
+
+    sleeps.clear()
+    note(True)                                # success resets the streak
+    for _ in range(corpus_mod._COOLDOWN_AFTER_CONSECUTIVE_FAILURES - 1):
+        note(False)
+    assert sleeps == []
+
+
+def test_fetch_from_categories_attaches_aliases_to_curated_only(monkeypatch):
+    """§9c: only the curated CONCEPT_TITLES get redirect aliases (one batched
+    prop=redirects query); bulk harvested titles get none."""
+    import sys
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+    from polimibot.rag import category_seeds as cs
+
+    monkeypatch.setattr(cs, "harvest_titles",
+                        lambda categories, **kw: {Category.SCIENCE: ["Bulk One"]})
+    monkeypatch.setattr(cs, "CONCEPT_TITLES", {Category.SCIENCE: ["Photosynthesis"]})
+
+    def fake_api_get(params):
+        if params.get("prop", "").startswith("extracts"):
+            reqs = params["titles"].split("|")
+            return {"query": {"pages": [
+                {"title": t, "extract": f"About {t}.", "fullurl": ""} for t in reqs]}}
+        return {"query": {"pages": [          # the prop=redirects query
+            {"title": "Photosynthesis",
+             "redirects": [{"title": "Photosynthetic"}, {"title": "Photo synthesis"}]}]}}
+    monkeypatch.setattr(cs, "_api_get", fake_api_get)
+
+    class _Wiki:
+        @staticmethod
+        def set_lang(_): pass
+    monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
+
+    arts = corpus_mod.fetch_articles_from_categories(
+        categories=[Category.SCIENCE], cache_path=None, fetch_aliases=True,
+        harvest_workers=2, verbose=False,
+    )
+    by = {a.title: a for a in arts}
+    assert by["Photosynthesis"].aliases == ("Photosynthetic", "Photo synthesis")
+    assert by["Bulk One"].aliases == ()
+
+
+def test_fetch_extracts_batch_maps_redirects_and_skips_missing_disambig(monkeypatch):
+    """§9a: a batched extracts response → Articles with the right category traced
+    back through normalize+redirect; missing and disambiguation pages dropped;
+    '== Header ==' markup preserved (exsectionformat=wiki)."""
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+    from polimibot.rag import category_seeds as cs
+
+    def fake_api_get(params):
+        return {"query": {
+            "normalized": [{"from": "dna", "to": "DNA"}],
+            "redirects": [{"from": "DNA", "to": "Deoxyribonucleic acid"}],
+            "pages": [
+                {"title": "Deoxyribonucleic acid",
+                 "extract": "DNA is a molecule.\n\n== Structure ==\nA double helix.",
+                 "fullurl": "http://x/DNA"},
+                {"title": "Cell (biology)", "extract": "A cell is the basic unit.",
+                 "fullurl": "http://x/Cell"},
+                {"title": "Nonexistent Page", "missing": True},
+                {"title": "Mercury", "extract": "many things",
+                 "pageprops": {"disambiguation": ""}, "fullurl": "http://x/Hg"},
+            ],
+        }}
+    monkeypatch.setattr(cs, "_api_get", fake_api_get)
+
+    items = [("dna", Category.SCIENCE), ("Cell (biology)", Category.SCIENCE),
+             ("Nonexistent Page", Category.SCIENCE), ("Mercury", Category.SCIENCE)]
+    arts = corpus_mod._fetch_extracts_batch(items, verbose=False)
+
+    by_title = {a.title: a for a in arts}
+    assert set(by_title) == {"Deoxyribonucleic acid", "Cell (biology)"}  # missing/disambig dropped
+    assert all(a.category is Category.SCIENCE for a in arts)             # redirect traced to category
+    assert "== Structure ==" in by_title["Deoxyribonucleic acid"].text  # section markup kept
+    assert by_title["Cell (biology)"].url == "http://x/Cell"
+
+
+def test_fetch_extracts_batch_drains_continue(monkeypatch):
+    """§9a: extracts split across a `continue` token are concatenated."""
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+    from polimibot.rag import category_seeds as cs
+
+    state = {"n": 0}
+
+    def fake_api_get(params):
+        state["n"] += 1
+        if state["n"] == 1:
+            return {"query": {"pages": [{"title": "Atom", "extract": "Part one. "}]},
+                    "continue": {"excontinue": 1}}
+        return {"query": {"pages": [{"title": "Atom", "extract": "Part two."}]}}
+    monkeypatch.setattr(cs, "_api_get", fake_api_get)
+
+    arts = corpus_mod._fetch_extracts_batch([("Atom", Category.SCIENCE)], verbose=False)
+    assert len(arts) == 1
+    assert arts[0].text == "Part one. Part two."
+    assert state["n"] == 2
+
+
+def test_harvest_bulk_concurrent_recovers_failed_batch(monkeypatch):
+    """§9b: a batch whose request hard-fails on the first pass is retried once and
+    recovered, so no title is silently dropped."""
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+
+    calls: dict = {}
+
+    def fake_batch(batch, *, verbose=False):
+        key = tuple(t for t, _ in batch)
+        calls[key] = calls.get(key, 0) + 1
+        if any(t == "Flaky" for t, _ in batch) and calls[key] == 1:
+            raise ValueError("empty response body from MediaWiki API")
+        return [corpus_mod.Article(title=t, text=f"about {t}", category=c)
+                for t, c in batch]
+    monkeypatch.setattr(corpus_mod, "_fetch_extracts_batch", fake_batch)
+
+    items = [(f"T{i}", Category.SCIENCE) for i in range(25)] + [("Flaky", Category.SCIENCE)]
+    arts = corpus_mod._harvest_bulk_concurrent(
+        items, workers=3, checkpoint_path=None, checkpoint_every=250, verbose=False)
+
+    titles = {a.title for a in arts}
+    assert "Flaky" in titles            # recovered on the second pass
+    assert len(arts) == 26
+
+
 def test_corpus_version_is_positive_int():
     from polimibot.rag.corpus import CORPUS_VERSION
     assert isinstance(CORPUS_VERSION, int) and CORPUS_VERSION >= 2
+
+
+# ── Article schema round-trip (aliases + competition, backward-compatible) ─────
+
+def test_save_load_roundtrips_aliases_and_competition(tmp_path):
+    from polimibot.rag.corpus import Article, save_raw_corpus, load_raw_corpus
+    from polimibot.config import Category
+
+    arts = [
+        Article(
+            title="The One Where Dr. Ramoray Dies", text="Plot…",
+            category=Category.ENTERTAINMENT, url="http://x",
+            aliases=("Dr. Drake Ramoray", "Ramoray"),
+            competition="Entertainment",
+        ),
+    ]
+    path = tmp_path / "corpus.jsonl"
+    save_raw_corpus(arts, path)
+    loaded = load_raw_corpus(path)
+    assert loaded[0].aliases == ("Dr. Drake Ramoray", "Ramoray")
+    assert loaded[0].competition == "Entertainment"
+    assert loaded[0].category == Category.ENTERTAINMENT
+
+
+def test_load_tolerates_v3_rows_without_new_fields(tmp_path):
+    """v3 corpora (no aliases/competition keys) must still load, with defaults."""
+    path = tmp_path / "v3.jsonl"
+    path.write_text(
+        '{"title": "Gold", "text": "Au.", "category": "science", "url": ""}\n',
+        encoding="utf-8",
+    )
+    from polimibot.rag.corpus import load_raw_corpus
+    loaded = load_raw_corpus(path)
+    assert loaded[0].aliases == ()
+    assert loaded[0].competition == ""
+
+
+def test_save_omits_empty_new_fields(tmp_path):
+    """No aliases/competition → row stays v3-shaped (no extra keys written)."""
+    import json
+    from polimibot.rag.corpus import Article, save_raw_corpus
+    from polimibot.config import Category
+
+    path = tmp_path / "c.jsonl"
+    save_raw_corpus([Article("Gold", "Au.", Category.SCIENCE)], path)
+    row = json.loads(path.read_text(encoding="utf-8").strip())
+    assert "aliases" not in row and "competition" not in row
+
+
+# ── Alias / competition enrichment at fetch time (no network) ──────────────────
+
+def test_competition_for_maps_category_to_display_name():
+    from polimibot.rag.corpus import _competition_for
+    from polimibot.config import Category
+    assert _competition_for(Category.HISTORY) == "Ancient History and Politics"
+    assert _competition_for(Category.PHILOSOPHY) == "Philosophy and Psychology"
+    assert _competition_for(Category.SCIENCE) == "Science and Nature"
+
+
+def test_make_article_sets_competition_and_skips_aliases_when_disabled():
+    """_make_article derives the competition label and, with fetch_aliases=False,
+    attaches no aliases (and makes no network call)."""
+    from polimibot.rag.corpus import _make_article
+    from polimibot.config import Category
+
+    class _FakePage:
+        title = "Bystander effect"
+        content = "The bystander effect is a social psychological phenomenon."
+        url = "https://en.wikipedia.org/wiki/Bystander_effect"
+
+    art = _make_article(_FakePage(), Category.PHILOSOPHY,
+                        fetch_aliases=False, verbose=False)
+    assert art.competition == "Philosophy and Psychology"
+    assert art.aliases == ()
+    assert art.title == "Bystander effect"
+
+
+def test_fetch_redirects_returns_empty_on_failure(monkeypatch):
+    """A redirect-API hiccup must never raise — aliases are optional."""
+    import polimibot.rag.corpus as corpus
+
+    def boom(*a, **k):
+        raise OSError("network down")
+
+    monkeypatch.setattr(corpus.urllib.request, "urlopen", boom)
+    assert corpus._fetch_redirects("Anything", verbose=False) == ()

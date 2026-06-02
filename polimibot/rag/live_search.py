@@ -32,10 +32,27 @@ Usage
 from __future__ import annotations
 
 import concurrent.futures as _cf
+import json as _json
 from typing import Optional
 
 from ..config import Category
 from .corpus import Article, clean_wikipedia_text
+
+
+def _is_rate_limit_json_error(exc: BaseException) -> bool:
+    """True when ``exc`` is the empty-body JSON parse failure Wikipedia returns
+    on an HTTP 429.
+
+    The concrete class varies by environment: stdlib ``json.JSONDecodeError``,
+    ``requests.exceptions.JSONDecodeError``, or (on Colab, which has simplejson)
+    ``simplejson.JSONDecodeError`` — and the last is **not** a subclass of the
+    stdlib one, so ``except json.JSONDecodeError`` silently misses it and the
+    caller retries a throttled endpoint. Matching the class name too catches
+    every variant regardless of which JSON library ``requests`` picked.
+    """
+    if isinstance(exc, _json.JSONDecodeError):
+        return True
+    return "JSONDecodeError" in type(exc).__name__
 
 
 class LiveSearchFallback:
@@ -107,28 +124,35 @@ class LiveSearchFallback:
             return []
 
         # ``future.cancel()`` can't preempt an in-flight HTTP call (Python
-        # offers no cross-thread interrupt for native code), but the
-        # executor's context-manager exit cleans up references promptly
-        # and a fresh worker is created on the next call — no leaked
-        # daemon threads as in the prior implementation.
-        with _cf.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(self._fetch, query, category=category)
-            try:
-                return future.result(timeout=self.timeout_seconds)
-            except _cf.TimeoutError:
-                future.cancel()
-                print(f"[live_search] TIMEOUT after {self.timeout_seconds}s on query={query!r}")
-                return []
-            except Exception as _exc:   # noqa: BLE001
-                # Diagnostic: surface the real exception class so we can
-                # distinguish HTTPError / ChunkedEncodingError / SSL blip /
-                # library bug / true no-result from each other. Otherwise
-                # every failure looks like "no articles found", in distinguishable, this is not.
-                print(
-                    f"[live_search] EXCEPTION in search() wrapper: "
-                    f"{type(_exc).__name__}: {_exc}  | query={query!r}"
-                )
-                return []
+        # offers no cross-thread interrupt for native code). Critically we must
+        # NOT use ``with ThreadPoolExecutor() as pool:`` — its ``__exit__``
+        # calls ``shutdown(wait=True)``, which blocks on the worker even after
+        # ``future.result(timeout=…)`` already fired, defeating the timeout
+        # (observed live as 11 s latencies against a 7 s limit). Shut down with
+        # ``wait=False`` in ``finally`` so a slow in-flight fetch can't push the
+        # caller past ``timeout_seconds``; the orphaned worker finishes on its
+        # own (it's bounded by the socket timeout) and a fresh one is created
+        # on the next call.
+        pool = _cf.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(self._fetch, query, category=category)
+        try:
+            return future.result(timeout=self.timeout_seconds)
+        except _cf.TimeoutError:
+            future.cancel()
+            print(f"[live_search] TIMEOUT after {self.timeout_seconds}s on query={query!r}")
+            return []
+        except Exception as _exc:   # noqa: BLE001
+            # Diagnostic: surface the real exception class so we can
+            # distinguish HTTPError / ChunkedEncodingError / SSL blip /
+            # library bug / true no-result from each other. Otherwise
+            # every failure looks like "no articles found", indistinguishable.
+            print(
+                f"[live_search] EXCEPTION in search() wrapper: "
+                f"{type(_exc).__name__}: {_exc}  | query={query!r}"
+            )
+            return []
+        finally:
+            pool.shutdown(wait=False)
 
     # ── Internal fetch logic ──────────────────────────────────────────────
 
@@ -187,20 +211,22 @@ class LiveSearchFallback:
         #   * Other transient exceptions (ConnectionError, timeouts, SSL
         #     blips) get one retry after a sleep — those are genuinely
         #     recoverable on fresh attempt.
-        import json as _json
         titles: list = []
         for attempt in range(2):
             try:
                 titles = wikipedia.search(query, results=self.search_results)
                 break
-            except _json.JSONDecodeError as _exc:
-                print(
-                    f"[live_search] RATE LIMIT in wikipedia.search() "
-                    f"(429-equivalent, not retrying): {_exc}  "
-                    f"| query={query!r}"
-                )
-                return []
             except Exception as _exc:  # noqa: BLE001
+                if _is_rate_limit_json_error(_exc):
+                    # HTTP 429 surfaces as an empty-body JSON parse failure.
+                    # Retry-After is ~55 s — a short retry is wasted and bad
+                    # citizenship. Give up; the inter-question gap cools down.
+                    print(
+                        f"[live_search] RATE LIMIT in wikipedia.search() "
+                        f"(429-equivalent, not retrying): {_exc}  "
+                        f"| query={query!r}"
+                    )
+                    return []
                 is_last = (attempt == 1)
                 if is_last:
                     print(
@@ -257,7 +283,6 @@ class LiveSearchFallback:
         Returns ``None`` on terminal failure; caller skips to next title.
         """
         import time
-        import json as _json
         try:
             import wikipedia
         except ImportError:
@@ -308,18 +333,18 @@ class LiveSearchFallback:
                 # Page truly doesn't exist — terminal, retry won't help.
                 print(f"[live_search] PageError on {fetched_title!r}: {_exc}")
                 return None
-            except _json.JSONDecodeError as _exc:
-                # Rate-limit signal (HTTP 429 manifesting as empty-body
-                # JSON parse failure). Retry-After is ~55 s — a 1 s retry
-                # is wasted. Skip immediately so we don't pile on calls
-                # to an already-throttled endpoint.
-                print(
-                    f"[live_search] RATE LIMIT in _fetch_one"
-                    f"({fetched_title!r}) (429-equivalent, not retrying): "
-                    f"{_exc}"
-                )
-                return None
             except Exception as _exc:  # noqa: BLE001
+                if _is_rate_limit_json_error(_exc):
+                    # Rate-limit signal (HTTP 429 manifesting as empty-body
+                    # JSON parse failure, in whichever JSON library requests
+                    # picked). Retry-After is ~55 s — a 1 s retry is wasted.
+                    # Skip immediately so we don't pile on a throttled endpoint.
+                    print(
+                        f"[live_search] RATE LIMIT in _fetch_one"
+                        f"({fetched_title!r}) (429-equivalent, not retrying): "
+                        f"{_exc}"
+                    )
+                    return None
                 is_last = (attempt == 1)
                 if is_last:
                     print(

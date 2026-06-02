@@ -22,6 +22,7 @@ together; see ``runner.py``.
 """
 from __future__ import annotations
 
+import re
 import time
 from typing import Optional, Sequence
 
@@ -46,6 +47,68 @@ _AnyLLM = LLM | MockLLM
 # constructor args on RAGStrategy so ablations don't need code edits.
 DEFAULT_MAX_PASSAGE_CHARS = 800
 DEFAULT_MAX_TOTAL_CHARS   = 2400
+
+
+# ── Live-search query distillation (model-agnostic) ─────────────────────────
+# Matches a <think>…</think> block, or one left unclosed by the token budget.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL | re.IGNORECASE)
+
+# Lines that are reasoning scaffolding, not a title. Reasoning models that ignore
+# /no_think (observed: qwen3.5-4b) emit these as PLAINTEXT — no <think> tags — so
+# the tag strip misses them and the first line becomes a bogus live query
+# ("Thinking Process:"). Drop them explicitly.
+_TITLE_PREAMBLE_RE = re.compile(
+    r"^(thinking|thought|reasoning|analysis|process|let me|let's|okay|so\b|"
+    r"first|i need|i should|i'll|i will|we need|the user|the question|"
+    r"to answer|step\s*\d*)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_title(cand: str) -> bool:
+    """True when ``cand`` is plausibly a Wikipedia article title, not reasoning.
+
+    Titles are short and don't trail a colon; a long clause or a "Thinking…"
+    lead-in is reasoning prose, which must never become the search query.
+    """
+    if not cand or cand.endswith(":"):
+        return False
+    if _TITLE_PREAMBLE_RE.match(cand):
+        return False
+    return len(cand.split()) <= 6
+
+
+def _distill_title(raw: str, fallback: str) -> str:
+    """Pull a clean Wikipedia-title-shaped string out of an LLM response.
+
+    Robust to reasoning models: strips ``<think>`` blocks (closed or
+    budget-truncated) AND plaintext reasoning preambles ("Thinking Process:",
+    "Okay, the user…"). Prefers an explicit ``Title:`` label; else the first
+    short, non-preamble line. Returns ``fallback`` (the bare question) when
+    nothing title-shaped survives, so live search never queries on reasoning
+    scaffolding — the failure mode that made every gated live search useless.
+    """
+    text = _THINK_BLOCK_RE.sub("", raw or "").strip()
+    if not text:
+        return fallback
+
+    lines = [ln.strip().strip('"').strip("*").strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
+
+    # 1. Explicit "Title: X" label wins (model echoed the prompt format), even
+    #    when it appears after a reasoning preamble the budget didn't cut off.
+    for ln in lines:
+        if ln.lower().startswith("title:"):
+            cand = ln.split(":", 1)[1].strip().strip('"').strip()
+            if _looks_like_title(cand):
+                return cand
+
+    # 2. Otherwise the first line that isn't reasoning scaffolding.
+    for ln in lines:
+        if _looks_like_title(ln):
+            return ln
+
+    return fallback
 
 
 def _build_query(inp: StrategyInput) -> str:
@@ -366,7 +429,18 @@ class RAGStrategy(Strategy):
                 max_articles=live_max_articles,
             )
 
-        gate_tag = f"|min_score={min_score}" if min_score is not None else ""
+        # Show the threshold that's actually applied on the active retrieval
+        # path, not always the dense one — the gate uses min_score_rerank when
+        # reranking, min_score_rrf when hybrid-only, else min_score. The old tag
+        # always printed `min_score` (dense), which misreported the real gate
+        # in logs/leaderboards (e.g. name said 0.4 while the gate logged "< 0.5").
+        if use_reranker:
+            _active_min_score = min_score_rerank
+        elif use_hybrid:
+            _active_min_score = min_score_rrf
+        else:
+            _active_min_score = min_score
+        gate_tag = f"|min_score={_active_min_score}" if _active_min_score is not None else ""
         path_tag = "" if use_score_options else "|gen"
         cat_tag  = "" if use_category_filter else "|no_cat_filter"
         rer_tag  = "|rerank" if use_reranker else ""
@@ -845,11 +919,15 @@ class RAGStrategy(Strategy):
         if cached is not None:
             return cached
 
-        import re
+        # ``/no_think`` leads the message (Qwen thinking-control directive) so
+        # the prompt can still END on the clean ``Title:`` completion cue — the
+        # previous shape glued ``Title:/no_think`` together, which corrupted the
+        # cue and let the model emit a plaintext "Thinking Process:" preamble.
         prompt = (
+            "/no_think\n"
             "Output the single most specific Wikipedia article title that would "
             "answer this trivia question. Output ONLY the title — 1 to 4 words, "
-            "no commas, no lists, no explanations.\n\n"
+            "no commas, no lists, no explanations, no reasoning.\n\n"
             "Examples:\n"
             "Question: How did the Byzantines use Greek fire during land battles?\n"
             "Title: Greek fire\n\n"
@@ -859,30 +937,15 @@ class RAGStrategy(Strategy):
             "Title: Gold\n\n"
             f"Question: {inp.question}\n"
             "Title:"
-            "/no_think"
         )
         messages = [{"role": "user", "content": prompt}]
         try:
-            # 40 tokens: titles are short; tight budget discourages the model
-            # from drifting into multi-line explanations even with /no_think.
-            # The regex below still strips any <think>…</think> residue from
-            # models that ignore the directive.
+            # 40 tokens: titles are short; a tight budget discourages drift.
+            # ``_distill_title`` then strips both <think> blocks AND plaintext
+            # reasoning preambles, falling back to the bare question when the
+            # response yields nothing title-shaped.
             resp = self.llm.generate(messages, max_new_tokens=40, temperature=0.0)
-            # Strip Qwen3 thinking traces — complete and truncated.
-            text = re.sub(
-                r"<think>.*?(?:</think>|$)", "", resp.text, flags=re.DOTALL
-            ).strip()
-            # Defensive shaping: if the model produced multiple lines despite
-            # instructions, keep only the first non-empty line (the actual title).
-            # Trim leading "Title:" if the model echoed the prompt label.
-            for line in text.splitlines():
-                line = line.strip()
-                if line.lower().startswith("title:"):
-                    line = line[len("title:"):].strip()
-                if line:
-                    text = line
-                    break
-            result = text if text else inp.question
+            result = _distill_title(resp.text, inp.question)
         except Exception:  # noqa: BLE001 — never crash the answer pipeline
             result = inp.question
         self._live_query_cache[inp.question] = result

@@ -25,6 +25,13 @@ def _prefixes_for_model(model_name: str) -> tuple[str, str]:
     only need to specify the model.
     """
     name = model_name.lower()
+    # BGE-M3 is a different family from the bge-*-en-v1.5 line: its dense
+    # retrieval is trained WITHOUT a query instruction. Prepending the v1.5
+    # "Represent this sentence…" prompt twists query vs passage space and
+    # silently degrades cosine scores — so it must be checked BEFORE the
+    # generic ``"bge" in name`` branch below.
+    if "bge-m3" in name or "bge_m3" in name:
+        return ("", "")
     if "bge" in name:
         return ("Represent this sentence for searching relevant passages: ", "")
     if "e5" in name:
@@ -39,10 +46,10 @@ class EmbedderSpec:
 
     ``query_prefix`` / ``passage_prefix`` are prepended before encoding.
     Leave them as ``None`` to let :func:`_prefixes_for_model` derive the
-    right values from ``model_name`` (BGE → instruction prefix; E5 →
-    ``"query: "/"passage: "``; MiniLM/mpnet → empty). Mismatches between
-    indexer and retriever corrupt scores — the manifest carries both
-    values and ``_check_manifest_compat`` hard-fails on drift.
+    right values from ``model_name`` (bge-*-en-v1.5 → instruction prefix;
+    bge-m3 → empty; E5 → ``"query: "/"passage: "``; MiniLM/mpnet → empty).
+    Mismatches between indexer and retriever corrupt scores — the manifest
+    carries both values and ``_check_manifest_compat`` hard-fails on drift.
     """
     model_name: str = "BAAI/bge-small-en-v1.5"   # 384-dim, ~130 MB, CPU-friendly
     batch_size: int = 64

@@ -298,92 +298,161 @@ else:
 cells.append(md("""
 ### 0.4 Build / top-up the RAG knowledge index
 
-Run this section **once** before the first RAG experiment — or whenever you want to refresh the Wikipedia corpus. The result is a FAISS index (+ BM25 sidecar) stored under `data/cache/knowledge.*`.
+Two phases so the **GPU-free harvest** and the **GPU embed/index** can run on different Colab runtimes:
+
+- **0.4a — Harvest corpus (CPU-friendly).** Downloads the Wikipedia corpus and writes `data/cache/corpus.jsonl`. Pure network/CPU — run it on a **CPU runtime** to save GPU hours.
+- **0.4b — Embed & index (GPU).** Loads `corpus.jsonl`, embeds with `bge-m3`, and writes the FAISS + BM25 index. Run it on a **GPU runtime**.
+
+> **The CPU→GPU handoff is automatic** — no extra copying. Cell 1 symlinks `data/` to Drive (or you work directly from Drive), so `data/cache/corpus.jsonl` and the index already live on Drive and survive a runtime-type switch. To go CPU→GPU: run 0.4a, switch the runtime to GPU, re-run cells 0.1–0.3 + the knobs cell, then run 0.4b — it picks the corpus up from `data/cache` on its own.
 
 | Knob | Meaning |
 |---|---|
-| `REBUILD_INDEX` | Set `True` to force a full rebuild even if the index already exists |
-| `INDEX_REFETCH` | Set `True` to re-download Wikipedia articles (ignored if `REBUILD_INDEX=False` and index exists) |
-| `INDEX_CATEGORIES` | `None` → all four categories; or e.g. `['history', 'science']` to build a partial index |
+| `REBUILD_INDEX` | Set `True` to (re)build the index in 0.4b even if one already exists |
+| `INDEX_REFETCH` | Set `True` to re-harvest in 0.4a even if `corpus.jsonl` exists |
+| `INDEX_CATEGORIES` | `None` → all four categories; or e.g. `['history', 'science']` |
 | `INDEX_CHUNK_SIZE` / `INDEX_OVERLAP` | Sentence-aware chunking parameters (default 300/50) |
-| `INDEX_SKIP_BM25` | Set `True` to skip the BM25 sidecar (dense-only build — faster but disables hybrid retrieval) |
-| `INDEX_LEGACY_SEEDS` | Set `True` to use the hand-curated `TOPIC_SEEDS` (~95 titles) instead of the MediaWiki category-graph harvest |
-| `INDEX_HARVEST_MAX_PER_CATEGORY` | Cap on titles per seed-category in the harvester (default 500) |
-| `INDEX_HARVEST_MAX_DEPTH` | Subcategory recursion depth (0 = this category only — safe default) |
-
-Skipped automatically when the index already exists and `REBUILD_INDEX=False` — safe to leave in the run-all path.
+| `INDEX_SKIP_BM25` | Set `True` to skip the BM25 sidecar (dense-only — disables hybrid retrieval) |
+| `INDEX_LEGACY_SEEDS` | Use the hand-curated `TOPIC_SEEDS` (~95 titles) instead of the category-graph harvest |
+| `INDEX_HARVEST_MAX_PER_CATEGORY` / `INDEX_HARVEST_MAX_DEPTH` | Harvester breadth / subcategory depth |
+| `INDEX_HARVEST_WORKERS` | Concurrent extract batches (default 5 — polite + fast; raise for speed) |
+| `INDEX_HARVEST_BATCH_SIZE` | Titles per extract request (default 20 — the anonymous MediaWiki cap) |
+| `INDEX_GAP_QUEUE` | Path to `gap_titles.json` (scripts/mine_corpus_gaps.py) to back-fill, or `None` |
 """))
 
 cells.append(code('''
-# ─── RAG index knobs. ────────────────────────────────────────────────
-# RAG_INDEX_PATH is also set in Section 1.1; defined here so this cell runs
-# standalone without requiring the Knobs cell to be executed first.
+# ─── RAG index knobs (shared by 0.4a + 0.4b). ────────────────────────
+# RAG_INDEX_PATH / EMBEDDER_MODEL are also set in Section 1.1; mirrored here so
+# 0.4 runs standalone — e.g. on a fresh GPU runtime after the CPU harvest.
 RAG_INDEX_PATH     = PATHS.cache_dir / 'knowledge'
-REBUILD_INDEX      = False        # True  → rebuild even if index already exists
-INDEX_REFETCH      = False        # True  → re-download Wikipedia (slow, ~5–10 min)
+EMBEDDER_MODEL     = 'BAAI/bge-m3'   # must match Section 1.1; rebuild index after changing
+REBUILD_INDEX      = False        # True  → (re)build index in 0.4b even if it exists
+INDEX_REFETCH      = False        # True  → re-harvest in 0.4a even if corpus.jsonl exists
 INDEX_CATEGORIES   = None         # None  → all four; or e.g. ['history', 'science']
 INDEX_CHUNK_SIZE   = 300          # words per chunk (sentence-boundary-aware)
 INDEX_OVERLAP      = 50           # word overlap between adjacent chunks
 INDEX_SKIP_BM25    = False        # True  → skip BM25 sidecar (dense-only, faster)
 INDEX_LEGACY_SEEDS = False        # True  → hand-curated TOPIC_SEEDS (~95 titles)
 INDEX_HARVEST_MAX_PER_CATEGORY = 500   # cap per seed-category in the harvester
-INDEX_HARVEST_MAX_DEPTH        = 0     # 0 = no subcategory recursion (safe)
+INDEX_HARVEST_MAX_DEPTH        = 0     # entity seeds: 0 = no recursion. Concept seeds always recurse 1 level.
+INDEX_HARVEST_WORKERS          = 5     # concurrent extract batches (default 5 — polite + fast)
+INDEX_HARVEST_BATCH_SIZE       = 20    # titles per extract request (MediaWiki cap is 20 for anonymous)
+INDEX_GAP_QUEUE    = None         # path to gap_titles.json (scripts/mine_corpus_gaps.py) to back-fill, or None
 # ─────────────────────────────────────────────────────────────────────
+# data/ is symlinked to Drive by cell 1, so everything written under
+# PATHS.cache_dir (corpus.jsonl, the index) is already durable across a
+# runtime-type switch — no extra copy/restore step is needed.
 
-_index_faiss = RAG_INDEX_PATH.with_suffix('.faiss')
-_index_exists = _index_faiss.exists()
+print('RAG index knobs set. Run 0.4a (CPU harvest), then 0.4b (GPU embed/index).')
+'''))
 
-if _index_exists and not REBUILD_INDEX:
-    print(f'Index already exists: {_index_faiss}')
-    print('Set REBUILD_INDEX=True to force a rebuild.')
+cells.append(md("#### 0.4a — Harvest corpus (CPU-friendly: Wikipedia → `corpus.jsonl`)"))
+
+cells.append(code('''
+# Phase A — download the corpus. Network/CPU only; no GPU needed. Safe to run on
+# a CPU runtime to save GPU hours, then switch to GPU for 0.4b.
+PATHS.ensure()
+_corpus_path = PATHS.cache_dir / 'corpus.jsonl'
+
+if _corpus_path.exists() and not INDEX_REFETCH:
+    print(f'corpus.jsonl already present at {_corpus_path} — set INDEX_REFETCH=True to re-harvest.')
 else:
-    import time as _time
     from polimibot.config import Category as _Category
     from polimibot.rag.corpus import (
-        fetch_articles, fetch_articles_from_categories,
-        load_raw_corpus, save_raw_corpus, clean_wikipedia_text,
-        CORPUS_VERSION, CLEANUP_VERSION,
+        fetch_articles, fetch_articles_from_categories, fetch_articles_by_title,
+        save_raw_corpus,
     )
-    from polimibot.rag.chunker import (
-        CHUNKER_VERSION, EMBED_TEXT_VERSION,
-        chunk_text as _chunk_text, embedding_text as _embedding_text,
-    )
-    from polimibot.rag.embedder import Embedder as _Embedder, EmbedderSpec as _EmbedderSpec
-    from polimibot.rag.index import FAISSIndex as _FAISSIndex
-    from polimibot.rag.bm25 import BM25Index as _BM25Index
-    from dataclasses import replace as _replace
-
-    _corpus_path = PATHS.cache_dir / 'corpus.jsonl'
-    PATHS.ensure()
-
-    # ── Step 1: corpus ───────────────────────────────────────────────
     _cats = [_Category(c) for c in INDEX_CATEGORIES] if INDEX_CATEGORIES else None
 
-    if _corpus_path.exists() and not INDEX_REFETCH:
-        print(f'Loading cached corpus from {_corpus_path}…')
-        _articles = load_raw_corpus(_corpus_path)
-        if _cats:
-            _articles = [a for a in _articles if a.category in _cats]
-        _articles = [_replace(a, text=clean_wikipedia_text(a.text)) for a in _articles]
+    if INDEX_LEGACY_SEEDS:
+        print('Fetching articles from Wikipedia (legacy hand-curated TOPIC_SEEDS)…')
+        _articles = fetch_articles(categories=_cats, verbose=True)
     else:
-        if INDEX_LEGACY_SEEDS:
-            print('Fetching articles from Wikipedia (legacy hand-curated TOPIC_SEEDS)…')
-            _articles = fetch_articles(categories=_cats, verbose=True)
-        else:
-            print('Fetching articles from Wikipedia (category-graph harvest, this takes several minutes)…')
-            _articles = fetch_articles_from_categories(
-                categories=_cats,
-                cache_path=PATHS.cache_dir / 'harvested_titles.json',
-                max_per_category=INDEX_HARVEST_MAX_PER_CATEGORY,
-                max_depth=INDEX_HARVEST_MAX_DEPTH,
-                verbose=True,
+        print('Fetching articles from Wikipedia (category-graph harvest, this takes several minutes)…')
+        _articles = fetch_articles_from_categories(
+            categories=_cats,
+            cache_path=PATHS.cache_dir / 'harvested_titles.json',
+            max_per_category=INDEX_HARVEST_MAX_PER_CATEGORY,
+            max_depth=INDEX_HARVEST_MAX_DEPTH,
+            harvest_workers=INDEX_HARVEST_WORKERS,
+            batch_size=INDEX_HARVEST_BATCH_SIZE,
+            checkpoint_path=_corpus_path,   # durable partial harvest — see corpus.py §8c
+            verbose=True,
+        )
+    # Save the expensive harvest BEFORE the gap fetch, so nothing the gap phase
+    # does can throw away the corpus. corpus.jsonl lives under data/cache, which
+    # is symlinked to Drive (cell 1) — so this is already durable.
+    save_raw_corpus(_articles, _corpus_path)
+
+    # Log-mined gap back-fill: fetch the queued titles directly (see
+    # scripts/mine_corpus_gaps.py). Skips titles already harvested.
+    if INDEX_GAP_QUEUE:
+        import json as _json
+        from pathlib import Path as _Path
+        _gap_path = _Path(INDEX_GAP_QUEUE)
+        if _gap_path.is_file():
+            _gap_raw = _json.loads(_gap_path.read_text(encoding='utf-8'))
+            _gap_tbc = {}
+            for _v, _ts in _gap_raw.items():
+                try:
+                    _gap_tbc[_Category(_v)] = list(_ts)
+                except ValueError:
+                    pass
+            _gap_arts = fetch_articles_by_title(
+                _gap_tbc, existing_titles={a.title for a in _articles}, verbose=True,
             )
-        save_raw_corpus(_articles, _corpus_path)
+            print(f'Gap queue added {len(_gap_arts)} articles')
+            _articles = _articles + _gap_arts
+            save_raw_corpus(_articles, _corpus_path)
+        else:
+            print(f'  ! INDEX_GAP_QUEUE {_gap_path} not found — skipping gap back-fill')
 
     if not _articles:
         raise RuntimeError('No articles fetched — check your network connection and INDEX_CATEGORIES.')
+    print(f'\\nHarvest complete: {len(_articles)} articles → {_corpus_path}.')
+    print('Switch to a GPU runtime (re-run 0.1-0.3 + the knobs cell) and run 0.4b.')
+'''))
 
-    # ── Step 2: chunk ────────────────────────────────────────────────
+cells.append(md("#### 0.4b — Embed & index (GPU: `corpus.jsonl` → FAISS + BM25)"))
+
+cells.append(code('''
+# Phase B — embed + index. Run on a GPU runtime. corpus.jsonl is read from
+# data/cache (Drive-backed via cell 1), so the 0.4a harvest is already here.
+import time as _time
+from dataclasses import replace as _replace
+from polimibot.config import Category as _Category
+from polimibot.rag.corpus import (
+    load_raw_corpus, clean_wikipedia_text, CORPUS_VERSION, CLEANUP_VERSION,
+)
+from polimibot.rag.chunker import (
+    CHUNKER_VERSION, EMBED_TEXT_VERSION,
+    chunk_text as _chunk_text, embedding_text as _embedding_text,
+)
+from polimibot.rag.embedder import Embedder as _Embedder, EmbedderSpec as _EmbedderSpec
+from polimibot.rag.index import FAISSIndex as _FAISSIndex
+from polimibot.rag.bm25 import BM25Index as _BM25Index
+
+PATHS.ensure()
+_corpus_path = PATHS.cache_dir / 'corpus.jsonl'
+_index_faiss = RAG_INDEX_PATH.with_suffix('.faiss')
+
+if _index_faiss.exists() and not REBUILD_INDEX:
+    print(f'Index already exists: {_index_faiss}')
+    print('Set REBUILD_INDEX=True to force a rebuild.')
+elif not _corpus_path.exists():
+    raise RuntimeError(
+        f'No corpus at {_corpus_path}. Run 0.4a first (the CPU harvest); it is '
+        f'saved under data/cache, which is Drive-backed and survives a runtime switch.')
+else:
+    _cats = [_Category(c) for c in INDEX_CATEGORIES] if INDEX_CATEGORIES else None
+    print(f'Loading corpus from {_corpus_path}…')
+    _articles = load_raw_corpus(_corpus_path)
+    if _cats:
+        _articles = [a for a in _articles if a.category in _cats]
+    _articles = [_replace(a, text=clean_wikipedia_text(a.text)) for a in _articles]
+    if not _articles:
+        raise RuntimeError('corpus.jsonl loaded but empty after the category filter.')
+
+    # ── Step 1: chunk ────────────────────────────────────────────────
     print(f'\\nChunking {len(_articles)} articles (size={INDEX_CHUNK_SIZE}, overlap={INDEX_OVERLAP})…')
     _all_chunks = []
     for _art in _articles:
@@ -392,11 +461,12 @@ else:
             chunk_size=INDEX_CHUNK_SIZE, overlap=INDEX_OVERLAP,
             category=_art.category.value,
             url=_art.url,
+            aliases=_art.aliases or None,
         ))
     print(f'  → {len(_all_chunks)} chunks '
           f'(avg {len(_all_chunks) // max(len(_articles), 1)} per article)')
 
-    # ── Step 3: embed ────────────────────────────────────────────────
+    # ── Step 2: embed (GPU) ──────────────────────────────────────────
     print(f'\\nLoading embedding model ({EMBEDDER_MODEL})…')
     _spec = _EmbedderSpec(model_name=EMBEDDER_MODEL)
     _embedder = _Embedder(_spec)
@@ -407,7 +477,7 @@ else:
     _embeddings = _embedder.encode_passage([_embedding_text(c) for c in _all_chunks])
     print(f'  → done in {_time.monotonic() - _t0:.1f}s')
 
-    # ── Step 4: FAISS index ──────────────────────────────────────────
+    # ── Step 3: FAISS index ──────────────────────────────────────────
     _idx = _FAISSIndex(dim=_embedder.dim)
     _idx.add(_all_chunks, _embeddings)
     _idx.save(RAG_INDEX_PATH, manifest={
@@ -431,7 +501,7 @@ else:
     print(f'\\n✓  FAISS index saved → {RAG_INDEX_PATH}.faiss')
     print(f'   {_idx.n_chunks} chunks | dim={_embedder.dim} | model={_spec.model_name}')
 
-    # ── Step 5: BM25 sidecar ─────────────────────────────────────────
+    # ── Step 4: BM25 sidecar ─────────────────────────────────────────
     if not INDEX_SKIP_BM25:
         print('\\nBuilding BM25 sidecar…')
         _t0 = _time.monotonic()
@@ -441,6 +511,8 @@ else:
     else:
         print('BM25 sidecar skipped (INDEX_SKIP_BM25=True).')
 
+    # The index is written under data/cache (Drive-backed via cell 1), so it
+    # already survives a runtime reset — no extra copy needed.
     print('\\nIndex build complete. Re-run Section 1.3 to attach the new index to the retriever.')
 '''))
 
@@ -540,7 +612,7 @@ RERANK_OVERSEARCH      = 5                               # dense pool size = k �
 # index load (Section 1.3), and the IndexGrower embedder (Section 1.4).
 # Switching models requires rebuilding the index (REBUILD_INDEX=True in 0.4).
 # Prefixes auto-derive from the model name (BGE / E5 / symmetric MiniLM-style).
-EMBEDDER_MODEL         = 'BAAI/bge-small-en-v1.5'        # 384-dim, asymmetric
+EMBEDDER_MODEL         = 'BAAI/bge-m3'                   # 1024-dim dense, no query instruction; rebuild index after changing (REBUILD_INDEX=True in 0.4)
 
 # Hybrid + multi-query (lexical complement + per-option queries, both via RRF)
 RAG_USE_HYBRID         = True                           # dense + BM25 fused per query

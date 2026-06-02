@@ -145,6 +145,8 @@ class FAISSIndex:
                     row["is_lead"] = True
                 if c.url is not None:
                     row["url"] = c.url
+                if c.aliases:
+                    row["aliases"] = list(c.aliases)
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
         if manifest is not None:
@@ -200,6 +202,7 @@ class FAISSIndex:
                     section_title=d.get("section_title"),
                     is_lead=d.get("is_lead", False),
                     url=d.get("url"),
+                    aliases=tuple(d["aliases"]) if d.get("aliases") else None,
                 ))
         obj = cls(dim=faiss_index.d, _faiss_index=faiss_index)
         obj._chunks = chunks
