@@ -67,28 +67,37 @@ def is_gap(record: dict, *, top_score_floor: float) -> bool:
     return False
 
 
-# A quoted span: 'single' or "double" — these almost always name the concept
-# ("will to power", "bystander effect", "Dr. Drake Ramoray").
-_QUOTED_RE = re.compile(r"['\"]([^'\"]{3,60})['\"]")
-
-# A run of Capitalised words (proper nouns / titles): "Roman Empire",
-# "Pink Floyd", "Carl Rogers", "Ariarathes V". Allows interior of/the/and.
-_PROPER_NOUN_RE = re.compile(
-    r"\b([A-Z][a-zA-Z0-9.]+(?:\s+(?:of|the|and|in|de|von)\s+|\s+)"
-    r"(?:[A-Z][a-zA-Z0-9.]+|[IVX]+)\b)+"
+# A quoted span: "double" or 'single' — these almost always name the concept
+# ("will to power", "bystander effect", "Dr. Drake Ramoray"). The single-quote
+# branch uses a lookbehind so a possessive apostrophe ("Brando's", "Joey's")
+# can't open a span and swallow the rest of the sentence as a "title" — the bug
+# that produced fragments like "s approach to learning his lines for".
+_QUOTED_RE = re.compile(
+    r'"([^"]{3,60})"'                  # "double-quoted"
+    r"|(?<![A-Za-z])'([^']{3,60})'"    # 'single-quoted', not a possessive
 )
 
-# Lone capitalised technical terms worth keeping even when not multi-word.
-_SINGLE_CAP_RE = re.compile(r"\b([A-Z][a-z]{4,})\b")
+# A run of Capitalised words (proper nouns / titles): "Roman Empire",
+# "Pink Floyd", "Carl Rogers", "Dr. Drake Ramoray", "Battle of Actium",
+# "Days of Our Lives". Each step is either a lowercase connector (of/the/and/…)
+# followed by a capitalised word, or just another capitalised word / Roman
+# numeral — so 3+ word names are captured whole, not truncated to a pair.
+_PROPER_NOUN_RE = re.compile(
+    r"\b[A-Z][a-zA-Z0-9.]*"
+    r"(?:\s+(?:of|the|and|in|de|von)\s+[A-Z][a-zA-Z0-9.]*"
+    r"|\s+(?:[A-Z][a-zA-Z0-9.]*|[IVX]+))+"
+)
 
 # Lowercase concept noun-phrases named by a tell-tale suffix. Catches the many
 # questions whose key concept is lowercase ("the bystander effect", "water
 # cycle", "just-world hypothesis", "domino theory") that the capitalisation/
 # quote heuristics miss. Wikipedia search then canonicalises the casing.
+# NB: deliberately no generic "relationship" suffix — it matched filler like
+# "does the relationship" with no concept value.
 _CONCEPT_SUFFIX_RE = re.compile(
     r"\b((?:[a-z][a-z'-]+\s+){1,2}"
     r"(?:effect|theory|hypothesis|fallacy|syndrome|principle|paradox|dilemma|"
-    r"bias|disorder|cycle|reaction|law|imperative|dissonance|relationship))\b"
+    r"bias|disorder|cycle|reaction|law|imperative|dissonance))\b"
 )
 
 # Leading filler stripped off a matched concept phrase ("describes the bystander
@@ -96,6 +105,7 @@ _CONCEPT_SUFFIX_RE = re.compile(
 _CONCEPT_LEADING_FILLER = {
     "the", "a", "an", "of", "this", "that", "its", "his", "her", "their",
     "which", "describes", "best", "concept", "term", "fundamental",
+    "does", "did", "do", "is", "are", "was", "were",
 }
 
 
@@ -109,35 +119,71 @@ _STOP_PHRASES = {
     "which", "what", "how", "the following", "best describes", "according to",
 }
 
+# Function words that, at the *start or end* of a candidate, mark it as a
+# swallowed sentence fragment rather than a title ("Beatles To", "Of Human",
+# "Washington It", "Tender His").
+_FUNCTION_WORDS = frozenset({
+    "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "with",
+    "from", "by", "as", "at", "is", "are", "was", "were", "be", "his", "her",
+    "its", "it", "he", "she", "they", "this", "that", "their", "de", "von",
+    "but", "into", "over",
+})
+# Articles legitimately START many titles ("The Beatles", "A Clockwork Orange"),
+# so they're exempt from the leading-fragment check (but not the trailing one).
+_TITLE_ARTICLES = frozenset({"the", "a", "an"})
+
+
+def _is_fragment(phrase: str) -> bool:
+    """True when a candidate is a sentence fragment, not a plausible title: it
+    starts on a non-article function word ("Of Human"), ends on any function
+    word ("Beatles To", "Tender His"), or is a lone lowercase token (the
+    concept-suffix residue, e.g. "effect")."""
+    toks = phrase.split()
+    if not toks:
+        return True
+    first, last = toks[0].lower(), toks[-1].lower()
+    if first in _FUNCTION_WORDS and first not in _TITLE_ARTICLES:
+        return True
+    if last in _FUNCTION_WORDS:
+        return True
+    if len(toks) == 1 and phrase[:1].islower():
+        return True
+    return False
+
 
 def extract_candidates(question_text: str, options: Iterable[str]) -> list[str]:
     """Pull candidate Wikipedia-title phrases out of a question + its options.
 
-    Pure and deterministic — quoted spans, proper-noun runs, and salient
-    capitalised terms from both the stem and the options, deduped in order.
-    Resolution to canonical titles is a separate (optional, online) step.
+    Pure and deterministic — quoted spans, proper-noun runs, and lowercase
+    concept noun-phrases from both the stem and the options, deduped in order.
+    Sentence fragments (boundary function words, lone suffix residue) are
+    dropped here; canonicalising the survivors to real titles is a separate
+    (optional, online) ``resolve`` step.
     """
     text = question_text or ""
     opts = " ".join(o for o in options if o)
     cands: list[str] = []
     seen: set[str] = set()
 
-    def _add(phrase: str) -> None:
-        p = phrase.strip().strip(".,;:!?").strip()
+    def _add(phrase: str, *, trusted: bool = False) -> None:
+        p = (phrase or "").strip().strip(".,;:!?").strip()
         key = p.lower()
         if len(p) < 3 or key in _STOP_PHRASES or key in seen:
+            return
+        # Quoted spans are deliberate ("On the Waterfront" legitimately starts
+        # on a function word), so they skip the fragment heuristic; proper-noun
+        # and concept matches are heuristic and must pass it.
+        if not trusted and _is_fragment(p):
             return
         seen.add(key)
         cands.append(p)
 
     for m in _QUOTED_RE.finditer(text):
-        _add(m.group(1))
+        _add(m.group(1) or m.group(2), trusted=True)
     for m in _PROPER_NOUN_RE.finditer(f"{text} {opts}"):
         _add(m.group(0))
     for m in _CONCEPT_SUFFIX_RE.finditer(text.lower()):
         _add(_strip_leading_filler(m.group(1)))
-    for m in _SINGLE_CAP_RE.finditer(text):
-        _add(m.group(1))
     return cands
 
 

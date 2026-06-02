@@ -392,6 +392,46 @@ def test_fetch_from_categories_checkpoints_partial_harvest(tmp_path, monkeypatch
     assert len(corpus_mod.load_raw_corpus(ckpt)) >= 4
 
 
+def test_fetch_by_title_resolves_and_drops_unresolvable(monkeypatch):
+    """§8d: the gap queue canonicalises each title via wikipedia.search before
+    fetching — valid fragments resolve to real titles, no-hit junk is skipped
+    so it never reaches wikipedia.page()."""
+    import sys
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+
+    search_map = {
+        "the bystander effect": ["Bystander effect"],
+        "Beatles To": [],   # fragment → no usable hit → skipped
+    }
+    fetched: list[str] = []
+
+    class _Page:
+        def __init__(self, title):
+            self.title, self.url = title, ""
+            self.content = self.summary = f"About {title}."
+
+    class _Wiki:
+        class DisambiguationError(Exception): ...
+        class PageError(Exception): ...
+        @staticmethod
+        def set_lang(_): pass
+        @staticmethod
+        def search(q, results=1): return search_map.get(q, [])
+        @staticmethod
+        def page(name, auto_suggest=False):
+            fetched.append(name)
+            return _Page(name)
+    monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
+
+    out = corpus_mod.fetch_articles_by_title(
+        {Category.PHILOSOPHY: ["the bystander effect", "Beatles To"]},
+        fetch_aliases=False, sleep_seconds=0, verbose=False,
+    )
+    assert [a.title for a in out] == ["Bystander effect"]
+    assert fetched == ["Bystander effect"]   # the junk fragment never hit page()
+
+
 def test_corpus_version_is_positive_int():
     from polimibot.rag.corpus import CORPUS_VERSION
     assert isinstance(CORPUS_VERSION, int) and CORPUS_VERSION >= 2

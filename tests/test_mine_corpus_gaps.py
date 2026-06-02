@@ -71,6 +71,43 @@ def test_extract_candidates_proper_noun_run():
     assert "Battle of Actium" in cands
 
 
+def test_extract_candidates_drops_boundary_fragments():
+    """§8d: proper-noun runs that end (or start) on a function word are sentence
+    fragments, not titles — they must not survive extraction."""
+    cands = mcg.extract_candidates(
+        "Did The Beatles To stardom rise, like Of Human folly and Washington It?",
+        [])
+    lowers = [c.lower() for c in cands]
+    assert "beatles to" not in lowers
+    assert "of human" not in lowers
+    assert "washington it" not in lowers
+
+
+def test_extract_candidates_keeps_leading_article_titles():
+    """A leading article is fine for a real title ("The Beatles")."""
+    cands = mcg.extract_candidates("How did The Beatles change pop music forever?", [])
+    assert any(c.lower() == "the beatles" for c in cands)
+
+
+def test_extract_candidates_possessive_apostrophe_not_a_quote():
+    """§8d: a possessive apostrophe must not open a quoted span and swallow the
+    sentence ("s approach to learning his lines for")."""
+    cands = mcg.extract_candidates(
+        "What was Brando's approach to learning his lines for 'On the Waterfront'?",
+        [])
+    lowers = [c.lower() for c in cands]
+    assert not any(c.startswith("s approach") for c in lowers)
+    assert "On the Waterfront" in cands   # the real quoted title still resolves
+
+
+def test_extract_candidates_no_generic_relationship_phrase():
+    """§8d: 'relationship' is no longer a concept suffix — filler like
+    'does the relationship' must not be extracted."""
+    cands = mcg.extract_candidates(
+        "How does the relationship between supply and demand work?", [])
+    assert not any("relationship" in c.lower() for c in cands)
+
+
 # ── load_gap_candidates ──────────────────────────────────────────────────────
 
 def test_load_gap_candidates_buckets_by_category(tmp_path):

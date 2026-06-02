@@ -575,6 +575,7 @@ def fetch_articles_by_title(
     *,
     existing_titles: Optional[set[str]] = None,
     fetch_aliases: bool = True,
+    resolve: bool = True,
     sleep_seconds: float = 0.3,
     verbose: bool = True,
 ) -> list[Article]:
@@ -585,9 +586,18 @@ def fetch_articles_by_title(
     same retry/disambiguation/cleanup pipeline as the category crawl. Titles in
     ``existing_titles`` (already in the index) and cross-title duplicates are
     skipped. Failed fetches are skipped with a warning.
+
+    When ``resolve`` is True (default) each title is first canonicalised via
+    ``wikipedia.search(title, results=1)`` and the top hit is fetched instead of
+    the raw string. Gap candidates mined from question text are often fragments
+    ("Beatles To", "does the relationship") or casing variants ("the bystander
+    effect"); resolving turns the valid ones into real titles and drops the rest
+    *before* they reach ``wikipedia.page()`` — so no fragment triggers a
+    disambiguation/404 storm. Set False to fetch the literal strings.
     """
     import wikipedia  # lazy — only needed when this actually runs
     _configure_wikipedia(wikipedia)
+    can_search = resolve and hasattr(wikipedia, "search")
 
     existing = set(existing_titles or ())
     seen: set[str] = set()
@@ -597,11 +607,25 @@ def fetch_articles_by_title(
             if title in seen or title in existing:
                 continue
             seen.add(title)
+            fetch_title = title
+            if can_search:
+                try:
+                    hits = wikipedia.search(title, results=1)
+                except Exception:
+                    hits = []
+                if not hits:
+                    if verbose:
+                        print(f"  ! gap title '{title}' → no search hit — skipped")
+                    continue
+                fetch_title = hits[0]
+                if fetch_title in existing or fetch_title in seen:
+                    continue   # resolved to an article we already have / queued
+                seen.add(fetch_title)
             try:
-                art = _fetch_one(title, cat, verbose=verbose, fetch_aliases=fetch_aliases)
+                art = _fetch_one(fetch_title, cat, verbose=verbose, fetch_aliases=fetch_aliases)
             except Exception as exc:   # belt-and-braces — see fetch_articles_from_categories
                 if verbose:
-                    print(f"  ! unhandled error for '{title}': {exc!r} — skipped")
+                    print(f"  ! unhandled error for '{fetch_title}': {exc!r} — skipped")
                 art = None
             if art is not None:
                 out.append(art)
