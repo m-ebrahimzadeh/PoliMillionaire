@@ -27,11 +27,10 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
-import json
 
-from polimibot.config import NEWS, PATHS, Category
-from polimibot.rag.corpus import Article, load_raw_corpus
-from polimibot.rag.news_search import GuardianNewsSource
+from polimibot.config import NEWS, PATHS
+from polimibot.rag.corpus import Article, append_raw_corpus
+from polimibot.rag.news_search import harvest_news_range
 
 
 def main() -> None:
@@ -51,35 +50,17 @@ def main() -> None:
             "GUARDIAN_API_KEY=...` before running."
         )
 
-    # Harvest day-by-day so every date in the window gets its own pagination
-    # budget. A single fetch_range over a multi-day window only returns the
-    # newest ``page_size * max_pages`` results (the Guardian publishes hundreds
-    # of pieces a day), silently dropping the older end of the range — which is
-    # exactly where the dated News questions live.
-    source = GuardianNewsSource()
-    articles: list[Article] = []
-    day = from_date
-    while day <= to_date:
-        day_articles = source.fetch_range(
-            day, day,
-            query=args.query,
-            sections=args.sections,
-            page_size=args.page_size,
-            max_pages=args.max_pages,
-        )
-        articles.extend(day_articles)
-        print(f"  {day}: {len(day_articles)} article(s)")
-        day += _dt.timedelta(days=1)
-
-    # De-dup across the whole harvest by title (paging / adjacent days can
-    # re-surface an article).
-    seen: set[str] = set()
-    unique: list[Article] = []
-    for a in articles:
-        if a.title not in seen:
-            seen.add(a.title)
-            unique.append(a)
-    print(f"Fetched {len(articles)} results → {len(unique)} unique articles.")
+    # Harvest day-by-day (see harvest_news_range) so every date in the window
+    # gets its own pagination budget and the older end of the range is not
+    # silently dropped — that is exactly where the dated News questions live.
+    unique = harvest_news_range(
+        from_date, to_date,
+        query=args.query,
+        sections=args.sections,
+        page_size=args.page_size,
+        max_pages=args.max_pages,
+        verbose=True,
+    )
 
     if not unique:
         print("Nothing fetched — check the key, date window, or query and retry.")
@@ -88,7 +69,7 @@ def main() -> None:
     if args.build:
         _build_index(unique)
     else:
-        n = _append_to_corpus(unique)
+        n = append_raw_corpus(unique, PATHS.cache_dir / "corpus.jsonl")
         print(f"Appended {n} new article(s) to {PATHS.cache_dir / 'corpus.jsonl'}.")
         print("Next: build the index with —")
         print("    python scripts/build_rag_index.py --fresh        # first time (all categories)")
@@ -138,31 +119,6 @@ def _build_index(articles: list[Article]) -> None:
     grower.flush()                       # persist FAISS + BM25 + corpus.jsonl
     print(f"Indexed {added} new news article(s); index now has "
           f"{retriever.n_chunks} chunks total.")
-
-
-# ── Corpus append (fetch-only mode) ──────────────────────────────────────────
-
-def _append_to_corpus(articles: list[Article]) -> int:
-    """Append new articles to corpus.jsonl, de-duplicating by title."""
-    corpus_path = PATHS.cache_dir / "corpus.jsonl"
-    existing: set[str] = set()
-    if corpus_path.is_file():
-        try:
-            existing = {a.title for a in load_raw_corpus(corpus_path)}
-        except Exception:  # noqa: BLE001 — absent/corrupt corpus → just append
-            existing = set()
-
-    new = [a for a in articles if a.title not in existing]
-    if not new:
-        return 0
-    corpus_path.parent.mkdir(parents=True, exist_ok=True)
-    with corpus_path.open("a", encoding="utf-8") as f:
-        for a in new:
-            f.write(json.dumps({
-                "title": a.title, "text": a.text,
-                "category": a.category.value, "url": a.url,
-            }, ensure_ascii=False) + "\n")
-    return len(new)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

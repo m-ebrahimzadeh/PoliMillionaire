@@ -342,7 +342,7 @@ code:not([class*="language-"]) { font-family: 'JetBrains Mono', monospace; backg
     <div class="sec-num">What is this project?</div>
     <h2 class="sec-title">The Big Picture</h2>
 
-    <p><strong>PoliMillionaire</strong> is an AI bot that plays "Who Wants to Be a Millionaire?" — a quiz show where 15 multiple-choice questions with increasing difficulty stand between you and €1,000,000. The bot connects to a live game server, receives questions across 4 categories (Entertainment, History, Science, Maths), and uses a suite of AI strategies to pick the best answer within a 30-second time limit.</p>
+    <p><strong>PoliMillionaire</strong> is an AI bot that plays "Who Wants to Be a Millionaire?" — a quiz show where 15 multiple-choice questions with increasing difficulty stand between you and €1,000,000. The bot connects to a live game server, receives questions across 6 categories (Entertainment, History, Science, Maths, Philosophy &amp; Psychology, and News), and uses a suite of AI strategies to pick the best answer within a 30-second time limit.</p>
 
     <div class="diagram">
       <div class="mermaid">
@@ -376,7 +376,7 @@ graph TD
     <table class="tbl">
       <tr><th>Chapter</th><th>What you'll learn</th><th>Key concepts</th></tr>
       <tr><td>🎮 <strong>Game</strong></td><td>HTTP client, adapter pattern, game loop, watchdog</td><td>MillionaireClient, GameAdapter, Runner, Pacer</td></tr>
-      <tr><td>📚 <strong>RAG</strong></td><td>How the bot looks up answers in Wikipedia</td><td>FAISS, BM25, RRF, Embeddings, IndexGrower</td></tr>
+      <tr><td>📚 <strong>RAG</strong></td><td>How the bot looks up answers in Wikipedia (and The Guardian for News)</td><td>FAISS, BM25, RRF, Embeddings, IndexGrower, News</td></tr>
       <tr><td>🧠 <strong>Strategies</strong></td><td>Every answering algorithm from random to ensemble</td><td>Strategy pattern, Chain of Responsibility, Tiering</td></tr>
       <tr><td>💬 <strong>Prompts</strong></td><td>How questions are formatted for the LLM</td><td>PromptStyle, CoT, Few-Shot, parse_answer</td></tr>
       <tr><td>🔧 <strong>Tools</strong></td><td>Deterministic computation and ReAct agents</td><td>MathsTool, safe_eval, AgentStrategy</td></tr>
@@ -584,7 +584,7 @@ Answer:"""   # → LLM sees "1870" twice → P(B) = 0.91</code></pre>
       <div class="code-header">polimibot/rag/embedder.py — asymmetric encoding</div>
       <pre><code class="language-python">@dataclass(frozen=True)
 class EmbedderSpec:
-    model_name:     str = "BAAI/bge-small-en-v1.5"  # 384-dim, ~130 MB
+    model_name:     str = "BAAI/bge-base-en-v1.5"   # 768-dim, ~440 MB
     normalize:      bool = True   # L2-norm → dot product = cosine similarity
     query_prefix:   str = "Represent this sentence for searching relevant passages: "
     passage_prefix: str = ""      # passages get NO prefix
@@ -652,6 +652,27 @@ grower.flush()               # Phase 3: Persist in-memory growth to disk files</
     </div>
     <div class="callout design">
       <p><strong>Only the Runner calls confirm/discard</strong> — the strategy doesn't know whether the answer was correct (that comes from the server AFTER submission). The runner is the only component that sees both the strategy output AND the server verdict.</p>
+    </div>
+  </div>
+
+  <div class="section" id="rag-news">
+    <div class="sec-num">Section 7</div>
+    <h2 class="sec-title">The News Category — Guardian-Backed Hybrid RAG</h2>
+    <div class="callout analogy">
+      <p><strong>Five categories answer from a library; one needs today's newspaper.</strong> News questions cite a <em>specific dated article</em> ("according to the article published on 2026-05-17…") that Wikipedia can't serve. So the News category swaps Wikipedia for <strong>The Guardian Open Platform</strong> — free key, full body text, and precise publication-date filtering — while the rest of the pipeline stays the same.</p>
+    </div>
+    <p>It's <strong>hybrid</strong>: an offline harvest (<code>harvest_news_range()</code>, run automatically in the notebook's §0.4a-news) seeds the index with recent Guardian articles, and an online source (<strong>NewsLiveSearch</strong>) covers the rest at question time. <code>NewsLiveSearch</code> implements the same <code>search(query, *, category)</code> contract as <code>LiveSearchFallback</code>, so it drops straight into the gated live-fallback seam — only the NEWS category is affected.</p>
+    <div class="code-block">
+      <div class="code-header">polimibot/rag/news_search.py — date-aware lookup with a Wikipedia safety net</div>
+      <pre><code class="language-python">date = extract_question_date(query)      # ISO, prose, or speech-mangled forms
+hits = guardian.search(q, from_date=date-2d, to_date=date+2d)  # ±2-day window
+if hits:        return hits              # 1. Guardian, date-windowed
+hits = guardian.search(q)                # 2. broaden once if empty
+if hits:        return hits
+return wiki.search(query, category)      # 3. Wikipedia fallback → never goes dark</code></pre>
+    </div>
+    <div class="callout design">
+      <p><strong>Degrades gracefully &amp; learns.</strong> The Guardian key comes from <code>GUARDIAN_API_KEY</code>; with no key the source falls through to Wikipedia, so nothing crashes (CI, offline dev). Responses cache to <code>data/cache/news/</code> with differential freshness (non-empty = permanent, empty = 15-min TTL), so eval replays cost no quota. Confirmed-correct live articles are learned into the offline index by the same IndexGrower as every other category.</p>
     </div>
   </div>
 

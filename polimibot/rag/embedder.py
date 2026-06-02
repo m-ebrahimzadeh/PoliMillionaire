@@ -68,7 +68,7 @@ class EmbedderSpec:
     Mismatches between indexer and retriever corrupt scores — the manifest
     carries both values and ``_check_manifest_compat`` hard-fails on drift.
     """
-    model_name: str = "BAAI/bge-small-en-v1.5"   # 384-dim, ~130 MB, CPU-friendly
+    model_name: str = "BAAI/bge-base-en-v1.5"   # 768-dim, ~440 MB
     batch_size: int = 64
     normalize: bool = True   # L2-normalize → cosine sim becomes dot product
     query_prefix: Optional[str] = None    # None → auto-derive from model_name

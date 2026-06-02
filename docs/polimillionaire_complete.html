@@ -1103,6 +1103,7 @@ code:not([class*="language-"]) {
                 <li><a href="#rag-hybrid">Hybrid &amp; RRF Fusion</a></li>
                 <li><a href="#rag-rerank">Cross-Encoder Reranking</a></li>
                 <li><a href="#rag-grower">IndexGrower</a></li>
+                <li><a href="#rag-news">The News Category (Guardian)</a></li>
             </div>
 
             <div class="section-group" data-chapter="tools">
@@ -1111,6 +1112,7 @@ code:not([class*="language-"]) {
                 <li><a href="#tools-interface">Tool Interface</a></li>
                 <li><a href="#tools-safe-eval">Safe Evaluator</a></li>
                 <li><a href="#tools-maths">MathsTool</a></li>
+                <li><a href="#tools-symbolic">Symbolic &amp; Stats Tools</a></li>
                 <li><a href="#tools-strategy">ToolStrategy</a></li>
                 <li><a href="#tools-agent">AgentStrategy (ReAct)</a></li>
                 <li><a href="#tools-security">Security Design</a></li>
@@ -1194,7 +1196,7 @@ code:not([class*="language-"]) {
         <p><strong>PoliMillionaire is "Who Wants to Be a Millionaire?" — but the contestant is an AI bot.</strong> A server asks multiple-choice questions. The bot has 30 seconds to answer each one. Correct → advance to the next level and earn more money. Wrong → game over (but you keep the "safe amount" from milestone levels). Reach level 15 → maximum prize of €1,000,000.</p>
     </div>
 
-    <p>This project builds a sophisticated AI system that combines multiple techniques — large language models, retrieval-augmented generation, deterministic computation tools, and ensemble strategies — to answer trivia questions across four categories with high accuracy.</p>
+    <p>This project builds a sophisticated AI system that combines multiple techniques — large language models, retrieval-augmented generation, deterministic computation tools, and ensemble strategies — to answer trivia questions across six categories with high accuracy.</p>
 
     <h3>The Money Pyramid</h3>
     <p>Each level corresponds to a prize amount. Getting a question wrong drops you back to the last "milestone" (safe amount). The pyramid structure creates increasing stakes:</p>
@@ -1209,17 +1211,19 @@ code:not([class*="language-"]) {
         <div class="pyramid-row top"><span class="level-label">Level 15 🏆</span><span class="amount">€1,000,000</span></div>
     </div>
 
-    <h3>The Four Competitions</h3>
+    <h3>The Six Competitions</h3>
     <table class="comparison-table">
         <tr><th>ID</th><th>Name</th><th>Category</th><th>Strategy Strength</th></tr>
         <tr><td>0</td><td>Entertainment</td><td>ENTERTAINMENT</td><td>Pop culture — LLM's strong suit</td></tr>
         <tr><td>1</td><td>Ancient History &amp; Politics</td><td>HISTORY</td><td>RAG excels for obscure facts</td></tr>
         <tr><td>2</td><td>Science &amp; Nature</td><td>SCIENCE</td><td>Mix of common and specific details</td></tr>
         <tr><td>3</td><td>Maths</td><td>MATHS</td><td>MathsTool + Agent for computation</td></tr>
+        <tr><td>4</td><td>Philosophy &amp; Psychology</td><td>PHILOSOPHY</td><td>Conceptual reasoning — LLM + RAG over Wikipedia</td></tr>
+        <tr><td>5</td><td>News</td><td>NEWS</td><td>Dated articles — Guardian-backed hybrid RAG, not Wikipedia</td></tr>
     </table>
 
     <div class="callout tip">
-        <p><strong>Why category matters:</strong> The TieredStrategy routes Maths questions to MathsTool regardless of difficulty level. History and Science questions benefit most from RAG (Wikipedia coverage is strong). The category is embedded in every <code>StrategyInput</code> so strategies can specialize their behavior.</p>
+        <p><strong>Why category matters:</strong> The TieredStrategy routes Maths questions to MathsTool regardless of difficulty level. History, Science and Philosophy questions benefit most from RAG (Wikipedia coverage is strong). News is the exception — its questions reference a <em>specific dated article</em> that Wikipedia cannot serve, so it is grounded in The Guardian Open Platform through a hybrid online/offline path (see <a href="#rag-news">RAG → The News Category</a>). The category is embedded in every <code>StrategyInput</code> so strategies can specialize their behavior.</p>
     </div>
 </section>
 
@@ -1847,7 +1851,7 @@ class Strategy(ABC):
     <div class="section-label">Prompt Engineering</div>
     <h2>The PromptStyle Enum — 5 Experiment Conditions</h2>
 
-    <p>In PoliMillionaire, the same LLM answers trivia questions across four categories. The difference between 60% and 85% accuracy often isn't a better model — it's a better prompt.</p>
+    <p>In PoliMillionaire, the same LLM answers trivia questions across six categories. The difference between 60% and 85% accuracy often isn't a better model — it's a better prompt.</p>
 
     <div class="callout design">
         <p><strong>Core Philosophy:</strong> A <code>PromptStyle</code> is an <strong>experiment condition</strong>, not a magic string. Only the <code>templates.py</code> module knows what text goes to the model. Everything else speaks in terms of the enum — making ablation studies trivial.</p>
@@ -2298,7 +2302,7 @@ def harvest_titles(
 
     <p>The semantic search pipeline:</p>
     <ol style="margin: 12px 0 24px 24px; color: var(--text-secondary); line-height: 2;">
-        <li><strong>Offline:</strong> Every Wikipedia chunk is embedded into a 384-dim vector using a sentence transformer model</li>
+        <li><strong>Offline:</strong> Every Wikipedia chunk is embedded into a 768-dim vector using a sentence transformer model (BAAI/bge-base-en-v1.5)</li>
         <li><strong>Stored:</strong> All vectors are indexed in a FAISS flat index (exact nearest-neighbor search)</li>
         <li><strong>At query time:</strong> The question is embedded with the same model → find the k nearest vectors → retrieve those chunks</li>
     </ol>
@@ -2427,6 +2431,78 @@ def harvest_titles(
         <li data-line="Confirm">On correct answer → chunks are added permanently. The index grows over time.<span class="purpose">The bot gets smarter with every game it plays.</span></li>
         <li data-line="Discard">On wrong answer → chunks are thrown away. Wrong context could mislead future answers.<span class="purpose">Quality control: only verified facts enter the knowledge base.</span></li>
     </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SECTION: RAG — THE NEWS CATEGORY (GUARDIAN)
+     ═══════════════════════════════════════════════════════════════════════ -->
+<section class="section" id="rag-news" data-chapter="rag">
+    <div class="section-label">RAG Pipeline</div>
+    <h2>The News Category — Guardian-Backed Hybrid RAG</h2>
+
+    <div class="callout analogy">
+        <p><strong>Five categories answer from a library; one needs today's newspaper.</strong> Entertainment, History, Science, Maths and Philosophy all live comfortably in Wikipedia. <strong>News</strong> does not — its questions cite a <em>specific dated article</em>: "According to the article published on <strong>2026-05-17</strong>, which charity is advocating for changes to the benefit cap?" Wikipedia has no such article; a news API with full-text search and date filtering does. So the News category swaps Wikipedia for <strong>The Guardian Open Platform</strong> — the rest of the RAG pipeline is unchanged.</p>
+    </div>
+
+    <p><strong>Why The Guardian:</strong> a free developer key, the full article body via <code>show-fields=bodyText</code>, a complete archive back to 1999, and <code>from-date</code>/<code>to-date</code> publication-date filtering — exactly what a dated question needs to resolve to the right piece.</p>
+
+    <p>The News path is <strong>hybrid</strong>: an offline harvest seeds the index so most recent-date questions answer with no network, and an online live source covers whatever the harvest missed. Both emit ordinary <code>Article</code> objects, so they flow through the same chunk → embed → index machinery as every other category.</p>
+
+    <table class="comparison-table">
+        <tr><th></th><th>Offline harvest</th><th>Online live source</th></tr>
+        <tr><td><strong>Code</strong></td><td><code>scripts/fetch_news_corpus.py</code> · notebook §0.4a-news · <code>harvest_news_range()</code></td><td><code>NewsLiveSearch</code> → <code>RAGStrategy(news_search=…)</code></td></tr>
+        <tr><td><strong>When</strong></td><td>At index-build time</td><td>At question time, only when offline retrieval is gated</td></tr>
+        <tr><td><strong>Guardian call</strong></td><td><code>GuardianNewsSource.fetch_range()</code> (paginated)</td><td><code>GuardianNewsSource.search()</code> (date-windowed)</td></tr>
+    </table>
+
+    <div class="callout tip">
+        <p><strong>Why harvest day-by-day?</strong> The Guardian publishes hundreds of pieces a day. A single multi-day query returns only the newest <code>page-size × max-pages</code> results and silently drops the older end of the range — exactly where the dated questions live. So <code>harvest_news_range()</code> walks the window one day at a time, de-duplicating by title. The notebook's §0.4a-news runs this automatically over the last <code>INDEX_NEWS_GUARDIAN_DAYS</code> days (default 45), key-gated so it skips cleanly when no key is set.</p>
+    </div>
+
+    <h3>The Online Source — A Drop-In for Live Search</h3>
+    <p><code>NewsLiveSearch</code> implements the <em>same</em> <code>search(query, *, category) → list[Article]</code> contract as the Wikipedia <code>LiveSearchFallback</code>, so it plugs straight into the existing threshold-gated live-fallback seam. NEWS questions route through the Guardian; every other category is untouched.</p>
+
+    <div class="code-block">
+        <div class="filename">polimibot/rag/news_search.py — the lookup order, simplified</div>
+        <pre><code class="language-python">class NewsLiveSearch:
+    """Date-aware Guardian live search with a Wikipedia safety net."""
+
+    def search(self, query, *, category=None):
+        date = extract_question_date(query)   # "2026-05-17" → date(2026,5,17)
+        q    = _build_news_query(query)       # strip the date + "according to…" boilerplate
+
+        # 1. Guardian, constrained to a ±date_window_days window (±2 days)
+        if date is not None:
+            window = timedelta(days=self.config.date_window_days)
+            hits = self.guardian.search(q, from_date=date-window, to_date=date+window)
+            if hits:
+                return hits                    # provenance: "guardian_window"
+            if self.guardian.last_call_failed: # 429 / timeout / no key
+                return self._wiki_search(query, category)
+
+        # 2. Healthy but empty (window too tight, or no date) → broaden once
+        hits = self.guardian.search(q)
+        if hits:
+            return hits                        # provenance: "guardian_broad"
+
+        # 3. Still nothing → delegate to Wikipedia so we never go dark
+        return self._wiki_search(query, category)   # provenance: "wikipedia"</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="extract_question_date">Pulls the publication date out of the question. Handles ISO (<code>2026-05-17</code>), dotted/slashed variants, the concatenated speech form (<code>2026.0518</code>), and English prose (<code>17 May 2026</code> / <code>May 17, 2026</code>).<span class="purpose">Speech-mode transcripts mangle dates; the parser recovers them so the right window is queried.</span></li>
+        <li data-line="±2 days">The window is <code>date ± 2 days</code>, not the exact date — an article "published on the 17th" may carry a 16th or 18th <code>webPublicationDate</code> (publish-vs-update and timezone skew).<span class="purpose">Widened after a live game showed exact-date windows missing the article.</span></li>
+        <li data-line="last_call_failed">Distinguishes "the Guardian is unavailable right now" (429 / timeout / no key — don't retry into a throttled endpoint) from "the Guardian answered but found nothing" (a broader query may still help).<span class="purpose">Avoids burning the question's time budget on a second doomed call.</span></li>
+        <li data-line="_wiki_search">If the Guardian yields nothing — empty result, missing key, or any error — it delegates to the Wikipedia fallback.<span class="purpose">Graceful degradation: News never goes dark, even with no API key (CI, offline dev).</span></li>
+    </ul>
+
+    <div class="callout design">
+        <p><strong>Caching is differentially fresh.</strong> Guardian responses are cached under <code>data/cache/news/</code>, keyed <em>without</em> the API key (a key rotation doesn't invalidate the cache, and the key never lands on disk). Non-empty results never expire — a date-windowed query for an already-published article is stable, so eval replays cost zero quota. Empty results expire after 15 minutes, because the query may have run before the Guardian indexed a very recent article. The key itself is read from <code>GUARDIAN_API_KEY</code>; with no key, the source skips the network and falls through to Wikipedia.</p>
+    </div>
+
+    <div class="callout tip">
+        <p><strong>In-band datelines + learning.</strong> Each Guardian article is prefixed with a <code>"Published YYYY-MM-DD. "</code> dateline before chunking, so the date informs both the embedding and BM25 without a <code>Chunk</code>-schema change. Per-query provenance (<code>guardian_window</code> / <code>guardian_broad</code> / <code>wikipedia</code>) and HTTP counters are recorded for observability and surfaced by <code>print_news_stats()</code>. And because the live source returns ordinary <code>Article</code> objects, confirmed-correct live articles are learned into the offline index by the same IndexGrower as every other category — News coverage grows over time.</p>
+    </div>
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════════
@@ -2622,6 +2698,40 @@ graph LR
 
     <div class="callout tip">
         <p><strong>Count the exit points:</strong> There are 4 places where the tool returns None (abstains). Only ONE path leads to an answer. This is intentional — narrow corridor of success, wide highway of graceful failure. When it DOES answer, you can trust it.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SECTION: TOOLS — SYMBOLIC & STATISTICAL
+     ═══════════════════════════════════════════════════════════════════════ -->
+<section class="section" id="tools-symbolic" data-chapter="tools">
+    <div class="section-label">Tools &amp; Computation</div>
+    <h2>Symbolic &amp; Statistical Tools — Beyond Arithmetic</h2>
+
+    <div class="callout analogy">
+        <p><strong>MathsTool is a pocket calculator; some Maths questions need a graphing calculator and a stats table.</strong> "15% of 400?" is arithmetic. But "find x if 3x(x+5) = 2(3x+x+5)", "the remainder when 2^87 is divided by 7", or "the probability that at least 3 of 5 cyclones become hurricanes" need algebra, exact modular arithmetic, and probability distributions. Two more tools cover those — each following MathsTool's precision-over-recall contract: abstain on anything ambiguous, answer only when the result matches an option.</p>
+    </div>
+
+    <h3>SympyDirectTool — Symbolic Math, Before the LLM</h3>
+    <p><code>SympyDirectTool</code> runs <em>before</em> the LLM (no agent loop, purely deterministic). It carries a library of regex patterns that recognise common Maths-question shapes, build a SymPy expression, evaluate it exactly, and match the result against the options.</p>
+
+    <table class="comparison-table">
+        <tr><th>Question type</th><th>Example</th><th>Becomes</th></tr>
+        <tr><td>Equations / unknowns</td><td>"If 3x(x+5) = 2(3x+x+5), find x"</td><td><code>solve(...)</code></td></tr>
+        <tr><td>Modular arithmetic</td><td>"remainder when 2^87 is divided by 7"</td><td><code>Mod(2**87, 7)</code></td></tr>
+        <tr><td>Combinatorics</td><td>"how many ways to choose 3 from 25"</td><td><code>binomial(25, 3)</code></td></tr>
+        <tr><td>Polynomial roots, geometry, repeating decimals, linear systems, LaTeX</td><td>"maximum of 4(x+7)(2−x)", "evaluate log₈2"</td><td>exact SymPy result</td></tr>
+    </table>
+
+    <div class="callout design">
+        <p><strong>The engine: <code>sympy_solve</code>.</strong> Both <code>SympyDirectTool</code> and the <code>AgentStrategy</code> ReAct loop evaluate symbolic expressions through the same <code>sympy_solve</code> (polimibot/tools/sympy_tool.py). It exposes only a curated, sandboxed subset of SymPy names (<code>solve</code>, <code>Mod</code>, <code>binomial</code>, <code>factorial</code>, <code>simplify</code>, <code>isprime</code>, …) — no file I/O, no <code>os</code>, no <code>exec</code> — and is lazy-imported (~2&nbsp;s cold, &lt;1&nbsp;ms warm) so startup stays fast.</p>
+    </div>
+
+    <h3>StatsTool — Probability Distributions</h3>
+    <p><code>StatsTool</code> covers questions that need <code>scipy.stats</code> — ones neither MathsTool nor SympyDirectTool can: binomial P(X ≥ k) / P(X = k), normal percentiles, P(X &lt; x), and normal-inverse problems ("80% weigh more than 10000 — find the mean/std"). It lazy-imports scipy and abstains on any parse failure or ambiguous phrasing.</p>
+
+    <div class="callout tip">
+        <p><strong>Three specialists, one chain.</strong> All three are <code>Tool</code> implementations exported from <code>polimibot.tools</code> (<code>MathsTool</code>, <code>SympyDirectTool</code>, <code>StatsTool</code>, plus <code>sympy_solve</code> and <code>safe_eval</code>), so they slot into the <code>ToolStrategy</code> chain (next section) in priority order: try the cheap deterministic solver first, fall through to the next, and only call the LLM if every tool abstains.</p>
     </div>
 </section>
 

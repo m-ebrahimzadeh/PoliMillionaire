@@ -10,7 +10,7 @@ from polimibot.rag.embedder import EmbedderSpec, _prefixes_for_model
 
 def test_default_spec_uses_bge_prefix():
     spec = EmbedderSpec()
-    assert spec.model_name == "BAAI/bge-small-en-v1.5"
+    assert spec.model_name == "BAAI/bge-base-en-v1.5"
     assert "Represent this sentence" in spec.query_prefix
     assert spec.passage_prefix == ""
 

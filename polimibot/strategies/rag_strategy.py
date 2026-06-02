@@ -591,6 +591,13 @@ class RAGStrategy(Strategy):
         live_articles_titles: list[str] = []
         live_latency_seconds: Optional[float] = None
         live_passages: list[tuple[Chunk, float]] = []
+        # Provenance of the live result (NEWS only): which source actually
+        # served it — guardian_window | guardian_broad | wikipedia | none — and
+        # whether a publication date was parsed from the question. Populated
+        # from NewsLiveSearch after the search; the Wikipedia LiveSearchFallback
+        # exposes neither, so both stay None for non-NEWS categories.
+        live_provider: Optional[str] = None
+        news_date_extracted: Optional[bool] = None
         # Pre-filter scored live passages — populated when live search fires and
         # articles are scored, before the threshold filter is applied.
         # Used to build the merged debug pool in extras when all passages are
@@ -627,6 +634,10 @@ class RAGStrategy(Strategy):
                 category=inp.category,
             )
             live_latency_seconds = round(time.monotonic() - _t0, 3)
+            # NewsLiveSearch records which source served the result; the
+            # Wikipedia LiveSearchFallback has no such attributes (→ None).
+            live_provider = getattr(live_source, "last_provider", None)
+            news_date_extracted = getattr(live_source, "last_date_extracted", None)
 
             if live_articles:
                 live_fired = True
@@ -848,6 +859,10 @@ class RAGStrategy(Strategy):
                 "live_search_latency":  live_latency_seconds,
                 "live_search_query":    live_search_query,
                 "live_top_score":       live_top_score,
+                # Live-source provenance (NEWS): which source served the result
+                # and whether a publication date was parsed from the question.
+                "live_provider":        live_provider,
+                "news_date_extracted":  news_date_extracted,
                 # Debug pool — populated only when live fired but all passages
                 # scored below threshold.  NOT sent to LLM; trace display only.
                 "live_all_below_threshold": live_all_below,

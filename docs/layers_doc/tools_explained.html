@@ -260,10 +260,11 @@ code:not([class*="language-"]) {
         <a href="#s2">2. Tool Interface</a>
         <a href="#s3">3. Safe Evaluator</a>
         <a href="#s4">4. MathsTool</a>
-        <a href="#s5">5. ToolStrategy</a>
-        <a href="#s6">6. AgentStrategy</a>
-        <a href="#s7">7. Security</a>
-        <a href="#s8">8. Big Picture</a>
+        <a href="#s5">5. Symbolic &amp; Stats Tools</a>
+        <a href="#s6">6. ToolStrategy</a>
+        <a href="#s7">7. AgentStrategy</a>
+        <a href="#s8">8. Security</a>
+        <a href="#s9">9. Big Picture</a>
     </div>
 </nav>
 
@@ -678,10 +679,54 @@ def _match_options(result: float, options: tuple[str, ...]) -> Optional[int]:
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!-- SECTION 5: ToolStrategy -->
+<!-- SECTION 5: Symbolic & Statistical Tools -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <section class="section" id="s5">
     <div class="section-number">Section 5</div>
+    <h2>Symbolic &amp; Statistical Tools — Beyond Arithmetic</h2>
+
+    <div class="card analogy">
+        <p><strong>MathsTool is a pocket calculator; some Maths questions need a graphing calculator and a stats table.</strong> "What is 15% of 400?" is arithmetic — MathsTool's <code>safe_eval</code> handles it. But "find x if 3x(x+5) = 2(3x+x+5)", "the remainder when 2^87 is divided by 7", or "the probability that at least 3 of 5 cyclones become hurricanes" need <em>algebra</em>, <em>exact modular arithmetic</em>, and <em>probability distributions</em>. Two more tools cover those — each following MathsTool's exact precision-over-recall contract: abstain on anything ambiguous, answer only when the result matches an option.</p>
+    </div>
+
+    <h3>SympyDirectTool — Symbolic Math, Before the LLM</h3>
+    <p><code>SympyDirectTool</code> runs <em>before</em> the LLM (no agent loop, no LLM at any point — purely deterministic). It carries a library of regex patterns that recognise common Maths-question shapes, build a SymPy expression, evaluate it exactly, and check the result against the options.</p>
+
+    <table class="comparison-table">
+        <tr><th>Question type</th><th>Example</th><th>Becomes</th></tr>
+        <tr><td>Equations / unknowns</td><td>"If 3x(x+5) = 2(3x+x+5), find x"</td><td><code>solve(...)</code></td></tr>
+        <tr><td>Modular arithmetic</td><td>"remainder when 2^87 is divided by 7"</td><td><code>Mod(2**87, 7)</code></td></tr>
+        <tr><td>Combinatorics</td><td>"how many ways to choose 3 from 25"</td><td><code>binomial(25, 3)</code></td></tr>
+        <tr><td>Polynomial roots</td><td>"maximum of 4(x+7)(2−x)"</td><td>vertex of the parabola</td></tr>
+        <tr><td>Geometry, repeating decimals, linear systems, LaTeX</td><td>"express 0.1̄7̄ as a fraction", "evaluate log₈2"</td><td>exact SymPy result</td></tr>
+    </table>
+
+    <div class="card design">
+        <p><strong>The engine: <code>sympy_solve</code> (polimibot/tools/sympy_tool.py).</strong> Both <code>SympyDirectTool</code> and the <code>AgentStrategy</code> ReAct loop evaluate symbolic expressions through the same <code>sympy_solve</code> function. It exposes only a <strong>curated, sandboxed subset</strong> of SymPy names (<code>solve</code>, <code>Mod</code>, <code>binomial</code>, <code>factorial</code>, <code>simplify</code>, <code>isprime</code>, …) — no file I/O, no <code>os</code>, no <code>exec</code> — and is lazy-imported (~2&nbsp;s cold, &lt;1&nbsp;ms warm) so startup stays fast.</p>
+    </div>
+
+    <h3>StatsTool — Probability Distributions</h3>
+    <p><code>StatsTool</code> covers question types neither MathsTool nor SympyDirectTool can: probability questions that need <code>scipy.stats</code>. Like the others, it lazy-imports scipy on first call and abstains immediately on any parse failure or ambiguous phrasing.</p>
+
+    <table class="comparison-table">
+        <tr><th>Distribution</th><th>Question shape</th></tr>
+        <tr><td>Binomial P(X ≥ k)</td><td>"probability that at least 3 of 5 cyclones become hurricanes"</td></tr>
+        <tr><td>Binomial P(X = k)</td><td>"probability that exactly 2 of 4 tests are positive"</td></tr>
+        <tr><td>Normal percentile</td><td>"28th percentile of N(9.8, 2.1) — how far from the mean?"</td></tr>
+        <tr><td>Normal P(X &lt; x)</td><td>"P(mean &lt; 3.9) for a sample of 40 from N(4, 0.25)"</td></tr>
+        <tr><td>Normal inverse</td><td>"80% weigh more than 10000 — find the mean / std"</td></tr>
+    </table>
+
+    <div class="card tip">
+        <p><strong>Three specialists, one chain.</strong> All three are <code>Tool</code> implementations, so they slot into the <code>ToolStrategy</code> chain (next section) in priority order: try the cheap deterministic solver first, fall through to the next, and only call the LLM if every tool abstains. Each is exported from <code>polimibot.tools</code> (<code>MathsTool</code>, <code>SympyDirectTool</code>, <code>StatsTool</code>, <code>sympy_solve</code>, <code>safe_eval</code>).</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 6: ToolStrategy -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s6">
+    <div class="section-number">Section 6</div>
     <h2>ToolStrategy — Chain of Responsibility</h2>
 
     <div class="card analogy">
@@ -769,10 +814,10 @@ tool_rag = ToolStrategy(
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!-- SECTION 6: AgentStrategy -->
+<!-- SECTION 7: AgentStrategy -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<section class="section" id="s6">
-    <div class="section-number">Section 6</div>
+<section class="section" id="s7">
+    <div class="section-number">Section 7</div>
     <h2>AgentStrategy — The Thinking Loop (ReAct)</h2>
 
     <div class="card analogy">
@@ -935,10 +980,10 @@ Rules:
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!-- SECTION 7: Security Design -->
+<!-- SECTION 8: Security Design -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<section class="section" id="s7">
-    <div class="section-number">Section 7</div>
+<section class="section" id="s8">
+    <div class="section-number">Section 8</div>
     <h2>Security Design — Defense in Depth</h2>
 
     <div class="card analogy">
@@ -985,9 +1030,9 @@ graph TD
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!-- SECTION 8: The Big Picture -->
+<!-- SECTION 9: The Big Picture -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<section class="section" id="s8">
+<section class="section" id="s9">
     <div class="section-number">The Big Picture</div>
     <h2>How Tools Fit Into the System</h2>
 

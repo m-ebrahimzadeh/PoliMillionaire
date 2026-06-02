@@ -7,6 +7,7 @@ fully offline and are safe in CI.
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import types
 from unittest.mock import MagicMock, patch
 
@@ -17,6 +18,7 @@ from polimibot.rag import news_search as ns
 from polimibot.rag.corpus import Article
 from polimibot.rag.news_search import (
     GuardianNewsSource, NewsLiveSearch, _build_news_query, extract_question_date,
+    harvest_news_range,
 )
 
 
@@ -64,11 +66,21 @@ def _resp(payload, *, status_code=200, raise_exc=None, headers=None):
     ("as reported on 2026-05-18?", _dt.date(2026, 5, 18)),
     ("an event on 16th May 2026 in London", _dt.date(2026, 5, 16)),
     ("released May 16, 2026 by the charity", _dt.date(2026, 5, 16)),
+    ("As per the 2026.05.06 report, who won", _dt.date(2026, 5, 6)),   # dotted
+    ("as reported on 2026/05/07", _dt.date(2026, 5, 7)),                # slashed
+    ("event on 2026.0518 involving BBC journalists", _dt.date(2026, 5, 18)),  # concatenated speech form
     ("no date here at all", None),
     ("not a date 2026-13-40 here", None),  # invalid → None
 ])
 def test_extract_question_date(text, expected):
     assert extract_question_date(text) == expected
+
+
+def test_build_news_query_strips_dotted_and_compact_dates():
+    q1 = _build_news_query("As per the 2026.05.06 report, which party claimed victory?")
+    assert "2026.05.06" not in q1 and "party" in q1
+    q2 = _build_news_query("What event occurred on 2026.0518 involving BBC journalists?")
+    assert "2026.0518" not in q2 and "BBC journalists" in q2
 
 
 def test_build_news_query_strips_date_and_boilerplate():
@@ -205,6 +217,57 @@ def test_search_uses_disk_cache(tmp_path):
     assert list(tmp_path.glob("*.json"))  # cache file written
 
 
+def test_empty_result_cache_expires(tmp_path, monkeypatch):
+    """An empty ('nothing found') result expires so a recent article can appear.
+
+    The Guardian may not have indexed a very recent article yet; caching that
+    empty result forever would mean a re-attempt / eval replay never finds it.
+    """
+    src = GuardianNewsSource(_cfg(empty_cache_ttl_seconds=10.0), cache_dir=tmp_path)
+    clock = [1000.0]
+    monkeypatch.setattr(ns.time, "time", lambda: clock[0])
+    with patch.object(ns.requests, "get",
+                      return_value=_resp(_payload([]))) as get:
+        assert src.search("q") == []          # empty, cached at t=1000
+        clock[0] = 1005.0                       # within the 10s TTL
+        assert src.search("q") == []
+        assert get.call_count == 1              # still served from cache
+        clock[0] = 1020.0                       # past the TTL
+        assert src.search("q") == []
+        assert get.call_count == 2              # expired → re-fetched
+
+
+def test_nonempty_result_cache_is_permanent_by_default(tmp_path, monkeypatch):
+    """A non-empty result stays cached indefinitely (cache_ttl_seconds=None)."""
+    src = GuardianNewsSource(_cfg(), cache_dir=tmp_path)  # cache_ttl_seconds=None
+    clock = [1000.0]
+    monkeypatch.setattr(ns.time, "time", lambda: clock[0])
+    with patch.object(ns.requests, "get",
+                      return_value=_resp(_payload([_result()]))) as get:
+        a1 = src.search("museum")
+        clock[0] = 1000.0 + 10 ** 9             # ~30 years later
+        a2 = src.search("museum")
+    assert get.call_count == 1                  # still cached, no re-fetch
+    assert a1[0].title == a2[0].title
+
+
+def test_legacy_bare_cache_entry_is_read(tmp_path):
+    """A pre-TTL cache file (bare response, no envelope) is still honoured."""
+    src = GuardianNewsSource(_cfg(), cache_dir=tmp_path)
+    with patch.object(ns.requests, "get",
+                      return_value=_resp(_payload([_result()]))) as get:
+        src.search("museum")
+    assert get.call_count == 1
+    # Rewrite the cache file in the legacy shape: just the inner response.
+    cache_file = next(tmp_path.glob("*.json"))
+    enveloped = json.loads(cache_file.read_text(encoding="utf-8"))
+    cache_file.write_text(json.dumps(enveloped["response"]), encoding="utf-8")
+    with patch.object(ns.requests, "get") as get2:
+        articles = src.search("museum")
+    get2.assert_not_called()                    # legacy entry read without network
+    assert articles[0].title == "Living museum in Brazil"
+
+
 # ── fetch_range (harvest) ───────────────────────────────────────────────────────
 
 def test_fetch_range_paginates(tmp_path):
@@ -216,6 +279,36 @@ def test_fetch_range_paginates(tmp_path):
                                    sections="world", page_size=2, max_pages=5)
     assert get.call_count == 2
     assert [a.title for a in articles] == ["p1a", "p1b", "p2a"]
+
+
+# ── harvest_news_range (offline harvest) ────────────────────────────────────────
+
+class _FakeHarvestGuardian:
+    """Returns canned articles per day; records fetch_range calls."""
+    def __init__(self, by_day):
+        self.by_day = by_day          # dict[date] -> list[Article]
+        self.calls = []
+
+    def fetch_range(self, from_date, to_date, *, query=None, sections=None,
+                    page_size=50, max_pages=20):
+        self.calls.append((from_date, to_date, sections))
+        return list(self.by_day.get(from_date, []))
+
+
+def test_harvest_news_range_iterates_days_and_dedupes():
+    d1, d2, d3 = _dt.date(2026, 5, 1), _dt.date(2026, 5, 2), _dt.date(2026, 5, 3)
+    a1  = Article("A1", "Published 2026-05-01. x", Category.NEWS, "u1")
+    a2  = Article("A2", "Published 2026-05-02. y", Category.NEWS, "u2")
+    dup = Article("A1", "Published 2026-05-03. dup", Category.NEWS, "u1b")  # same title
+    g = _FakeHarvestGuardian({d1: [a1], d2: [a2], d3: [dup]})
+
+    out = harvest_news_range(d1, d3, source=g, sections="world")
+
+    # One fetch_range per day across the inclusive window, section passed through.
+    assert [c[0] for c in g.calls] == [d1, d2, d3]
+    assert all(c[2] == "world" for c in g.calls)
+    # Cross-day title-dedup keeps the first occurrence only.
+    assert [a.title for a in out] == ["A1", "A2"]
 
 
 # ── NewsLiveSearch — Guardian + Wikipedia fallback ──────────────────────────────
@@ -287,6 +380,80 @@ def test_news_live_search_skips_second_call_on_guardian_failure():
 def test_news_live_search_empty_query():
     nls = NewsLiveSearch(_cfg(), guardian=_FakeGuardian([]), wiki_fallback=_FakeWiki([]))
     assert nls.search("   ") == []
+
+
+# ── NewsLiveSearch — provenance (observability) ─────────────────────────────────
+
+def test_provenance_guardian_window():
+    g = _FakeGuardian([Article("g", "Published 2026-05-17. body", Category.NEWS, "u")])
+    nls = NewsLiveSearch(_cfg(date_window_days=1), guardian=g, wiki_fallback=_FakeWiki([]))
+    nls.search("According to the 2026-05-17 article, who won?", category=Category.NEWS)
+    assert nls.last_provider == "guardian_window"
+    assert nls.last_date_extracted is True
+
+
+def test_provenance_guardian_broad_when_no_date():
+    # No date in the question → no windowed call; the broaden call serves it.
+    g = _FakeGuardian([Article("g", "body", Category.NEWS, "u")])
+    nls = NewsLiveSearch(_cfg(), guardian=g, wiki_fallback=_FakeWiki([]))
+    nls.search("which charity advocates for benefit cap changes?", category=Category.NEWS)
+    assert nls.last_provider == "guardian_broad"
+    assert nls.last_date_extracted is False
+
+
+def test_provenance_wikipedia_on_guardian_miss():
+    g = _FakeGuardian([])                 # Guardian finds nothing
+    w = _FakeWiki([Article("w", "wiki text", Category.NEWS, "u")])
+    nls = NewsLiveSearch(_cfg(), guardian=g, wiki_fallback=w)
+    nls.search("On 2026-05-17 something happened", category=Category.NEWS)
+    assert nls.last_provider == "wikipedia"
+
+
+def test_provenance_none_when_all_empty():
+    nls = NewsLiveSearch(_cfg(), guardian=_FakeGuardian([]), wiki_fallback=_FakeWiki([]))
+    assert nls.search("On 2026-05-17 nothing was found", category=Category.NEWS) == []
+    assert nls.last_provider == "none"
+
+
+# ── Stats counters (observability) ──────────────────────────────────────────────
+
+def test_guardian_stats_hit_then_cache(tmp_path):
+    src = GuardianNewsSource(_cfg(), cache_dir=tmp_path)
+    with patch.object(ns.requests, "get",
+                      return_value=_resp(_payload([_result()]))):
+        src.search("museum")          # network call → hit
+        src.search("museum")          # identical query → served from cache
+    st = src.stats
+    assert st["calls"] == 1
+    assert st["cache_hits"] == 1
+    assert st["hits"] == 1
+    assert st["empty_ok"] == 0
+
+
+def test_guardian_stats_empty_and_429(tmp_path):
+    empty_src = GuardianNewsSource(_cfg(), cache_dir=tmp_path / "a")
+    with patch.object(ns.requests, "get", return_value=_resp(_payload([]))):
+        empty_src.search("q")
+    assert empty_src.stats["empty_ok"] == 1
+    assert empty_src.stats["hits"] == 0
+
+    rl_src = GuardianNewsSource(_cfg(), cache_dir=tmp_path / "b")
+    with patch.object(ns.requests, "get",
+                      return_value=_resp(_payload([]), status_code=429)):
+        rl_src.search("q")
+    assert rl_src.stats["http_429"] == 1
+
+
+def test_news_live_search_routing_stats():
+    g = _FakeGuardian([Article("g", "Published 2026-05-17. body", Category.NEWS, "u")])
+    nls = NewsLiveSearch(_cfg(date_window_days=1), guardian=g, wiki_fallback=_FakeWiki([]))
+    nls.search("According to the 2026-05-17 article, who won?", category=Category.NEWS)
+    nls.search("which charity advocates for benefit cap changes?", category=Category.NEWS)
+    st = nls.stats
+    assert st["queries"] == 2
+    assert st["with_date"] == 1
+    assert st["provider_guardian_window"] == 1
+    assert st["provider_guardian_broad"] == 1
 
 
 # ── RAGStrategy routing ─────────────────────────────────────────────────────────

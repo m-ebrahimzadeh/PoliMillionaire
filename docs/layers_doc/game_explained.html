@@ -377,7 +377,7 @@ code:not([class*="language-"]) {
         </div>
     </div>
 
-    <h3>The Four Competitions</h3>
+    <h3>The Six Competitions</h3>
 
     <table class="comparison-table">
         <tr><th>ID</th><th>Name</th><th>Category</th><th>Strategy note</th></tr>
@@ -385,10 +385,12 @@ code:not([class*="language-"]) {
         <tr><td>1</td><td>Ancient History and Politics</td><td>HISTORY</td><td>RAG excels — obscure historical facts</td></tr>
         <tr><td>2</td><td>Science and Nature</td><td>SCIENCE</td><td>Mix of common facts and specific details</td></tr>
         <tr><td>3</td><td>Maths</td><td>MATHS</td><td>MathsTool + AgentStrategy for computation</td></tr>
+        <tr><td>4</td><td>Philosophy and Psychology</td><td>PHILOSOPHY</td><td>Conceptual reasoning — LLM + RAG over Wikipedia</td></tr>
+        <tr><td>5</td><td>News</td><td>NEWS</td><td>Dated articles — Guardian-backed hybrid RAG (not Wikipedia)</td></tr>
     </table>
 
     <div class="card tip">
-        <p><strong>Why category matters:</strong> The TieredStrategy routes Maths questions to MathsTool regardless of level. History and Science questions benefit most from RAG (Wikipedia coverage is strong). The category is embedded in every <code>StrategyInput</code> so strategies can specialize their behavior.</p>
+        <p><strong>Why category matters:</strong> The TieredStrategy routes Maths questions to MathsTool regardless of level. History, Science and Philosophy questions benefit most from RAG (Wikipedia coverage is strong). News is the one category Wikipedia serves poorly — its questions cite a <em>specific dated article</em> — so it is grounded in The Guardian Open Platform instead (see the RAG deep-dive). The category is embedded in every <code>StrategyInput</code> so strategies can specialize their behavior.</p>
     </div>
 </section>
 
@@ -497,7 +499,7 @@ class BaseClient:
     </div>
 
     <h3>The Competition → Category Mapping</h3>
-    <p>The game server knows nothing about "categories" — it just has competitions with IDs 0-3. The bot maps them:</p>
+    <p>The game server knows nothing about "categories" — it just has competitions with IDs 0-5. The bot maps them. Adding a competition is a one-line dict entry; nothing else in the codebase changes:</p>
 
     <div class="code-block">
         <div class="filename">polimibot/config.py — CATEGORIES mapping</div>
@@ -506,6 +508,8 @@ class BaseClient:
     1: CompetitionInfo(1, Category.HISTORY,       "Ancient History and Politics"),
     2: CompetitionInfo(2, Category.SCIENCE,       "Science and Nature"),
     3: CompetitionInfo(3, Category.MATHS,         "Maths"),
+    4: CompetitionInfo(4, Category.PHILOSOPHY,    "Philosophy and Psychology"),
+    5: CompetitionInfo(5, Category.NEWS,          "News"),
 }
 
 # In the runner:

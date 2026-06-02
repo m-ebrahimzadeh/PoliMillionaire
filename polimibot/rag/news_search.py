@@ -48,6 +48,7 @@ import hashlib
 import json
 import re
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -68,7 +69,11 @@ _UNSET = object()
 
 # ── Date extraction ─────────────────────────────────────────────────────────
 
-_ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+# ISO and the dotted / slashed variants that show up in speech-transcribed and
+# older runs (2026-05-17, 2026.05.06, 2026/05/06).
+_ISO_DATE_RE = re.compile(r"\b(\d{4})[-./](\d{1,2})[-./](\d{1,2})\b")
+# Concatenated speech artifact: "2026.0518" → year "." MMDD (no inner separator).
+_COMPACT_DATE_RE = re.compile(r"\b(\d{4})\.(\d{2})(\d{2})\b")
 
 _MONTHS = {
     "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
@@ -91,9 +96,10 @@ _MDY_RE = re.compile(
 def extract_question_date(text: str) -> Optional[_dt.date]:
     """Pull the first publication date out of a question, if one is stated.
 
-    Handles ISO (``2026-05-17``) and the two common English prose forms
-    (``17 May 2026``, ``May 17, 2026``).  Returns ``None`` when no date is
-    present — the caller then queries without a date window.
+    Handles ISO and its dotted/slashed variants (``2026-05-17``, ``2026.05.06``,
+    ``2026/05/06``), the concatenated speech form (``2026.0518``), and the two
+    common English prose forms (``17 May 2026``, ``May 17, 2026``). Returns
+    ``None`` when no date is present — the caller then queries without a window.
 
     Args:
         text: the question string.
@@ -104,13 +110,14 @@ def extract_question_date(text: str) -> Optional[_dt.date]:
     if not text:
         return None
 
-    m = _ISO_DATE_RE.search(text)
-    if m:
-        y, mo, d = (int(g) for g in m.groups())
-        try:
-            return _dt.date(y, mo, d)
-        except ValueError:
-            pass
+    for rx in (_ISO_DATE_RE, _COMPACT_DATE_RE):
+        m = rx.search(text)
+        if m:
+            y, mo, d = (int(g) for g in m.groups())
+            try:
+                return _dt.date(y, mo, d)
+            except ValueError:
+                pass
 
     for rx, order in ((_DMY_RE, "dmy"), (_MDY_RE, "mdy")):
         m = rx.search(text)
@@ -160,6 +167,22 @@ class GuardianNewsSource:
         # Set by ``_request``: True when the most recent call hit a transport
         # failure (no-key / 429 / timeout / network) rather than a clean result.
         self._last_call_failed = False
+        # Cumulative health counters for observability (see ``stats``). Kept
+        # cheap (a dict of ints) so a live game incurs no measurable overhead.
+        self._stats: dict[str, int] = {
+            "calls": 0,       # network requests actually sent (cache misses)
+            "cache_hits": 0,  # served from the on-disk cache (no network)
+            "hits": 0,        # ok response with >=1 result
+            "empty_ok": 0,    # ok response with 0 results
+            "http_429": 0,    # rate-limited (after the short-retry logic)
+            "timeouts": 0,    # request timed out
+            "errors": 0,      # non-ok status / network / parse errors
+        }
+
+    @property
+    def stats(self) -> dict[str, int]:
+        """A snapshot copy of the cumulative request counters."""
+        return dict(self._stats)
 
     @property
     def last_call_failed(self) -> bool:
@@ -305,6 +328,7 @@ class GuardianNewsSource:
         cache_key = self._cache_key(params)
         cached = self._cache_get(cache_key)
         if cached is not None:
+            self._stats["cache_hits"] += 1
             return cached
 
         # Client-side throttle (free tier ~1 req/s).
@@ -312,6 +336,7 @@ class GuardianNewsSource:
         if 0 < elapsed < self.config.min_delay_seconds:
             time.sleep(self.config.min_delay_seconds - elapsed)
 
+        self._stats["calls"] += 1
         payload = None
         for attempt in range(2):  # at most one retry, only on a short-wait 429
             try:
@@ -336,6 +361,7 @@ class GuardianNewsSource:
                         f"[news_search] RATE LIMIT (HTTP 429){remaining} — "
                         "backing off to fallback"
                     )
+                    self._stats["http_429"] += 1
                     self._last_call_failed = True
                     return None
                 r.raise_for_status()
@@ -343,23 +369,31 @@ class GuardianNewsSource:
                 break
             except requests.Timeout:
                 print(f"[news_search] TIMEOUT after {self.config.timeout_seconds}s")
+                self._stats["timeouts"] += 1
                 self._last_call_failed = True
                 return None
             except Exception as exc:  # noqa: BLE001
                 print(f"[news_search] EXCEPTION: {type(exc).__name__}: {exc}")
+                self._stats["errors"] += 1
                 self._last_call_failed = True
                 return None
 
         if payload is None:  # defensive: retries exhausted without a payload
+            self._stats["errors"] += 1
             self._last_call_failed = True
             return None
 
         response = payload.get("response") if isinstance(payload, dict) else None
         if not response or response.get("status") != "ok":
             print(f"[news_search] non-ok response: {str(payload)[:200]}")
+            self._stats["errors"] += 1
             self._last_call_failed = True
             return None
 
+        if response.get("results"):
+            self._stats["hits"] += 1
+        else:
+            self._stats["empty_ok"] += 1
         self._cache_put(cache_key, response)
         return response
 
@@ -424,17 +458,44 @@ class GuardianNewsSource:
         if not path.is_file():
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            blob = json.loads(path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001 — corrupt cache entry → treat as miss
             return None
+        if not isinstance(blob, dict):
+            return None
+
+        # Legacy bare-response entries (written before TTL support) carry no
+        # ``cached_at`` envelope — honour them permanently so existing caches
+        # stay valid after the upgrade.
+        if "cached_at" not in blob:
+            return blob
+
+        response = blob.get("response")
+        if not isinstance(response, dict):
+            return None
+
+        # Differential freshness. Empty results are the staleness risk (the
+        # query may have run before the Guardian indexed a very recent
+        # article), so they expire after ``empty_cache_ttl_seconds``. Non-empty
+        # windowed results are stable and default to permanent
+        # (``cache_ttl_seconds is None``) so eval replays cost no quota.
+        ttl = (
+            self.config.empty_cache_ttl_seconds
+            if not response.get("results")
+            else self.config.cache_ttl_seconds
+        )
+        if ttl is not None and (time.time() - float(blob.get("cached_at", 0.0))) > ttl:
+            return None
+        return response
 
     def _cache_put(self, key: str, response: dict) -> None:
         if self.cache_dir is None:
             return
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
+            envelope = {"cached_at": time.time(), "response": response}
             (self.cache_dir / f"{key}.json").write_text(
-                json.dumps(response, ensure_ascii=False), encoding="utf-8"
+                json.dumps(envelope, ensure_ascii=False), encoding="utf-8"
             )
         except Exception as exc:  # noqa: BLE001 — cache is best-effort
             print(f"[news_search] WARNING: cache write failed: {exc}")
@@ -490,6 +551,20 @@ class NewsLiveSearch:
         self.guardian = guardian or GuardianNewsSource(self.config)
         self.use_wiki_fallback = use_wiki_fallback
         self._wiki = wiki_fallback  # may be lazily built in search()
+        # Per-query provenance, read by RAGStrategy into ``extras`` so the
+        # observability layer can tell a Guardian hit apart from the Wikipedia
+        # fallback (the dashboards otherwise mislabel every News live result as
+        # "Wikipedia").  Set fresh on each ``search()`` call.
+        self.last_provider: str = "none"   # guardian_window | guardian_broad | wikipedia | none
+        self.last_date_extracted: bool = False
+        # Cumulative routing counters for observability (see ``stats``):
+        # ``queries``, ``with_date`` and one ``provider_<name>`` per outcome.
+        self._stats: Counter = Counter()
+
+    @property
+    def stats(self) -> dict[str, int]:
+        """A snapshot copy of the cumulative routing counters."""
+        return dict(self._stats)
 
     def search(
         self,
@@ -499,16 +574,36 @@ class NewsLiveSearch:
     ) -> list[Article]:
         """Return up to ``config.max_articles`` Article objects for ``query``.
 
+        Thin wrapper over :meth:`_search` that folds the outcome into the
+        cumulative routing counters (``stats``) for observability.
+
         Args:
             query: the question text (the stated date is parsed out of it).
             category: passed through to the Wikipedia fallback so its results
                 are tagged correctly; Guardian results are always ``NEWS``.
         """
+        result = self._search(query, category=category)
+        if query and query.strip():
+            self._stats["queries"] += 1
+            if self.last_date_extracted:
+                self._stats["with_date"] += 1
+            self._stats[f"provider_{self.last_provider}"] += 1
+        return result
+
+    def _search(
+        self,
+        query: str,
+        *,
+        category: Optional[Category] = None,
+    ) -> list[Article]:
+        self.last_provider = "none"
+        self.last_date_extracted = False
         if not query or not query.strip():
             return []
 
         date = extract_question_date(query)
         q = _build_news_query(query)
+        self.last_date_extracted = date is not None
 
         articles: list[Article] = []
         if date is not None:
@@ -516,17 +611,19 @@ class NewsLiveSearch:
             articles = self.guardian.search(
                 q, from_date=date - window, to_date=date + window
             )
+            if articles:
+                self.last_provider = "guardian_window"
+                return articles[: self.config.max_articles]
             # If that call hit a 429 / timeout / no-key, the Guardian is
             # unavailable right now — a second unconstrained call would only
             # earn a second 429. Degrade straight to Wikipedia instead.
-            if not articles and self.guardian.last_call_failed:
+            if self.guardian.last_call_failed:
                 return self._wiki_search(query, category)
 
         # Healthy but empty (window too tight) or no date stated → broaden once.
-        if not articles:
-            articles = self.guardian.search(q)
-
+        articles = self.guardian.search(q)
         if articles:
+            self.last_provider = "guardian_broad"
             return articles[: self.config.max_articles]
 
         # ── Secondary fallback: Wikipedia ──────────────────────────────────
@@ -541,7 +638,10 @@ class NewsLiveSearch:
         wiki = self._wiki_source()
         if wiki is None:
             return []
-        return wiki.search(query, category=category or Category.NEWS)
+        results = wiki.search(query, category=category or Category.NEWS)
+        if results:
+            self.last_provider = "wikipedia"
+        return results
 
     def _wiki_source(self):
         if self._wiki is None and self.use_wiki_fallback:
@@ -572,8 +672,71 @@ def _build_news_query(question: str) -> str:
     q = question.strip()
     # Drop date tokens — the window param handles dates; in ``q`` they hurt.
     q = _ISO_DATE_RE.sub(" ", q)
+    q = _COMPACT_DATE_RE.sub(" ", q)
     q = _DMY_RE.sub(" ", q)
     q = _MDY_RE.sub(" ", q)
     q = _BOILERPLATE_RE.sub("", q).strip()
     q = re.sub(r"\s+", " ", q).strip(" ,.")
     return q or question.strip()
+
+
+# ── Offline harvest helper ───────────────────────────────────────────────────
+
+def harvest_news_range(
+    from_date: _dt.date,
+    to_date: _dt.date,
+    *,
+    source: Optional[GuardianNewsSource] = None,
+    sections: Optional[str] = None,
+    query: Optional[str] = None,
+    page_size: int = 50,
+    max_pages: int = 20,
+    verbose: bool = False,
+) -> list[Article]:
+    """Harvest Guardian articles across a date window, one day at a time.
+
+    Used by both the offline harvest script (``scripts/fetch_news_corpus.py``)
+    and the notebook's index build to seed the offline corpus with recent news.
+
+    The harvest is day-by-day because a single ``fetch_range`` over a multi-day
+    window only returns the newest ``page_size * max_pages`` results (the
+    Guardian publishes hundreds of pieces a day), silently dropping the older
+    end of the range — exactly where the dated News questions live. Articles are
+    de-duplicated by title across the whole window (paging / adjacent days can
+    re-surface an article).
+
+    Args:
+        from_date / to_date: inclusive publication-date bounds.
+        source: an existing ``GuardianNewsSource`` (constructed if omitted, so
+            the current ``NEWS`` config / key is honoured).
+        sections: comma-separated Guardian section ids to focus the harvest
+            (e.g. ``"world,uk-news,business"``); ``None`` harvests every section.
+        query: optional full-text filter; ``None`` harvests everything in-window.
+        page_size / max_pages: per-day pagination budget (see ``fetch_range``).
+        verbose: print per-day counts and a final unique total.
+
+    Returns:
+        Unique ``Article`` objects (``Category.NEWS``) gathered across the window.
+    """
+    src = source or GuardianNewsSource()
+    seen: set[str] = set()
+    unique: list[Article] = []
+    total = 0
+    day = from_date
+    while day <= to_date:
+        day_articles = src.fetch_range(
+            day, day,
+            query=query, sections=sections,
+            page_size=page_size, max_pages=max_pages,
+        )
+        total += len(day_articles)
+        for a in day_articles:
+            if a.title not in seen:
+                seen.add(a.title)
+                unique.append(a)
+        if verbose:
+            print(f"  {day}: {len(day_articles)} article(s)")
+        day += _dt.timedelta(days=1)
+    if verbose:
+        print(f"Fetched {total} results → {len(unique)} unique articles.")
+    return unique

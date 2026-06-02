@@ -882,6 +882,52 @@ def save_raw_corpus(articles: list[Article], path: Path) -> None:
     print(f"Saved {len(articles)} articles → {path}")
 
 
+def append_raw_corpus(articles: list[Article], path: Path) -> int:
+    """Append new articles to a JSONL corpus, de-duplicating by title.
+
+    Unlike :func:`save_raw_corpus` (which overwrites), this keeps the existing
+    corpus and adds only titles not already present — used to top up an existing
+    ``corpus.jsonl`` with freshly harvested news. Rows match
+    :func:`save_raw_corpus` exactly (aliases/competition written only when set).
+
+    Args:
+        articles: candidates to append (intra-batch title dupes are dropped too).
+        path: the JSONL corpus file (created if absent).
+
+    Returns:
+        The number of new articles actually appended.
+    """
+    seen: set[str] = set()
+    if path.is_file():
+        try:
+            seen = {a.title for a in load_raw_corpus(path)}
+        except Exception:  # noqa: BLE001 — absent/corrupt corpus → just append
+            seen = set()
+
+    new: list[Article] = []
+    for a in articles:
+        if a.title in seen:
+            continue
+        seen.add(a.title)
+        new.append(a)
+    if not new:
+        return 0
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        for a in new:
+            row = {
+                "title": a.title, "text": a.text,
+                "category": a.category.value, "url": a.url,
+            }
+            if a.aliases:
+                row["aliases"] = list(a.aliases)
+            if a.competition:
+                row["competition"] = a.competition
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return len(new)
+
+
 def load_raw_corpus(path: Path) -> list[Article]:
     """Load previously saved raw corpus from JSONL.
 

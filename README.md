@@ -53,7 +53,7 @@ The implementation is a modular Python package (`polimibot`) with a Jupyter note
 | **RAG** | `faiss-cpu>=1.7`, `sentence-transformers>=2.7`, `wikipedia>=1.4` |
 | **Tools** | `sympy>=1.13` (optional for MathsTool) |
 | **Testing** | `pytest>=8` |
-| **Embedding Model** | BAAI/bge-small-en-v1.5 (configurable) |
+| **Embedding Model** | BAAI/bge-base-en-v1.5 (configurable) |
 | **Game Client** | Custom HTTP client for PoliMillionaire server |
 
 ---
@@ -149,7 +149,16 @@ NEWS questions reference a *specific dated article* ("the article published on `
   The harvest pulls the window **day by day** so every date is covered evenly — a
   single multi-day query would only return the newest ~`page-size × max-pages`
   results and silently drop the older end of the range (where dated questions
-  live). Narrow a focused harvest with `--sections world,politics,us-news,uk-news,business,technology,sport,science,society` and/or widen `--days`.
+  live). NEWS questions span the **whole** Guardian (sport, environment, society,
+  culture, australia-news, lifestyle, education, …), not just hard news, so the
+  default harvest covers a broad set of sections; pass `--sections` to focus it
+  (or omit it to harvest every section) and `--days` to widen the window.
+
+  In the **notebook** this is automatic: Section **0.4a-news** harvests the last
+  `INDEX_NEWS_GUARDIAN_DAYS` (default 30) days into `corpus.jsonl` before the embed/index
+  step (0.4b), so a fresh build already carries recent Guardian news. It is key-gated
+  (skips with a notice when `GUARDIAN_API_KEY` is unset) and shares the same
+  `harvest_news_range` code path as the CLI.
 
 - **Online** — NEWS uses the *same* threshold-gated live fallback as every other category, but its source is the date- and entity-aware [`NewsLiveSearch`](polimibot/rag/news_search.py) (Guardian) instead of Wikipedia. It extracts the question's publication date, queries that window, and **falls back to Wikipedia** when the Guardian returns nothing or no key is set — so NEWS never goes dark. Toggle via `USE_NEWS_LIVE_SEARCH` in the notebook's Section 1.
 
@@ -579,7 +588,7 @@ python scripts/_build_notebook.py
 
 - **Politecnico di Milano NLP Course 2025/26**: Assignment framework and game server
 - **millionaire_client**: Provided HTTP client library (treated as read-only)
-- **BAAI/bge-small-en-v1.5**: Embedding model for dense retrieval
+- **BAAI/bge-base-en-v1.5**: Embedding model for dense retrieval
 - **FAISS**: Efficient similarity search library from Meta AI
 - **Hugging Face Transformers**: LLM inference backend
 

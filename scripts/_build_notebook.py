@@ -143,8 +143,13 @@ cells.append(md("### 0.1 Install"))
 cells.append(code("""
 # Install the project as an editable package, this cell does. Once per session, run it.
 %pip install -q -e .
-%pip install -q "transformers>=4.46,<4.50" "accelerate>=1.0,<1.5" "bitsandbytes>=0.45"
-%pip install -q "faiss-cpu>=1.7" "sentence-transformers>=2.7" "wikipedia>=1.4"
+%pip install -q "transformers>=4.50" "accelerate>=1.0" "bitsandbytes>=0.45"
+# sentence-transformers 5.x and transformers 4.50+ are a MATCHED PAIR: the 5.x
+# CrossEncoder uses the new transformers processor API. Mixing st 5.x with an
+# older transformers (the previous <4.50 pin) made the reranker warm-up raise
+# "list indices must be integers or slices, not tuple". Keep both modern so
+# newer causal LLMs (which need transformers>=4.50) also work.
+%pip install -q "faiss-cpu>=1.7" "sentence-transformers>=5.0" "wikipedia>=1.4"
 %pip install -q matplotlib pandas
 %pip install -q "openai-whisper>=20231117" "scipy>=1.11"
 """))
@@ -301,7 +306,8 @@ cells.append(md("""
 Two phases so the **GPU-free harvest** and the **GPU embed/index** can run on different Colab runtimes:
 
 - **0.4a — Harvest corpus (CPU-friendly).** Downloads the Wikipedia corpus and writes `data/cache/corpus.jsonl`. Pure network/CPU — run it on a **CPU runtime** to save GPU hours.
-- **0.4b — Embed & index (GPU).** Loads `corpus.jsonl`, embeds with `bge-large-en-v1.5`, and writes the FAISS + BM25 index. Run it on a **GPU runtime**.
+- **0.4a-news — Seed recent Guardian news (CPU).** Appends the Guardian's last `INDEX_NEWS_GUARDIAN_DAYS` days to `corpus.jsonl` so recent dated News questions are answered offline first (key-gated; skips when `GUARDIAN_API_KEY` is unset).
+- **0.4b — Embed & index (GPU).** Loads `corpus.jsonl`, embeds with `bge-base-en-v1.5`, and writes the FAISS + BM25 index. Run it on a **GPU runtime**.
 
 > **The CPU→GPU handoff is automatic** — no extra copying. Cell 1 symlinks `data/` to Drive (or you work directly from Drive), so `data/cache/corpus.jsonl` and the index already live on Drive and survive a runtime-type switch. To go CPU→GPU: run 0.4a, switch the runtime to GPU, re-run cells 0.1–0.3 + the knobs cell, then run 0.4b — it picks the corpus up from `data/cache` on its own.
 
@@ -316,6 +322,8 @@ Two phases so the **GPU-free harvest** and the **GPU embed/index** can run on di
 | `INDEX_HARVEST_MAX_PER_CATEGORY` / `INDEX_HARVEST_MAX_DEPTH` | Harvester breadth / subcategory depth |
 | `INDEX_HARVEST_WORKERS` | Concurrent extract batches (default 5 — polite + fast; raise for speed) |
 | `INDEX_HARVEST_BATCH_SIZE` | Titles per extract request (default 20 — the anonymous MediaWiki cap) |
+| `INDEX_NEWS_GUARDIAN_DAYS` | Days of Guardian news to harvest into the offline corpus in 0.4a-news (`0`/`None` skips) |
+| `INDEX_NEWS_GUARDIAN_SECTIONS` | Comma-separated Guardian sections to focus the news harvest (`None` = every section) |
 | `INDEX_GAP_QUEUE` | Path to `gap_titles.json` (scripts/mine_corpus_gaps.py) to back-fill, or `None` |
 """))
 
@@ -324,7 +332,7 @@ cells.append(code('''
 # RAG_INDEX_PATH / EMBEDDER_MODEL are also set in Section 1.1; mirrored here so
 # 0.4 runs standalone — e.g. on a fresh GPU runtime after the CPU harvest.
 RAG_INDEX_PATH     = PATHS.cache_dir / 'knowledge'
-EMBEDDER_MODEL     = 'BAAI/bge-large-en-v1.5'   # must match Section 1.1; rebuild index after changing
+EMBEDDER_MODEL     = 'BAAI/bge-base-en-v1.5'   # must match Section 1.1; rebuild index after changing
 REBUILD_INDEX      = False        # True  → (re)build index in 0.4b even if it exists
 INDEX_REFETCH      = False        # True  → re-harvest in 0.4a even if corpus.jsonl exists
 INDEX_CATEGORIES   = None         # None  → all four; or e.g. ['history', 'science']
@@ -337,6 +345,21 @@ INDEX_HARVEST_MAX_DEPTH        = 0     # entity seeds: 0 = no recursion. Concept
 INDEX_HARVEST_WORKERS          = 5     # concurrent extract batches (default 5 — polite + fast)
 INDEX_HARVEST_BATCH_SIZE       = 20    # titles per extract request (MediaWiki cap is 20 for anonymous)
 INDEX_GAP_QUEUE    = None         # path to gap_titles.json (scripts/mine_corpus_gaps.py) to back-fill, or None
+# News offline seed (The Guardian) — harvested in 0.4a-news so recent dated News
+# questions are answered from the offline index first; the online Guardian API
+# (NewsLiveSearch) then covers anything newer/missing. Needs GUARDIAN_API_KEY.
+INDEX_NEWS_GUARDIAN_DAYS     = 45      # days back from today to harvest into the corpus (0/None = skip; live API covers older stragglers)
+# Broad section list — sampled NEWS questions span the WHOLE Guardian (sport,
+# environment, society, culture/film/music/art, australia-news, lifestyle/food,
+# education, media), not just hard news. A narrow list silently drops ~a third
+# of them. The per-day page budget (page_size×max_pages) caps volume regardless
+# of how many sections are listed. Set None to harvest literally every section.
+INDEX_NEWS_GUARDIAN_SECTIONS = (
+    'world,us-news,uk-news,australia-news,politics,business,economy,money,'
+    'technology,science,environment,society,global-development,sport,'
+    'culture,film,music,books,artanddesign,tv-and-radio,stage,'
+    'lifeandstyle,food,fashion,education,media'
+)
 # ─────────────────────────────────────────────────────────────────────
 # data/ is symlinked to Drive by cell 1, so everything written under
 # PATHS.cache_dir (corpus.jsonl, the index) is already durable across a
@@ -410,6 +433,52 @@ else:
         raise RuntimeError('No articles fetched — check your network connection and INDEX_CATEGORIES.')
     print(f'\\nHarvest complete: {len(_articles)} articles → {_corpus_path}.')
     print('Switch to a GPU runtime (re-run 0.1-0.3 + the knobs cell) and run 0.4b.')
+'''))
+
+cells.append(md(
+    "#### 0.4a-news — Seed recent Guardian news (CPU: Guardian API → `corpus.jsonl`)\n\n"
+    "Tops up `corpus.jsonl` with the Guardian's last `INDEX_NEWS_GUARDIAN_DAYS` days so recent "
+    "dated News questions are answered from the **offline** index first; the online Guardian API "
+    "(`NewsLiveSearch`) then covers anything newer or missing. Network/CPU only — runs after 0.4a, "
+    "before 0.4b. Needs `GUARDIAN_API_KEY` (skips with a notice if unset).\n\n"
+    "> For a **fresh** build this lands in the index automatically via 0.4b. To add news on top of "
+    "an **existing** index without a full rebuild, use `scripts/fetch_news_corpus.py --days 30 "
+    "--build` (or set `REBUILD_INDEX=True` and re-run 0.4b)."
+))
+
+cells.append(code('''
+# Phase A (news) — harvest recent Guardian articles into corpus.jsonl. Day-by-day
+# under the hood (harvest_news_range) so the older end of the window is not
+# dropped — that is where the dated News questions live. append_raw_corpus
+# de-dups by title, so re-running only adds genuinely new articles.
+import os as _os
+import datetime as _dt
+from polimibot.rag.news_search import harvest_news_range
+from polimibot.rag.corpus import append_raw_corpus
+
+_news_in_scope = (INDEX_CATEGORIES is None) or ('news' in INDEX_CATEGORIES)
+_news_days = INDEX_NEWS_GUARDIAN_DAYS or 0
+
+if not _news_in_scope:
+    print('NEWS not in INDEX_CATEGORIES — skipping the Guardian news harvest.')
+elif not _news_days:
+    print('INDEX_NEWS_GUARDIAN_DAYS is 0/None — skipping the Guardian news harvest.')
+elif not _os.environ.get('GUARDIAN_API_KEY'):
+    print('GUARDIAN_API_KEY not set — skipping the Guardian news harvest. '
+          'Set it (e.g. from a Colab secret) before 0.4a to seed offline news.')
+else:
+    _today = _dt.date.today()
+    _from = _today - _dt.timedelta(days=_news_days)
+    print(f'Harvesting Guardian news {_from} -> {_today} '
+          f'(sections={INDEX_NEWS_GUARDIAN_SECTIONS or "ALL"})...')
+    _news_articles = harvest_news_range(
+        _from, _today,
+        sections=INDEX_NEWS_GUARDIAN_SECTIONS,
+        verbose=True,
+    )
+    _n_added = append_raw_corpus(_news_articles, PATHS.cache_dir / 'corpus.jsonl')
+    print(f'Guardian harvest: {len(_news_articles)} unique articles, '
+          f'{_n_added} new appended to corpus.jsonl. Run 0.4b to (re)index.')
 '''))
 
 cells.append(md("#### 0.4b — Embed & index (GPU: `corpus.jsonl` → FAISS + BM25)"))
@@ -605,14 +674,14 @@ RAG_MAX_TOTAL_CHARS    = 2400                            # joined context budget
 
 # Reranker (cross-encoder over the dense pool — precision win, +~30 ms/query)
 RAG_USE_RERANKER       = True                           # set True to load + use
-RERANKER_MODEL         = 'BAAI/bge-reranker-base'       # lighter CE (278M), fp16; recalibrate RAG_MIN_SCORE_RERANK after swap
+RERANKER_MODEL         = 'BAAI/bge-reranker-base'       # lighter CE (278M), fp32; recalibrate RAG_MIN_SCORE_RERANK after swap
 RERANK_OVERSEARCH      = 5                               # dense pool size = k × this
 
 # Embedding model — single source of truth for index build (Section 0.4),
 # index load (Section 1.3), and the IndexGrower embedder (Section 1.4).
 # Switching models requires rebuilding the index (REBUILD_INDEX=True in 0.4).
 # Prefixes auto-derive from the model name (BGE / E5 / symmetric MiniLM-style).
-EMBEDDER_MODEL         = 'BAAI/bge-large-en-v1.5'        # 1024-dim dense, BGE query instruction (auto), fp16; rebuild index after changing (REBUILD_INDEX=True in 0.4)
+EMBEDDER_MODEL         = 'BAAI/bge-base-en-v1.5'        # 768-dim dense, BGE query instruction (auto), fp16; rebuild index after changing (REBUILD_INDEX=True in 0.4)
 
 # Hybrid + multi-query (lexical complement + per-option queries, both via RRF)
 RAG_USE_HYBRID         = True                           # dense + BM25 fused per query
@@ -721,7 +790,7 @@ if need_retriever:
         from polimibot.rag.reranker import CrossEncoderReranker, RerankerSpec
         print(f'Loading cross-encoder reranker: {RERANKER_MODEL} …')
         reranker_obj = CrossEncoderReranker.load(
-            RerankerSpec(model_name=RERANKER_MODEL)
+            RerankerSpec(model_name=RERANKER_MODEL, fp16=False)  # fp32: no half-precision
         )
         LOADED_RERANKER_MODEL = RERANKER_MODEL
     elif not RAG_USE_RERANKER:
