@@ -251,13 +251,43 @@ def _seed_keywords(title: str) -> set[str]:
     return {w for w in raw if w not in _SEED_STOP and len(w) > 1}
 
 
-# Maximum attempts and backoff schedule (seconds) for transient Wikipedia
-# API failures. The most common cause is an empty/non-JSON response from the
-# API — rate limiting, a brief network blip, or the Wikimedia CDN returning
-# an HTML error page. Three attempts with exponential back-off cover the vast
-# majority of transient failures without making the build painfully slow.
-_FETCH_MAX_ATTEMPTS = 3
-_FETCH_BACKOFF = (1.0, 2.0, 4.0)  # seconds to sleep before attempt 1, 2, 3
+# Per-title retry is intentionally CHEAP. The dominant failure is an empty-body
+# response ("Expecting value: line 1 column 1") which is a *rate-limit window*,
+# not a one-off blip — it outlasts a few seconds, so retrying the same title at
+# 2s then 4s just burns ~6s and hammers the throttled endpoint without helping
+# (live runs show the same title failing all three attempts). One quick retry
+# still catches a genuine transient blip; sustained throttling is handled at the
+# crawl level by a cooldown once failures cluster (see _make_failure_cooldown).
+_FETCH_MAX_ATTEMPTS = 2
+_FETCH_BACKOFF = (0.0, 0.5)  # no wait before attempt 1; 0.5s before the single retry
+
+# When empty-body failures arrive in a burst, the per-IP rate limit is active.
+# Plowing on just skips every title in the window; instead pause the crawl once
+# enough consecutive fetches fail, letting the limit clear so the next titles
+# (and a second pass) succeed.
+_COOLDOWN_AFTER_CONSECUTIVE_FAILURES = 8
+_RATE_LIMIT_COOLDOWN_SECONDS = 30.0
+
+
+def _make_failure_cooldown(verbose: bool):
+    """Return ``note(ok: bool)`` that tracks consecutive fetch failures and, once
+    they cross ``_COOLDOWN_AFTER_CONSECUTIVE_FAILURES``, sleeps a one-off cooldown
+    so an active rate-limit window can clear. A success resets the streak."""
+    state = {"streak": 0}
+
+    def note(ok: bool) -> None:
+        if ok:
+            state["streak"] = 0
+            return
+        state["streak"] += 1
+        if state["streak"] >= _COOLDOWN_AFTER_CONSECUTIVE_FAILURES:
+            if verbose:
+                print(f"    … {state['streak']} consecutive failures — pausing "
+                      f"{_RATE_LIMIT_COOLDOWN_SECONDS:.0f}s for the rate limit to clear")
+            time.sleep(_RATE_LIMIT_COOLDOWN_SECONDS)
+            state["streak"] = 0
+
+    return note
 
 
 def _page_with_retry(title: str, *, verbose: bool):
@@ -543,19 +573,27 @@ def fetch_articles_from_categories(
 
     # Step 3: per-article body fetch with retry / disambiguation, reusing
     # the existing pipeline so we inherit all of its robustness.
+    def _attempt(_title, _cat, _aliases):
+        try:
+            return _fetch_one(_title, _cat, verbose=verbose, fetch_aliases=_aliases)
+        except Exception as exc:   # belt-and-braces — one title must never kill the crawl
+            if verbose:
+                print(f"  ! unhandled error for '{_title}': {exc!r} — skipped")
+            return None
+
     articles: list[Article] = []
+    failed: list[tuple[str, Category, bool]] = []
+    cooldown = _make_failure_cooldown(verbose)
     for i, (title, cat) in enumerate(flat, start=1):
         # Redirects only for the curated concept titles — the bulk harvested
         # titles skip the extra call to keep the crawl under the rate limit.
         want_aliases = fetch_aliases and title in curated_titles
-        try:
-            article = _fetch_one(title, cat, verbose=verbose, fetch_aliases=want_aliases)
-        except Exception as exc:   # belt-and-braces — one title must never kill the crawl
-            if verbose:
-                print(f"  ! unhandled error for '{title}': {exc!r} — skipped")
-            article = None
+        article = _attempt(title, cat, want_aliases)
         if article is not None:
             articles.append(article)
+        else:
+            failed.append((title, cat, want_aliases))
+        cooldown(article is not None)
         # Progress dot every 50 fetches so a multi-thousand crawl shows life.
         if verbose and i % 50 == 0:
             print(f"  ... fetched {i}/{len(flat)} ({len(articles)} successes)")
@@ -564,6 +602,27 @@ def fetch_articles_from_categories(
         if checkpoint_path is not None and articles and i % checkpoint_every == 0:
             save_raw_corpus(articles, checkpoint_path)
         time.sleep(sleep_seconds)
+
+    # Second pass: most first-pass failures are rate-limit casualties (real
+    # titles emptied out inside a throttle window), not genuine misses. Retry
+    # them once on a now-calmer connection — this recovers most of a throttled
+    # cluster instead of leaving holes in the corpus.
+    if failed:
+        if verbose:
+            print(f"\nSecond pass: retrying {len(failed)} titles skipped on the first pass…")
+        cooldown = _make_failure_cooldown(verbose)
+        recovered = 0
+        for title, cat, want_aliases in failed:
+            article = _attempt(title, cat, want_aliases)
+            if article is not None:
+                articles.append(article)
+                recovered += 1
+            cooldown(article is not None)
+            time.sleep(sleep_seconds)
+        if verbose:
+            print(f"  recovered {recovered}/{len(failed)} on the second pass.")
+        if checkpoint_path is not None and articles:
+            save_raw_corpus(articles, checkpoint_path)
 
     if verbose:
         print(f"\nFetched {len(articles)} / {len(flat)} articles successfully.")
@@ -602,6 +661,7 @@ def fetch_articles_by_title(
     existing = set(existing_titles or ())
     seen: set[str] = set()
     out: list[Article] = []
+    cooldown = _make_failure_cooldown(verbose)
     for cat, titles in titles_by_category.items():
         for title in titles:
             if title in seen or title in existing:
@@ -629,6 +689,7 @@ def fetch_articles_by_title(
                 art = None
             if art is not None:
                 out.append(art)
+            cooldown(art is not None)   # pause if empty-body failures cluster
             time.sleep(sleep_seconds)
     if verbose:
         n_req = sum(len(v) for v in titles_by_category.values())

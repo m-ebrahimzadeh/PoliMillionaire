@@ -432,6 +432,94 @@ def test_fetch_by_title_resolves_and_drops_unresolvable(monkeypatch):
     assert fetched == ["Bystander effect"]   # the junk fragment never hit page()
 
 
+def test_page_with_retry_is_cheap_one_retry(monkeypatch):
+    """A throttled (empty-body) title is retried at most once — not 3x — so the
+    crawl doesn't burn ~6s per failure hammering an active rate-limit window."""
+    import sys
+    from polimibot.rag import corpus as corpus_mod
+
+    calls = {"n": 0}
+
+    class _Wiki:
+        class DisambiguationError(Exception): ...
+        class PageError(Exception): ...
+        @staticmethod
+        def page(name, auto_suggest=False):
+            calls["n"] += 1
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+    monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
+    monkeypatch.setattr(corpus_mod.time, "sleep", lambda *_: None)
+
+    with pytest.raises(ValueError):
+        corpus_mod._page_with_retry("Karen Uhlenbeck", verbose=False)
+    assert calls["n"] == corpus_mod._FETCH_MAX_ATTEMPTS == 2
+
+
+def test_failure_cooldown_pauses_once_failures_cluster(monkeypatch):
+    """_make_failure_cooldown sleeps a one-off cooldown when consecutive failures
+    cross the threshold, and a success resets the streak."""
+    from polimibot.rag import corpus as corpus_mod
+    sleeps: list[float] = []
+    monkeypatch.setattr(corpus_mod.time, "sleep", lambda s: sleeps.append(s))
+
+    note = corpus_mod._make_failure_cooldown(verbose=False)
+    for _ in range(corpus_mod._COOLDOWN_AFTER_CONSECUTIVE_FAILURES - 1):
+        note(False)
+    assert sleeps == []                       # below threshold → no pause
+    note(False)                               # crosses threshold
+    assert corpus_mod._RATE_LIMIT_COOLDOWN_SECONDS in sleeps
+
+    sleeps.clear()
+    note(True)                                # success resets the streak
+    for _ in range(corpus_mod._COOLDOWN_AFTER_CONSECUTIVE_FAILURES - 1):
+        note(False)
+    assert sleeps == []
+
+
+def test_fetch_from_categories_second_pass_recovers_throttled_titles(monkeypatch):
+    """A title that errors on the first pass but succeeds on the second (a
+    rate-limit casualty) is recovered, not left out of the corpus."""
+    import sys
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+    from polimibot.rag import category_seeds as cs
+
+    monkeypatch.setattr(cs, "harvest_titles",
+                        lambda categories, **kw: {Category.SCIENCE: ["Good", "Flaky"]})
+    monkeypatch.setattr(cs, "CONCEPT_TITLES", {})
+
+    class _Page:
+        def __init__(self, title):
+            self.title, self.url = title, ""
+            self.content = self.summary = f"About {title}."
+
+    state = {"flaky_seen": 0}
+
+    class _Wiki:
+        class DisambiguationError(Exception): ...
+        class PageError(Exception): ...
+        @staticmethod
+        def set_lang(_): pass
+        @staticmethod
+        def page(name, auto_suggest=False):
+            # Flaky fails *both* first-pass attempts (so the cheap inline retry
+            # can't save it), then succeeds — only the second pass recovers it.
+            if name == "Flaky" and state["flaky_seen"] < corpus_mod._FETCH_MAX_ATTEMPTS:
+                state["flaky_seen"] += 1
+                raise ValueError("Expecting value: line 1 column 1 (char 0)")
+            return _Page(name)
+    monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
+    monkeypatch.setattr(corpus_mod.time, "sleep", lambda *_: None)
+
+    arts = corpus_mod.fetch_articles_from_categories(
+        categories=[Category.SCIENCE], cache_path=None, fetch_aliases=False,
+        sleep_seconds=0, verbose=False,
+    )
+    titles = {a.title for a in arts}
+    assert titles == {"Good", "Flaky"}        # Flaky recovered on the second pass
+    assert state["flaky_seen"] == corpus_mod._FETCH_MAX_ATTEMPTS  # failed first pass, then retried
+
+
 def test_corpus_version_is_positive_int():
     from polimibot.rag.corpus import CORPUS_VERSION
     assert isinstance(CORPUS_VERSION, int) and CORPUS_VERSION >= 2
