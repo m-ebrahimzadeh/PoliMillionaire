@@ -77,19 +77,37 @@ class CrossEncoderReranker:
         # Lazy import — keeps the rest of the module importable without
         # sentence-transformers installed (tests use the injected path).
         from sentence_transformers import CrossEncoder
+        import torch
         model = CrossEncoder(spec.model_name)
         # Half-precision weights on GPU — ~2x smaller VRAM, negligible quality
         # loss. The HF transformer is exposed as CrossEncoder.model.
         if _resolve_fp16(spec.fp16):
             model.model = model.model.half()
 
+        # Newer sentence-transformers (v3+) passes BatchEncoding with list-backed
+        # tensors to the HF model, which crashes transformers' padding check with
+        # "list indices must be integers or slices, not tuple". Bypass predict()
+        # and tokenize + forward directly so tensors are always proper torch.Tensors.
+        hf_model = model.model
+        tokenizer = model.tokenizer
+        device = next(hf_model.parameters()).device
+
         def _score(pairs: List[Tuple[str, str]]) -> List[float]:
-            # convert_to_numpy=True avoids a TypeError in newer transformers versions
-            # where warn_if_padding_and_no_attention_mask receives a plain list instead
-            # of a tensor when sentence-transformers returns raw Python lists.
-            return [float(s) for s in model.predict(
-                pairs, batch_size=spec.batch_size, convert_to_numpy=True
-            )]
+            all_scores: List[float] = []
+            for i in range(0, len(pairs), spec.batch_size):
+                batch = pairs[i : i + spec.batch_size]
+                enc = tokenizer(
+                    batch,
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                    return_tensors="pt",
+                )
+                enc = {k: v.to(device) for k, v in enc.items()}
+                with torch.no_grad():
+                    logits = hf_model(**enc).logits.squeeze(-1)
+                all_scores.extend(logits.float().cpu().tolist())
+            return all_scores
 
         return cls(_score, name=spec.model_name, batch_size=spec.batch_size)
 
