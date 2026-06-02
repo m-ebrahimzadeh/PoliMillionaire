@@ -354,6 +354,44 @@ def test_configure_wikipedia_sets_ua_and_rate_limiting():
     corpus._configure_wikipedia(_BareWiki)  # no exception = pass
 
 
+def test_fetch_from_categories_checkpoints_partial_harvest(tmp_path, monkeypatch):
+    """§8c: the crawl rewrites a checkpoint file every `checkpoint_every` fetches,
+    so a crash mid-harvest leaves a durable partial corpus on disk."""
+    import sys
+    from polimibot.config import Category
+    from polimibot.rag import corpus as corpus_mod
+    from polimibot.rag import category_seeds as cs
+
+    titles = [f"Article {n}" for n in range(5)]
+    monkeypatch.setattr(cs, "harvest_titles",
+                        lambda categories, **kw: {Category.SCIENCE: list(titles)})
+    monkeypatch.setattr(cs, "CONCEPT_TITLES", {})
+
+    class _Page:
+        def __init__(self, title):
+            self.title, self.url = title, ""
+            self.content = self.summary = f"Body of {title}."
+
+    class _Wiki:
+        class DisambiguationError(Exception): ...
+        class PageError(Exception): ...
+        @staticmethod
+        def set_lang(_): pass
+        @staticmethod
+        def page(name, auto_suggest=False): return _Page(name)
+    monkeypatch.setitem(sys.modules, "wikipedia", _Wiki)
+
+    ckpt = tmp_path / "corpus.partial.jsonl"
+    arts = corpus_mod.fetch_articles_from_categories(
+        categories=[Category.SCIENCE], cache_path=None, fetch_aliases=False,
+        checkpoint_path=ckpt, checkpoint_every=2, sleep_seconds=0, verbose=False,
+    )
+    assert len(arts) == 5
+    assert ckpt.exists(), "checkpoint file should exist after a multi-fetch crawl"
+    # Checkpoints fired at i=2 and i=4 → at least 4 articles are durable on disk.
+    assert len(corpus_mod.load_raw_corpus(ckpt)) >= 4
+
+
 def test_corpus_version_is_positive_int():
     from polimibot.rag.corpus import CORPUS_VERSION
     assert isinstance(CORPUS_VERSION, int) and CORPUS_VERSION >= 2

@@ -105,6 +105,8 @@ def main() -> None:
             cache_path=PATHS.cache_dir / "harvested_titles.json",
             max_per_category=args.max_per_category,
             max_depth=args.max_depth,
+            # Durable partial harvest: a crash mid-crawl leaves a usable corpus.
+            checkpoint_path=PATHS.cache_dir / "corpus.partial.jsonl",
             verbose=True,
         )
 

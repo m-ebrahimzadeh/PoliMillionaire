@@ -447,6 +447,8 @@ def fetch_articles_from_categories(
     max_depth: int = 0,
     sleep_seconds: float = 0.3,
     fetch_aliases: bool = True,
+    checkpoint_path: Optional[Path] = None,
+    checkpoint_every: int = 250,
     verbose: bool = True,
 ) -> list[Article]:
     """Fetch Wikipedia articles seeded from the MediaWiki category graph.
@@ -481,6 +483,10 @@ def fetch_articles_from_categories(
             call on the ~thousands of bulk titles roughly halves the API volume,
             which is the main rate-limit pressure on a shared Colab IP. Set
             False to skip aliases entirely.
+        checkpoint_path: if set, the running article list is rewritten to this
+            path every ``checkpoint_every`` fetches, so a mid-crawl failure
+            leaves a durable partial corpus instead of losing the whole harvest.
+        checkpoint_every: fetch interval between checkpoint writes (default 250).
         verbose: print progress.
 
     Returns:
@@ -553,6 +559,10 @@ def fetch_articles_from_categories(
         # Progress dot every 50 fetches so a multi-thousand crawl shows life.
         if verbose and i % 50 == 0:
             print(f"  ... fetched {i}/{len(flat)} ({len(articles)} successes)")
+        # Checkpoint the harvest periodically so a crash mid-crawl never throws
+        # away hours of fetching — the partial corpus is durable on disk.
+        if checkpoint_path is not None and articles and i % checkpoint_every == 0:
+            save_raw_corpus(articles, checkpoint_path)
         time.sleep(sleep_seconds)
 
     if verbose:
