@@ -331,8 +331,20 @@ class GoldItem:
     source_run: str = ""         # first run file that confirmed this
 
 
-def harvest_gold_set(runs_dir: Path) -> list[GoldItem]:
-    """Mine all *.jsonl run files → GoldItems."""
+def harvest_gold_set(
+    runs_dir: Path,
+    *,
+    exclude_models: list[str] | None = None,   # drop runs whose model slug matches
+    include_models: list[str] | None = None,   # keep only runs whose slug matches
+    run_filter: Callable[[dict], bool] | None = None,  # arbitrary manifest predicate
+) -> list[GoldItem]:
+    """Mine all *.jsonl run files → GoldItems.
+
+    The optional filters select which runs contribute: include/exclude do a
+    substring match against the model slug in each run's manifest, and
+    run_filter is ANDed on top for arbitrary predicates, e.g.
+    run_filter=lambda m: m["extra"].get("seed") == 42.
+    """
     confirmed = {}   # key → GoldItem (direct confirmation)
     wrong_indices = {}  # key → set of wrong indices
 
@@ -996,6 +1008,31 @@ python scripts/eval_rag.py --live-fallback --min-score 0.40</code></pre>
     <div class="card tip">
         <p><strong>Always test with --mock first.</strong> It uses a MockLLM (no GPU) and MockRetriever (no index), so the full pipeline runs end-to-end on CPU in seconds. This catches import errors, missing files, and logic bugs before you burn GPU hours.</p>
     </div>
+
+    <h3>Threshold Calibration — Tuning the RAG Score Gate</h3>
+    <p>The RAG score gate (does the retrieval clear <code>min_score</code>?) has an optimal threshold that depends on the retrieval path. <code>polimibot/eval/threshold_calibration.py</code> finds it by maximising the <em>gated-policy</em> expected accuracy over candidate thresholds τ:</p>
+
+    <div class="code-block">
+        <div class="filename">polimibot/eval/threshold_calibration.py — expected-accuracy maximisation</div>
+        <pre><code class="language-python"># expected_acc(τ) = acc(score ≥ τ)·P(score ≥ τ) + bare_baseline_acc·P(score &lt; τ)
+
+def calibrate_threshold(scores, corrects, *, bare_baseline_acc) -> list[dict]:
+    """Candidate τ rows sorted by expected gated-policy accuracy (best first).
+
+    Each row: {"tau", "p_ungated", "acc_ungated", "expected"}. Candidates are
+    every observed score (rounded to 3 dp) plus 0.0 and 1.0 as bookends.
+    """
+
+def load_pairs_from_runs(*run_paths) -> list[tuple[float, bool]]:
+    """Pull (extras.top_score, correct) pairs from RAG run JSONLs; rows without
+    a top_score (baseline / gated-suppressed) are skipped."""</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="path-agnostic">The algorithm operates on whatever score scale lives in <code>extras.top_score</code>, so it automatically matches the active path's knob — cosine for dense, RRF for hybrid, raw cross-encoder logit for rerank.<span class="purpose">One routine calibrates every retrieval recipe; pass scores from one path at a time.</span></li>
+        <li data-line="bare_baseline_acc">The bare-LLM baseline accuracy on the same slice stands in for the fallback arm on gated questions — so τ trades "trust this retrieval" against "fall back to parametric memory".<span class="purpose">The gate is only worth raising while the gated answers beat the baseline they'd be replaced by.</span></li>
+        <li data-line="CLI"><code>scripts/calibrate_min_score.py</code> wraps this over a run log; the notebook's tuning section reuses the already-loaded LLM/retriever so iteration is fast.<span class="purpose">Same code path from CLI and notebook — calibrate once, paste τ into the RAG config.</span></li>
+    </ul>
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
@@ -1055,6 +1092,17 @@ graph LR
         <li data-line="Sort">Sorted by accuracy descending. The best strategy is always at the top. Ties broken by ECE (lower is better).<span class="purpose">Instant "what's our best strategy?" answer — the top row of the leaderboard.</span></li>
         <li data-line="CSV">Exports to CSV for downstream analysis (spreadsheets, reports, presentations).<span class="purpose">Machine-readable output enables automated reporting pipelines.</span></li>
     </ul>
+
+    <h3>report_io.py — One Place to Write &amp; Name Reports</h3>
+    <p>Every eval script persists its <code>EvalReport</code> through <code>polimibot/eval/report_io.py</code>, so the on-disk format the leaderboard reads can never drift between scripts. It centralises:</p>
+    <table class="comparison-table">
+        <tr><th>Function</th><th>Role</th></tr>
+        <tr><td><code>save_report(report, name, eval_dir)</code></td><td>Serialise to <code>eval_dir/{name}.json</code> (the <code>name</code> already embeds a UTC timestamp, so no suffix is added).</td></tr>
+        <tr><td><code>load_report(path)</code></td><td>Read a serialised report back as a raw dict.</td></tr>
+        <tr><td><code>make_report_id(...)</code></td><td>Build the timestamped run slug used as the filename — the leaderboard's row key.</td></tr>
+        <tr><td><code>model_slug(model_id, *, mock=False)</code></td><td>Filesystem-safe short tag for a model id (<code>"Qwen/Qwen2.5-7B-Instruct"</code> → <code>"qwen2.5-7b-instruct"</code>; <code>"mock"</code> when no model).</td></tr>
+        <tr><td><code>_collect_strategy_flags(strategy)</code></td><td>Recursively walk a composed strategy tree (Tiered → Ensemble → RAG/Tool/Agent) and collect the active feature tokens that distinguish one run from another.</td></tr>
+    </table>
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
