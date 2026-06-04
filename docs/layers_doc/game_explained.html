@@ -643,11 +643,12 @@ class AnswerResult:
         <p><strong>Imagine a power adapter when traveling internationally.</strong> Your laptop (the strategy) has its own plug shape. The foreign socket (API client) has a different shape. The adapter converts between them without changing either side. If the server API changes (different socket), you only replace the adapter — your laptop is unchanged.</p>
     </div>
 
-    <p>The <code>GameAdapter</code> does three things:</p>
+    <p>The <code>GameAdapter</code> does four things:</p>
     <ol style="margin: 12px 0 16px 24px; color: var(--text-secondary); font-size: 0.88rem; line-height: 2;">
         <li>Translates API types (<code>millionaire_client.Question</code>) → domain types (<code>GameQuestion</code>)</li>
         <li>Exposes a clean interface for the runner (no HTTP knowledge needed)</li>
         <li>Fixes known server quirks (the level=0 bug)</li>
+        <li>Hides the game <strong>mode</strong>: in speech mode it fetches and transcribes audio, so the strategy layer always sees text</li>
     </ol>
 
     <div class="code-block">
@@ -709,6 +710,47 @@ class GameAdapter:
         <tr><td><code>GameState</code></td><td>n/a (not exposed)</td><td>Runner only sees individual questions and outcomes, not raw state.</td></tr>
         <tr><td><code>Session + Competition</code></td><td><code>SessionRecord</code></td><td>End-of-game summary with only the fields needed for logging.</td></tr>
     </table>
+
+    <h3>Speech Mode — Audio Questions, Same DTO</h3>
+
+    <div class="card concept">
+        <p><strong>The server can deliver each question as audio instead of text.</strong> The adapter absorbs that difference entirely: construct it with <code>mode="speech"</code> and a <code>SpeechTranscriber</code>, and every <code>current_question</code> is fetched as WAV, transcribed, and returned as the <em>same</em> <code>GameQuestion</code> the strategy layer already expects. No strategy changes — the anti-corruption layer hides the mode.</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/game/adapter.py — speech-mode plumbing</div>
+        <pre><code class="language-python">def __init__(self, client, competition_id, *, mode="text", transcriber=None):
+    if mode == "speech" and transcriber is None:
+        raise ValueError("mode='speech' requires a SpeechTranscriber.")
+    self._mode = mode
+    self._transcriber = transcriber
+    self._session = client.game.start(competition_id=competition_id, mode=mode)
+
+@property
+def current_question(self):
+    if self._mode == "speech":
+        return self._fetch_and_transcribe_question()   # ignore server text payload
+    # ... text-mode path (with the level=0 fix) ...
+
+def _fetch_and_transcribe_question(self):
+    """Fetch + transcribe the question audio and all four option clips."""
+    if self._session.is_game_over:
+        return None
+    question_text = self._transcriber.transcribe(
+        self._session.fetch_audio_question()).text
+    option_texts = [
+        self._transcriber.transcribe(self._session.fetch_audio_option_next()).text
+        for _ in range(4)
+    ]
+    level = self._session.current_level or 1
+    return GameQuestion(text=question_text, options=tuple(option_texts), level=level)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="transcriber"><code>SpeechTranscriber</code> (<code>polimibot/models/speech.py</code>) is the only file that imports <code>whisper</code>: <code>SpeechTranscriber.load(TranscriberSpec(model_name="base", device="cuda"))</code> returns a transcriber whose <code>transcribe(wav_bytes).text</code> turns audio into text.<span class="purpose">Whisper is isolated behind one wrapper — speech support adds no dependency anywhere else.</span></li>
+        <li data-line="all four">All four option clips are pulled with <code>fetch_audio_option_next()</code> before returning, so the caller always receives a complete four-option <code>GameQuestion</code>.<span class="purpose">The strategy never sees a half-built question, audio or not.</span></li>
+        <li data-line="submit">On submit, speech mode discards the server's <code>text=None</code> follow-up question; the next <code>current_question</code> call re-fetches and transcribes fresh audio.<span class="purpose">One code path for outcomes; the mode only changes how questions are read.</span></li>
+    </ul>
 </section>
 
 <!-- ═══════════════════ SECTION 6: The Game Loop ═══════════════════ -->
