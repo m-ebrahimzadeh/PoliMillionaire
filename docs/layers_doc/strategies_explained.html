@@ -344,7 +344,10 @@ code:not([class*="language-"]) {
         <a href="#s6">6. Agent</a>
         <a href="#s7">7. Ensemble</a>
         <a href="#s8">8. Tiered</a>
-        <a href="#s9">9. Big Picture</a>
+        <a href="#s9">9. Confidence Gated</a>
+        <a href="#s10">10. Confidence + Tools</a>
+        <a href="#s11">11. Rewrite + Tools</a>
+        <a href="#s12">12. Big Picture</a>
     </div>
 </nav>
 
@@ -864,7 +867,7 @@ sequenceDiagram
         <pre><code class="language-python">class AgentStrategy(Strategy):
     """ReAct agent: LLM emits CALL: markers; tool results injected as user turns."""
 
-    def __init__(self, llm, *, max_iterations=3, per_turn_tokens=200):
+    def __init__(self, llm, *, max_iterations=2, per_turn_tokens=150):
         self.llm = llm
         self.max_iterations = max_iterations
 
@@ -1136,9 +1139,157 @@ class TieredStrategy(Strategy):
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!-- SECTION 9: The Big Picture -->
+<!-- SECTION 9: ConfidenceGatedStrategy -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <section class="section" id="s9">
+    <div class="section-number">Strategy 9</div>
+    <h2>ConfidenceGatedStrategy — Escalate Only When Uncertain</h2>
+
+    <div class="card analogy">
+        <p><strong>Imagine a contestant who only phones a friend when they're genuinely unsure.</strong> If they already know the answer cold, calling for help just wastes time (and the friend's patience). This strategy does the same: run a cheap, fast primary model first, and only escalate to a heavier retrieval-backed fallback when the primary's <em>confidence margin</em> is thin.</p>
+    </div>
+
+    <p>This is a <strong>deployment-architecture</strong> strategy. It composes two arms — a fast <code>primary</code> (typically a logit-scored <code>BaselineLLMStrategy</code>) and a heavier <code>fallback</code> (typically a <code>RAGStrategy</code> with live Wikipedia enabled) — and routes between them on the primary's <strong>margin</strong> (top-1 minus top-2 answer-letter probability).</p>
+
+    <div class="card concept">
+        <p><strong>Why gate on margin?</strong> Two empirical findings from the project's ablations drive this: (1) RAG provides no net lift when a calibrated primary is already saturated (Phi-4 + History ≈ 92%, measured ECE ≈ 0.04) — high-confidence answers don't improve, only the low-confidence tail does; (2) unauthenticated Wikipedia rate-limits at ~10 requests per burst (HTTP 429, <code>Retry-After: 55</code>). Routing the confident majority through the bare LLM (zero API calls) and reserving retrieval for the ~10–20% low-margin tail keeps API volume under the burst threshold <em>without</em> moving the accuracy ceiling.</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/confidence_gated_strategy.py — the gate</div>
+        <pre><code class="language-python">class ConfidenceGatedStrategy(Strategy):
+    def __init__(self, primary, fallback, *,
+                 margin_threshold=0.20,                 # DEFAULT_MARGIN_THRESHOLD
+                 always_fallback_categories=frozenset()):
+        ...
+
+    def answer(self, inp):
+        primary_out = self.primary.answer(inp)          # cheap pass, no retrieval
+        margin = primary_out.extras.get("margin")       # top1 - top2, or None
+
+        # Some categories can't be answered from parametric memory — a confident
+        # margin there is meaningless, so retrieval is mandatory not optional.
+        force = inp.category in self.always_fallback_categories
+
+        # Commit primary when NOT forced AND (no margin signal OR margin high enough)
+        if not force and (margin is None or margin >= self.margin_threshold):
+            primary_out.extras["confgated_used_primary"] = True
+            return primary_out
+
+        return self.fallback.answer(inp)                 # uncertain → escalate</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="margin_threshold">Default <code>0.20</code> (<code>DEFAULT_MARGIN_THRESHOLD</code>), calibrated for Phi-4 on History — roughly 80–90% of answers commit, ~10–20% escalate. Lower → commit more often (less retrieval); higher → escalate more often.<span class="purpose">The gate engages only when the primary populates <code>extras["margin"]</code> (i.e. logit-scoring). A free-generation primary has no margin, so the gate degrades to "always commit primary".</span></li>
+        <li data-line="always_fallback_categories">Categories listed here bypass the gate and <strong>always</strong> escalate — e.g. <code>NEWS</code>, whose questions reference dated articles past the model's knowledge cutoff, so a confident margin is not trustworthy.<span class="purpose">Defaults to the empty set (a pure margin gate, unchanged behaviour).</span></li>
+        <li data-line="extras">Every output is annotated for post-hoc analysis: <code>confgated_used_primary</code>, <code>confgated_margin</code>, <code>confgated_threshold</code>, and — when fallback fires — the primary's would-be choice and whether the fallback <code>disagrees</code>.<span class="purpose">Makes the routing decision auditable in the run logs and leaderboard.</span></li>
+        <li data-line="warm_up"><code>warm_up()</code> warms <strong>both</strong> arms up-front so the fallback's first invocation mid-game doesn't pay JIT cost on a question that needed it; <code>shutdown()</code> cascades to both.<span class="purpose">Pay the compilation latency before the clock starts, not during a question.</span></li>
+    </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 10: ConfidenceToolStrategy -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s10">
+    <div class="section-number">Strategy 10</div>
+    <h2>ConfidenceToolStrategy — Pin First, Improve With Tools</h2>
+
+    <div class="card analogy">
+        <p><strong>Lock in a safe answer, then try to do better — but never risk the safe answer.</strong> The LLM always produces a fast answer that gets "pinned" as the fallback. Only if the LLM is uncertain do deterministic tools get a chance to override it. If the tools abstain or run out of time, the pinned answer ships unchanged — so there is <em>zero</em> timeout risk.</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/confidence_tool_strategy.py — pin-then-improve</div>
+        <pre><code class="language-python">class ConfidenceToolStrategy(Strategy):
+    def __init__(self, primary, tools, *,
+                 confidence_threshold=0.70,   # run tools when primary conf < this
+                 tool_time_budget=5.0):       # max seconds spent on tools
+        ...
+
+    def answer(self, inp):
+        pinned = self.primary.answer(inp)              # Stage 1: always (~0.8s)
+        if pinned.confidence >= self.confidence_threshold:
+            return pinned                              # confident → trust the LLM
+
+        deadline = time.monotonic() + self.tool_time_budget
+        for tool in self.tools:                        # Stage 2: only when uncertain
+            if time.monotonic() >= deadline:
+                break
+            if not tool.can_handle(inp):
+                continue
+            tool_out = tool.use(inp)
+            if tool_out is not None:
+                return tool_out                        # tool fired → upgrade
+        return pinned                                  # tools abstained → pinned</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="confidence_threshold">Default <code>0.70</code> — tools are attempted whenever the primary's top-option probability is below 70% (the uncertain range seen on hard live questions). Lower → fewer tool attempts; higher → more.<span class="purpose">Skips tool overhead entirely on the questions the LLM is already sure about.</span></li>
+        <li data-line="tool_time_budget">Default <code>5.0</code> seconds — ample for warm SymPy calls (&lt;1 ms) yet well within the 25 s hard cutoff. The loop checks the deadline before each tool.<span class="purpose">Bounded so a slow tool can never blow the per-question budget.</span></li>
+        <li data-line="upgrade">When a tool fires, the output is annotated <code>tool_upgraded=True</code> and carries the <code>pinned_index</code>/<code>pinned_confidence</code> so analysis can see what the LLM would have answered.<span class="purpose">Every override is traceable back to the safe answer it replaced.</span></li>
+    </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 11: RewriteToolStrategy -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s11">
+    <div class="section-number">Strategy 11</div>
+    <h2>RewriteToolStrategy — Tools, Then LLM-Rewrite, Then Tools Again</h2>
+
+    <div class="card analogy">
+        <p><strong>A maths specialist that tries the calculator twice — once on the raw question, and once on a cleaned-up version it writes itself.</strong> Many maths questions are phrased in a way no regex pattern matches. So if the deterministic patterns miss and the LLM is unsure, this strategy asks the LLM to <em>rewrite</em> the question as a single SymPy expression and runs that through the solver directly.</p>
+    </div>
+
+    <p>A five-stage pipeline tuned for the MATHS category:</p>
+
+    <div class="code-block">
+        <div class="filename">polimibot/strategies/rewrite_tool_strategy.py — the five stages</div>
+        <pre><code class="language-python">class RewriteToolStrategy(Strategy):
+    def __init__(self, llm, tools, *,
+                 confidence_threshold=0.70,
+                 rewrite_time_reserve=2.0,        # keep this much time for the rewrite call
+                 rewrite_max_new_tokens=60):      # enough for one SymPy line
+        ...
+
+    def answer(self, inp):
+        # 1. Tools on the ORIGINAL question (MathsTool → SympyDirectTool, ~0ms).
+        for tool in self.tools:
+            out = tool.use(inp) if tool.can_handle(inp) else None
+            if out is not None:
+                return out                        # deterministic — LLM never called
+
+        # 2. LLM logit answer — pinned as fallback.
+        pinned = self._primary_answer(inp)
+
+        # 3. Confident? ship the pinned answer.
+        if pinned.confidence >= self.confidence_threshold:
+            return pinned
+
+        # 4. MATHS only, time permitting: ask the LLM to REWRITE the question
+        #    into one SymPy expression, then sympy_solve() it and match options.
+        if inp.category == Category.MATHS and _time_left():
+            expr = self._get_rewrite(inp)         # e.g. "solve(x**2 - 5*x + 6, x)[0]"
+            idx  = self._eval_rewrite(expr, inp.options) if expr else None
+            if idx is not None:
+                return StrategyOutput(chosen_index=idx, confidence=0.92, ...)
+
+        # 5. Everything abstained → pinned LLM answer.
+        return self._pinned(pinned, "all_abstained")</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="tools-first">Step 1 runs the deterministic patterns first because they answer questions like <code>log_8(2)</code> or <code>(i+1)(5-5i)(5+5i)</code> in &lt;1 ms with ~0.97 confidence — never waste an LLM call on a question a tool can settle with certainty.<span class="purpose">SympyDirect fires at 0.97 confidence, MathsTool at 0.99; the rewrite path is deliberately lower at 0.92 (semantic-rewrite risk).</span></li>
+        <li data-line="rewrite">Step 4 is a <em>different path</em> from step 1: instead of the 23 regex patterns, the LLM emits a single SymPy line that <code>sympy_solve()</code> evaluates directly — catching questions phrased in ways no pattern matches.<span class="purpose">Same tools, different input: a natural-language problem becomes one executable expression.</span></li>
+        <li data-line="_eval_rewrite">The rewrite result is matched to an option in three stages: numeric float match, LaTeX-fraction fallback, then symbolic <code>sympy.simplify(result - option) == 0</code> for answers like <code>2 + e^{-4}</code> or <code>π²/2</code>.<span class="purpose">Robust to however the options are written — decimals, fractions, or symbolic forms.</span></li>
+        <li data-line="rewrite_time_reserve">Step 4 is skipped if fewer than <code>rewrite_time_reserve</code> (2 s) remain before the deadline, and entirely for non-MATHS questions.<span class="purpose">The pinned LLM answer is always the safety net — the rewrite is pure upside.</span></li>
+    </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 12: The Big Picture -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="s12">
     <div class="section-number">The Big Picture</div>
     <h2>How Everything Connects</h2>
 
