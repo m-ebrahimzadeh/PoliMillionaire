@@ -729,7 +729,23 @@ D: Stanley Kubrick — directed 2001, not these. Wrong.
       <span class="role role-system">system</span>
       <span style="font-size:12px;color:var(--text-dim);">Category: MATHS</span>
     </div>
-    <div class="prompt-showcase-body">You are a careful mathematician. Compute precisely — do not guess. Verify each calculation before committing.</div>
+    <div class="prompt-showcase-body">You are a careful mathematician. Before answering, identify which type of problem you are facing:<br/>&nbsp;&nbsp;- Direct computation (percentage, power, area): compute step by step.<br/>&nbsp;&nbsp;- Equation or unknown variable: solve algebraically.<br/>&nbsp;&nbsp;- Pattern or cycle (units digits, remainders): find the period explicitly.<br/>&nbsp;&nbsp;- Factual recall (a theorem name, a mathematician): recall directly.<br/>Never perform multi-step arithmetic in your head — use the available tools. Verify your result against the options before committing.</div>
+  </div>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-system">system</span>
+      <span style="font-size:12px;color:var(--text-dim);">Category: PHILOSOPHY</span>
+    </div>
+    <div class="prompt-showcase-body">You are answering multiple-choice trivia on philosophy and psychology. Distractors often confuse adjacent schools (Stoicism vs Epicureanism, rationalism vs empiricism), a philosopher with their teacher or student (Socrates / Plato / Aristotle), or psychology subfields (cognitive vs behaviourist vs psychoanalytic). Watch for named-after attributions (Pavlovian vs Skinnerian conditioning, Jungian vs Freudian concepts). Verify the specific philosopher, school, or experiment before committing.</div>
+  </div>
+
+  <div class="prompt-showcase">
+    <div class="prompt-showcase-header">
+      <span class="role role-system">system</span>
+      <span style="font-size:12px;color:var(--text-dim);">Category: NEWS</span>
+    </div>
+    <div class="prompt-showcase-body">You are answering multiple-choice trivia on recent and historical news events. Distractors typically swap the year, the country, an official's title, or the outcome of an event. Verify the specific date and the primary actor before committing. If a question concerns events past your knowledge cutoff, prefer the option most consistent with the facts you do know rather than guessing.</div>
   </div>
 
   <div class="prompt-showcase">
@@ -816,7 +832,7 @@ Then on a new line write \boxed{X} with the best answer.</div>
 <section id="s5">
   <div class="section-label">Section 05</div>
   <h2 class="section-title">Few-Shot Examples — Teaching by Demonstration</h2>
-  <p class="section-intro">For <code>FEW_SHOT</code> and <code>FEW_SHOT_COT</code> styles, one hand-curated example per category is injected before the real question. These examples are carefully designed to teach reasoning patterns, not just answer format.</p>
+  <p class="section-intro">For <code>FEW_SHOT</code> and <code>FEW_SHOT_COT</code> styles, hand-curated example(s) for the question's category are injected before the real question. Most categories carry a single example wrapped in a one-element list; <strong>History carries four</strong> spanning ancient → medieval → early-modern → 20th-century, so the few-shot signal generalises across the gold set rather than anchoring on Roman antiquity. These examples are carefully designed to teach reasoning patterns, not just answer format.</p>
 
   <h3 class="sub-title">Design Principles for Examples</h3>
   <ul style="margin: 12px 0 24px 24px; color: var(--text-muted); font-size: 14px; line-height: 2.2;">
@@ -829,35 +845,54 @@ Then on a new line write \boxed{X} with the best answer.</div>
     <div class="code-block-header">
       <span class="code-file"><span>polimibot/prompts/templates.py</span> — the curated few-shot bank</span>
     </div>
-    <pre><code class="language-python">_FEW_SHOT_BANK: Dict[Category, FewShotExample] = {
-    Category.ENTERTAINMENT: FewShotExample(
-        question="Which director directed both 'Jaws' and 'Schindler's List'?",
-        options=("Martin Scorsese", "Steven Spielberg", 
-                 "Francis Ford Coppola", "Stanley Kubrick"),
-        answer_letter="B",
-        rationale="Steven Spielberg directed Jaws (1975) and Schindler's List (1993).",
-    ),
-    Category.HISTORY: FewShotExample(
-        question="In which year did Julius Caesar cross the Rubicon?",
-        options=("63 BC", "49 BC", "44 BC", "31 BC"),
-        answer_letter="B",
-        rationale="Caesar crossed the Rubicon in 49 BC, triggering the Roman civil war.",
-    ),
-    Category.SCIENCE: FewShotExample(
-        question="What is the chemical symbol for gold?",
-        options=("Ag", "Fe", "Au", "Cu"),
-        answer_letter="C",
-        rationale="Gold's symbol Au comes from the Latin 'aurum'.",
-    ),
-    Category.MATHS: FewShotExample(
-        question="What is the units digit of 3^100?",
-        options=("1", "3", "7", "9"),
-        answer_letter="A",
-        rationale=(
-            "Units digits of 3^n cycle (3, 9, 7, 1) with period 4. "
-            "100 mod 4 = 0, so we take the last value in the cycle: 1."
+    <pre><code class="language-python"># Each category maps to a LIST of examples. Single-example categories wrap
+# their one case in a 1-element list for a uniform API; History carries four.
+_FEW_SHOT_BANK: Dict[Category, List[FewShotExample]] = {
+    Category.ENTERTAINMENT: [
+        FewShotExample(
+            question="Which director directed both 'Jaws' and 'Schindler's List'?",
+            options=("Martin Scorsese", "Steven Spielberg",
+                     "Francis Ford Coppola", "Stanley Kubrick"),
+            answer_letter="B",
+            rationale="Steven Spielberg directed Jaws (1975) and Schindler's List (1993).",
         ),
-    ),
+    ],
+    Category.HISTORY: [
+        # Four diverse priming cases — ancient → medieval → early-modern → 20th-c.
+        FewShotExample(question="In which year did Julius Caesar cross the Rubicon?",
+                       options=("63 BC", "49 BC", "44 BC", "31 BC"), answer_letter="B",
+                       rationale="Caesar crossed the Rubicon in 49 BC, triggering the Roman civil war."),
+        FewShotExample(question="In what year did William the Conqueror defeat King Harold at the Battle of Hastings?",
+                       options=("1066", "1086", "1099", "1054"), answer_letter="A",
+                       rationale="The Battle of Hastings took place on 14 October 1066."),
+        FewShotExample(question="Which event marked the beginning of the French Revolution in 1789?",
+                       options=("The Reign of Terror", "The execution of Louis XVI",
+                                "The storming of the Bastille", "Napoleon's coup"), answer_letter="C",
+                       rationale="The storming of the Bastille on 14 July 1789; the Terror and the execution came later."),
+        FewShotExample(question="In which year did the Berlin Wall fall, signalling the end of the Cold War in Europe?",
+                       options=("1985", "1989", "1991", "1993"), answer_letter="B",
+                       rationale="The Berlin Wall fell on 9 November 1989, two years before the USSR dissolved."),
+    ],
+    Category.SCIENCE: [
+        FewShotExample(
+            question="What is the chemical symbol for gold?",
+            options=("Ag", "Fe", "Au", "Cu"),
+            answer_letter="C",
+            rationale="Gold's symbol Au comes from the Latin 'aurum'.",
+        ),
+    ],
+    Category.MATHS: [
+        FewShotExample(
+            question="What is the units digit of 3^100?",
+            options=("1", "3", "7", "9"),
+            answer_letter="A",
+            rationale=(
+                "Units digits of 3^n cycle (3, 9, 7, 1) with period 4. "
+                "100 mod 4 = 0, so we take the last value in the cycle: 1."
+            ),
+        ),
+    ],
+    # … PHILOSOPHY and NEWS likewise carry one example each.
 }</code></pre>
   </div>
 
@@ -934,11 +969,14 @@ flowchart TD
         {"role": "system", "content": _system_prompt(category)}
     ]
 
-    # Inject the curated example if this is a few-shot style
+    # Inject the curated example(s) if this is a few-shot style. Each category
+    # holds a LIST — one user+assistant pair is emitted per example (History
+    # produces four priming cases; every other category produces one).
     if style in (PromptStyle.FEW_SHOT, PromptStyle.FEW_SHOT_COT):
-        example = _FEW_SHOT_BANK.get(category) if category else None
-        if example:
-            messages.extend(_few_shot_turns(example, style=style))
+        examples = _FEW_SHOT_BANK.get(category) if category else None
+        if examples:
+            for example in examples:
+                messages.extend(_few_shot_turns(example, style=style))
 
     # The actual question
     messages.append({"role": "user", "content": _user_turn(question, options, style=style)})
@@ -974,7 +1012,7 @@ Begin your reply with 'Answer:' followed by exactly one letter from A, B, C, D. 
     <div class="prompt-showcase-header">
       <span class="role role-system">system</span>
     </div>
-    <div class="prompt-showcase-body">You are a careful mathematician. Compute precisely — do not guess. Verify each calculation before committing.</div>
+    <div class="prompt-showcase-body">You are a careful mathematician. Before answering, identify which type of problem you are facing:<br/>&nbsp;&nbsp;- Direct computation (percentage, power, area): compute step by step.<br/>&nbsp;&nbsp;- Equation or unknown variable: solve algebraically.<br/>&nbsp;&nbsp;- Pattern or cycle (units digits, remainders): find the period explicitly.<br/>&nbsp;&nbsp;- Factual recall (a theorem name, a mathematician): recall directly.<br/>Never perform multi-step arithmetic in your head — use the available tools. Verify your result against the options before committing.</div>
   </div>
   <div class="prompt-showcase">
     <div class="prompt-showcase-header">
