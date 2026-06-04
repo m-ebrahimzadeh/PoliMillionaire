@@ -496,6 +496,20 @@ flowchart TD
         <p><strong>Where do the article titles come from?</strong> Rather than hand-picking ~95 articles per topic (the old approach), the system now asks Wikipedia: "give me every article in <code>Category:Roman_emperors</code>, <code>Category:Chemical_elements</code>, …" via the MediaWiki <code>categorymembers</code> API. ~20 well-chosen seed categories per topic yield ~500–2000 candidate titles. Each title is then fetched, cleaned, and chunked exactly like before. <strong>Result:</strong> 5–20× more articles in the index, so the right answer is far more likely to be retrievable — particularly for entity-specific trivia (who discovered X, which film won Y).</p>
     </div>
 
+    <div class="card concept">
+        <p><strong>The harvest has two stages, plus a safety net.</strong> <code>category_seeds.py</code> drives the title list:</p>
+        <ul style="margin: 10px 0 4px 20px; color: var(--text-secondary); font-size: 0.86rem; line-height: 1.9;">
+            <li><strong><code>CATEGORY_SEEDS</code></strong> — ~20 <em>entity</em> categories per topic (named people, works, elements, events). Harvested breadth-first via <code>categorymembers</code>, capped at <code>max_per_category</code> (default 500; a per-seed tuple like <code>("Battles_of_World_War_II", 300)</code> overrides the cap).</li>
+            <li><strong><code>CONCEPT_SEEDS</code></strong> — overlapping <em>concept/definition</em> taxonomies, harvested with one level of subcategory recursion (<code>max_depth=1</code>) so definitional articles join the entity articles.</li>
+            <li><strong><code>CONCEPT_TITLES</code></strong> — an explicit, guaranteed-inclusion list for proven coverage gaps. These bypass the category caps, lead the per-category list, and are the only titles enriched with redirect <code>aliases</code> (alt phrasings matter most there).</li>
+        </ul>
+        <p style="margin-top:10px;">Bodies are fetched through a <strong>batched + concurrent</strong> path — the MediaWiki <code>prop=extracts</code> API returns full plaintext for 20 titles per request over a small thread pool, ~20× fewer round-trips than one <code>wikipedia.page()</code> call per title, with periodic checkpointing so a mid-crawl crash leaves a durable partial corpus.</p>
+    </div>
+
+    <div class="card tip">
+        <p><strong>Each <code>Article</code> carries provenance.</strong> Beyond <code>title</code> / <code>text</code> / <code>category</code> / <code>url</code>, the record adds <code>aliases</code> (Wikipedia redirect titles, indexed as extra retrieval keys) and <code>competition</code> (the exact runtime competition label such as "Ancient History and Politics", derived from <code>category</code> via <code>config.CATEGORIES</code>). <code>CORPUS_VERSION = 4</code> marks this concept-first + aliases/competition schema; the loader still reads older v3 rows that omit the new fields.</p>
+    </div>
+
     <div class="card warning">
         <p><strong>For engineers ablating the change:</strong> pass <code>--legacy-seeds</code> to <code>scripts/build_rag_index.py</code> (or set <code>INDEX_LEGACY_SEEDS=True</code> in the notebook) to fall back to the original hand-curated <code>TOPIC_SEEDS</code> list. The FAISS <code>.manifest.json</code> records which path was used as <code>corpus_source: "category_graph" | "hand_curated"</code>, so a re-loader can tell which index they're working with.</p>
     </div>
@@ -518,7 +532,8 @@ embedder_spec = EmbedderSpec()  # defaults to BAAI/bge-base-en-v1.5, 768-dim</co
     </div>
 
     <div class="card warning">
-        <p><strong>The Manifest System prevents silent corruption.</strong> When you build the index, a <code>.manifest.json</code> is saved recording the exact model, prefixes, and chunker version used. At retrieval time, the system checks: "Was this index built with the same embedder I'm using now?" If not → hard error. This catches a subtle but devastating bug: querying with a different model produces garbage scores without any obvious error message.</p>
+        <p><strong>The Manifest System prevents silent corruption.</strong> When you build the index, a <code>.manifest.json</code> is saved next to the <code>.faiss</code> / <code>.jsonl</code> files. At retrieval time <code>Retriever.from_saved</code> validates it: "Was this index built with the same embedder I'm using now?" A model/dimension/prefix mismatch is a hard error; a version mismatch warns. This catches a subtle but devastating bug — querying with a different model produces garbage scores with no obvious error.</p>
+        <p style="margin-top:10px;">The manifest records: <code>model_name</code> + <code>dim</code>, query/passage <code>prefixes</code>, <code>normalize</code>, the chunking parameters, the four version stamps (<code>chunker</code>, <code>embed_text</code>, <code>cleanup</code>, <code>corpus</code>), <code>corpus_source</code> (<code>"category_graph" | "hand_curated"</code>), <code>n_chunks</code>, a <code>build_timestamp</code>, and a snapshot of library versions (<code>sentence_transformers_version</code>, <code>transformers_version</code>, <code>faiss_version</code>) so a downstream caller can spot a tokenizer upgrade that would shift embeddings.</p>
     </div>
 </section>
 
@@ -595,10 +610,25 @@ embedder_spec = EmbedderSpec()  # defaults to BAAI/bge-base-en-v1.5, 768-dim</co
         <pre><code class="language-python">@dataclass(frozen=True)
 class Chunk:
     """Atomic retrieval unit. Immutable — safe to cache and share."""
-    text:     str              # the passage text (shown to the LLM)
-    source:   str              # article title (used as citation)
-    chunk_id: int              # 0-based position within that article
-    category: Optional[str]    # "history", "science", etc. — for filtering</code></pre>
+    text:          str                      # the passage text (shown to the LLM)
+    source:        str                      # article title (used as citation)
+    chunk_id:      int                      # 0-based position within that article
+    category:      Optional[str] = None     # "history", "science", … — for filtering
+    section_title: Optional[str] = None     # the "== Header ==" this chunk came from
+    is_lead:       bool = False             # True for the article's lead / intro section
+    url:           Optional[str] = None     # source document URL — citations & debugging
+    aliases:       Optional[tuple[str, ...]] = None  # redirect titles (lead chunk only)</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="category">The source document's topic (entertainment / history / science / maths / philosophy / news). The retriever's category filter reads it so only on-topic passages surface for the question being asked.<span class="purpose">Stored as a plain string for JSON-friendliness; <code>None</code> means "unknown / generic".</span></li>
+        <li data-line="section_title">The <code>== Header ==</code> the chunk came from (<code>None</code> for the lead). Provenance plus a hook for section-aware boosting.<span class="purpose">Lets the reranker tell a deep-fact chunk apart from the generic lead of the same article.</span></li>
+        <li data-line="is_lead"><code>True</code> for chunks from the article's lead section, which concentrates the most-queried trivia facts (birth dates, "first X").<span class="purpose">The lead is where the alias phrasings and the headline facts live — worth flagging.</span></li>
+        <li data-line="aliases">Redirect titles / alternate phrasings, set on the lead chunk only. Folded into both the embedding input and the BM25 token stream so a question that names the entity by an alias ("Dr. Drake Ramoray") still matches.<span class="purpose">The four trailing fields are optional with safe defaults, so every older on-disk index that omits them keeps loading unchanged.</span></li>
+    </ul>
+
+    <div class="card concept">
+        <p><strong>Two version stamps, not one.</strong> <code>CHUNKER_VERSION</code> bumps when the stored <code>Chunk.text</code> changes for the same input; <code>EMBED_TEXT_VERSION</code> bumps when the <em>embedding input</em> (see <a href="#s5">Section 5</a>) changes <em>without</em> altering the stored text. Both are recorded in the index manifest so a stale on-disk index is detectable by a future loader.</p>
     </div>
 </section>
 
@@ -667,6 +697,36 @@ class Embedder:
         <li data-line="query_prefix">Queries get a long English instruction prefix. This was what the model was trained with — it expects it.<span class="purpose">The prefix signals "I'm a question looking for answers" → the model encodes the query vector in the right part of the space.</span></li>
         <li data-line="passage_prefix">Passages get NO prefix — they're just the raw text. This asymmetry is how the model separates "question space" from "answer space."<span class="purpose">If you accidentally use the passage prefix on queries (or vice versa), you silently corrupt all scores. The manifest system catches this.</span></li>
     </ul>
+
+    <h3>Grounding the Passage — <code>embedding_text()</code></h3>
+
+    <div class="card concept">
+        <p><strong>The text that gets embedded is not quite the text that gets shown.</strong> <code>Chunk.text</code> is kept pure — display, BM25, and the prompt all use it verbatim. But the string handed to the passage embedder is first prefixed with the chunk's <em>provenance path</em>, so every passage vector is anchored to its entity <em>and</em> its section.</p>
+    </div>
+
+    <div class="code-block">
+        <div class="filename">polimibot/rag/chunker.py — embedding_text()</div>
+        <pre><code class="language-python">def embedding_text(chunk: Chunk) -> str:
+    """The string fed to the passage embedder — chunk grounded in its path:
+
+        "{title}[ (also known as: a; b)][ — {section}]: {text}"
+    """
+    source = chunk.source.strip() if chunk.source else ""
+    if not source:
+        return chunk.text                      # nothing to ground on
+    head = source
+    if chunk.aliases:                          # fold redirect phrasings into the vector
+        head += " (also known as: " + "; ".join(chunk.aliases) + ")"
+    if chunk.section_title:                    # let the vector distinguish deep facts from the lead
+        head += f" — {chunk.section_title}"
+    return f"{head}: {chunk.text}"</code></pre>
+    </div>
+
+    <ul class="walkthrough">
+        <li data-line="title">Grounding on the title sharpens cross-article matching — trivia questions name the entity, so the entity belongs in the vector.<span class="purpose">A bare "He was born in 1879" chunk becomes "Albert Einstein — Early life: He was born in 1879".</span></li>
+        <li data-line="section">Adding the section path lets the cross-encoder tell a specific deep-fact chunk apart from the article's broad lead — the failure mode where a generic lead reranked to ~0 against a pointed question.<span class="purpose">A sectionless, aliasless chunk reduces to the old "{title}: {text}" form, so prior behaviour is preserved exactly.</span></li>
+        <li data-line="invariant">This <strong>must</strong> be applied identically at every embed site — index build, live-search scoring, and the <a href="#s13">IndexGrower</a> — or vectors land in inconsistent spaces. Callers import the one helper rather than inlining the format; <code>EMBED_TEXT_VERSION</code> tracks any change to it.<span class="purpose">One convention, one place. The version stamp makes a grounding change visible to a future loader.</span></li>
+    </ul>
 </section>
 
 <!-- ═══════════════════ SECTION 6: Search ═══════════════════ -->
@@ -691,16 +751,26 @@ class Embedder:
         <p><strong>Why brute-force?</strong> With a few thousand chunks, exact search takes ~50ms. Approximate methods (like HNSW) only help at millions of vectors. For our corpus size, brute-force is faster (no index-build overhead) and guarantees no relevant passage is accidentally missed.</p>
     </div>
 
+    <div class="card concept">
+        <p><strong>Category filtering uses oversearch, not a FAISS mask.</strong> <code>IndexFlatIP</code> has no portable per-vector ID filter, so the category restriction is applied in Python <em>after</em> the search. To make sure the on-category slice still fills the requested <code>k</code>, the retriever first asks FAISS for <code>k × 8</code> (<code>_CATEGORY_OVERSEARCH</code>) candidates and keeps the ones whose <code>chunk.category</code> matches. If that slice is still short, it retries once against the <em>full</em> index — so a sparse category degrades to "fewer than k results" (which downstream code tolerates) rather than missing its best passages.</p>
+    </div>
+
     <h3>BM25 — Keyword Search (Sparse)</h3>
 
-    <p>BM25 is "Ctrl+F on steroids." It tokenizes both query and passages, applies stemming (so "invented" matches "inventing"), and scores based on:</p>
+    <p>BM25 is "Ctrl+F on steroids." It tokenizes both query and passages (lowercase word tokens, a conservative stopword filter that keeps semantically loaded words like <em>not / than / more</em>) and — <strong>deliberately no stemming</strong>: stemming would collapse distinct entity senses ("Caesars" → "caesar") and hurt proper-noun trivia. It scores on:</p>
 
     <table class="comparison-table">
         <tr><th>Factor</th><th>Effect</th><th>Example</th></tr>
-        <tr><td><strong>Term Frequency (TF)</strong></td><td>More occurrences of query word in passage = higher score</td><td>"telephone" appears 3× → boosted</td></tr>
+        <tr><td><strong>Term Frequency (TF)</strong></td><td>More occurrences of query word in passage = higher score (saturating, <code>k1=1.5</code>)</td><td>"telephone" appears 3× → boosted</td></tr>
         <tr><td><strong>Inverse Document Frequency (IDF)</strong></td><td>Rare words are more discriminative = extra boost</td><td>"telephone" is rarer than "the" → worth more</td></tr>
-        <tr><td><strong>Length normalization</strong></td><td>Long passages aren't unfairly rewarded for having more words</td><td>Short focused chunk > long rambling one</td></tr>
+        <tr><td><strong>Length normalization</strong></td><td>Long passages aren't unfairly rewarded for having more words (<code>b=0.75</code>)</td><td>Short focused chunk > long rambling one</td></tr>
+        <tr><td><strong>Proximity bonus</strong></td><td>An extra reward (<code>proximity_alpha=0.25</code>) when two query tokens co-occur within <code>proximity_window=10</code> positions — captures phrase signal without indexing bigrams</td><td>"Pythagorean" next to "theorem" → phrase boost</td></tr>
+        <tr><td><strong>Alias terms</strong></td><td>Lead chunks fold the article's redirect titles into their token stream, so a query using an alias matches even when the body never spells it out</td><td>"Dr. Drake Ramoray" → matches the episode article</td></tr>
     </table>
+
+    <div class="card concept">
+        <p><strong>Positional postings make the proximity bonus cheap.</strong> The inverted index stores token <em>positions</em> per document (not just term frequencies — <code>BM25_VERSION = 3</code>), so the search step can add the phrase-proximity term on top of the standard Okapi BM25 score. Set <code>proximity_alpha=0</code> on <code>BM25Spec</code> to fall back to plain BM25.</p>
+    </div>
 
     <h3>Why Use Both?</h3>
 
@@ -1081,8 +1151,11 @@ stateDiagram-v2
         chunks = self._pending.pop(question_id, [])
         if not chunks:
             return
-        # Embed with the SAME embedder used for the rest of the index
-        embeddings = self._embedder.encode_passage([c.text for c in chunks])
+        # Ground each chunk in its provenance path (chunker.embedding_text),
+        # exactly as the build script does, so grown chunks land in the SAME
+        # vector space — then embed with the SAME passage embedder.
+        texts = [embedding_text(c) for c in chunks]
+        embeddings = self._embedder.encode_passage(texts)
         # Hot-append to the live in-memory indices
         self._retriever.append_chunks(chunks, embeddings)
         self._confirmed.extend(chunks)
