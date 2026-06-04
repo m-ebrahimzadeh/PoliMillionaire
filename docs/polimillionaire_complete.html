@@ -1478,7 +1478,12 @@ class AnswerResult:
         <tr><td><code>Question + list[Option]</code></td><td><code>GameQuestion</code></td><td>Options are plain strings. Level-0 bug fixed.</td></tr>
         <tr><td><code>AnswerResult</code></td><td><code>AnswerOutcome</code></td><td>Only fields the runner needs.</td></tr>
         <tr><td><code>GameState</code></td><td>n/a (not exposed)</td><td>Runner sees questions and outcomes, not raw state.</td></tr>
+        <tr><td><code>Session + Competition</code></td><td><code>SessionRecord</code></td><td>End-of-game summary (from <code>summary()</code>) for logging.</td></tr>
     </table>
+
+    <div class="callout design">
+        <p><strong>Speech mode is absorbed here too.</strong> Constructed with <code>mode="speech"</code> and a <code>SpeechTranscriber</code>, the adapter fetches each question and its four option clips as WAV, transcribes them via <code>_fetch_and_transcribe_question()</code>, and returns the <em>same</em> <code>GameQuestion</code> DTO. The strategy layer sees only text regardless of mode. <code>SpeechTranscriber</code> (<code>polimibot/models/speech.py</code>) is the sole importer of Whisper; <code>AnswerOutcome</code> additionally carries <code>reached_level</code> (the secured prize level).</p>
+    </div>
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════════
@@ -1764,7 +1769,7 @@ class Strategy(ABC):
     </div>
 
     <div class="code-block">
-        <div class="filename">polimibot/strategies/ensemble.py — simplified</div>
+        <div class="filename">polimibot/strategies/ensemble_strategy.py — simplified</div>
         <pre><code class="language-python">class EnsembleStrategy(Strategy):
     """Run multiple strategies, fuse their votes."""
 
@@ -1814,7 +1819,7 @@ class Strategy(ABC):
     </div>
 
     <div class="code-block">
-        <div class="filename">polimibot/strategies/tiered.py</div>
+        <div class="filename">polimibot/strategies/tiered_strategy.py</div>
         <pre><code class="language-python">class TieredStrategy(Strategy):
     """Route questions by difficulty level."""
 
@@ -1841,6 +1846,29 @@ class Strategy(ABC):
 
     <div class="callout tip">
         <p><strong>Why tier?</strong> Easy questions don't need the overhead of retrieval or ensemble voting — a baseline LLM handles "What color is the sky?" just fine. Hard questions at level 13+ have high stakes (€125K–€1M) and need every advantage. Tiering gives you ensemble-level accuracy where it matters while keeping latency low on easy questions.</p>
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SECTION: DEPLOYMENT COMPOSITION STRATEGIES
+     ═══════════════════════════════════════════════════════════════════════ -->
+<section class="section" id="strat-deploy" data-chapter="strat">
+    <div class="section-label">Strategies</div>
+    <h2>Deployment Compositions — Confidence Gating &amp; Tools</h2>
+
+    <div class="callout design">
+        <p><strong>Three more strategies compose the basics for deployment</strong>, all sharing the same <code>answer()</code> contract. They exist to spend the expensive arms (retrieval, the LLM) only when they pay off.</p>
+    </div>
+
+    <table class="comparison-table">
+        <tr><th>Strategy</th><th>Routing logic</th><th>Key knobs</th></tr>
+        <tr><td><code>ConfidenceGatedStrategy</code></td><td>Run a fast <code>primary</code>; escalate to a heavier <code>fallback</code> only when the primary's logit <em>margin</em> (top1−top2) is below threshold. Listed categories always escalate.</td><td><code>margin_threshold=0.20</code>, <code>always_fallback_categories</code> (e.g. NEWS)</td></tr>
+        <tr><td><code>ConfidenceToolStrategy</code></td><td>Pin a fast LLM answer; try deterministic tools only when LLM confidence is low. The pinned answer always ships — zero timeout risk.</td><td><code>confidence_threshold=0.70</code>, <code>tool_time_budget=5.0</code></td></tr>
+        <tr><td><code>RewriteToolStrategy</code></td><td>Five-stage MATHS pipeline: direct tools → pinned LLM → confidence gate → LLM rewrites the question into one SymPy expression solved directly → pinned fallback.</td><td><code>confidence_threshold=0.70</code>, <code>rewrite_time_reserve=2.0</code>, <code>rewrite_max_new_tokens=60</code></td></tr>
+    </table>
+
+    <div class="callout tip">
+        <p><strong>Why gate?</strong> A calibrated primary (measured ECE ≈ 0.04 on History) gains nothing from retrieval when it is already confident, and unauthenticated Wikipedia rate-limits at ~10 requests per burst. Routing the confident majority through the bare LLM and reserving retrieval for the low-margin tail keeps API volume under the burst threshold without moving the accuracy ceiling.</p>
     </div>
 </section>
 
@@ -1912,7 +1940,17 @@ class Strategy(ABC):
 
     <div class="prompt-showcase">
         <div class="prompt-showcase-header"><span class="role role-system">system</span> <span style="font-size:0.7rem;color:var(--text-muted)">MATHS</span></div>
-        <div class="prompt-showcase-body">You are a careful mathematician. Compute precisely — do not guess. Verify each calculation before committing.</div>
+        <div class="prompt-showcase-body">You are a careful mathematician. Before answering, identify which type of problem you are facing:<br/>&nbsp;&nbsp;- Direct computation (percentage, power, area): compute step by step.<br/>&nbsp;&nbsp;- Equation or unknown variable: solve algebraically.<br/>&nbsp;&nbsp;- Pattern or cycle (units digits, remainders): find the period explicitly.<br/>&nbsp;&nbsp;- Factual recall (a theorem name, a mathematician): recall directly.<br/>Never perform multi-step arithmetic in your head — use the available tools. Verify your result against the options before committing.</div>
+    </div>
+
+    <div class="prompt-showcase">
+        <div class="prompt-showcase-header"><span class="role role-system">system</span> <span style="font-size:0.7rem;color:var(--text-muted)">PHILOSOPHY</span></div>
+        <div class="prompt-showcase-body">You are answering multiple-choice trivia on philosophy and psychology. Distractors often confuse adjacent schools (Stoicism vs Epicureanism, rationalism vs empiricism), a philosopher with their teacher or student (Socrates / Plato / Aristotle), or psychology subfields (cognitive vs behaviourist vs psychoanalytic). Watch for named-after attributions (Pavlovian vs Skinnerian conditioning, Jungian vs Freudian concepts). Verify the specific philosopher, school, or experiment before committing.</div>
+    </div>
+
+    <div class="prompt-showcase">
+        <div class="prompt-showcase-header"><span class="role role-system">system</span> <span style="font-size:0.7rem;color:var(--text-muted)">NEWS</span></div>
+        <div class="prompt-showcase-body">You are answering multiple-choice trivia on recent and historical news events. Distractors typically swap the year, the country, an official's title, or the outcome of an event. Verify the specific date and the primary actor before committing. If a question concerns events past your knowledge cutoff, prefer the option most consistent with the facts you do know rather than guessing.</div>
     </div>
 
     <div class="prompt-showcase">
@@ -1963,7 +2001,7 @@ Then on a new line write \boxed{X} with the best answer.</div>
     <div class="section-label">Prompt Engineering</div>
     <h2>Few-Shot Examples — Teaching by Demonstration</h2>
 
-    <p>For FEW_SHOT and FEW_SHOT_COT styles, one hand-curated example per category is injected before the real question. Design principles:</p>
+    <p>For FEW_SHOT and FEW_SHOT_COT styles, hand-curated example(s) for the question's category are injected before the real question. Each category maps to a <em>list</em>: most carry a single example wrapped in a one-element list, while <strong>History carries four</strong> (ancient → medieval → early-modern → 20th-century) so the priming generalises across the gold set. Design principles:</p>
     <ul style="margin: 12px 0 24px 24px; color: var(--text-secondary); font-size: 0.9rem; line-height: 2;">
         <li><strong>Exercise the right reasoning</strong> — modular arithmetic for Maths, date disambiguation for History</li>
         <li><strong>Avoid word-overlap</strong> — prevents the brittle "pick the repeated word" heuristic</li>
@@ -1972,32 +2010,43 @@ Then on a new line write \boxed{X} with the best answer.</div>
 
     <div class="code-block">
         <div class="filename">polimibot/prompts/templates.py — the few-shot bank</div>
-        <pre><code class="language-python">_FEW_SHOT_BANK: Dict[Category, FewShotExample] = {
-    Category.ENTERTAINMENT: FewShotExample(
+        <pre><code class="language-python"># Each category → a LIST of examples (one-element for most; four for History).
+_FEW_SHOT_BANK: Dict[Category, List[FewShotExample]] = {
+    Category.ENTERTAINMENT: [FewShotExample(
         question="Which director directed both 'Jaws' and 'Schindler's List'?",
         options=("Martin Scorsese", "Steven Spielberg",
                  "Francis Ford Coppola", "Stanley Kubrick"),
         answer_letter="B",
         rationale="Steven Spielberg directed Jaws (1975) and Schindler's List (1993).",
-    ),
-    Category.HISTORY: FewShotExample(
-        question="In which year did Julius Caesar cross the Rubicon?",
-        options=("63 BC", "49 BC", "44 BC", "31 BC"),
-        answer_letter="B",
-        rationale="Caesar crossed the Rubicon in 49 BC, triggering the Roman civil war.",
-    ),
-    Category.SCIENCE: FewShotExample(
+    )],
+    Category.HISTORY: [   # four diverse priming cases, ancient → 20th-century
+        FewShotExample(question="In which year did Julius Caesar cross the Rubicon?",
+                       options=("63 BC", "49 BC", "44 BC", "31 BC"), answer_letter="B",
+                       rationale="Caesar crossed the Rubicon in 49 BC."),
+        FewShotExample(question="In what year did William the Conqueror win at Hastings?",
+                       options=("1066", "1086", "1099", "1054"), answer_letter="A",
+                       rationale="The Battle of Hastings took place on 14 October 1066."),
+        FewShotExample(question="Which event marked the beginning of the French Revolution in 1789?",
+                       options=("The Reign of Terror", "The execution of Louis XVI",
+                                "The storming of the Bastille", "Napoleon's coup"),
+                       answer_letter="C", rationale="The storming of the Bastille, 14 July 1789."),
+        FewShotExample(question="In which year did the Berlin Wall fall?",
+                       options=("1985", "1989", "1991", "1993"), answer_letter="B",
+                       rationale="The Berlin Wall fell on 9 November 1989."),
+    ],
+    Category.SCIENCE: [FewShotExample(
         question="What is the chemical symbol for gold?",
         options=("Ag", "Fe", "Au", "Cu"),
         answer_letter="C",
         rationale="Gold's symbol Au comes from the Latin 'aurum'.",
-    ),
-    Category.MATHS: FewShotExample(
+    )],
+    Category.MATHS: [FewShotExample(
         question="What is the units digit of 3^100?",
         options=("1", "3", "7", "9"),
         answer_letter="A",
         rationale="Units digits of 3^n cycle (3,9,7,1) with period 4. 100 mod 4 = 0 → 1.",
-    ),
+    )],
+    # … PHILOSOPHY and NEWS likewise carry one example each.
 }</code></pre>
     </div>
 </section>
@@ -2018,11 +2067,13 @@ Then on a new line write \boxed{X} with the best answer.</div>
 
     messages = [{"role": "system", "content": _system_prompt(category)}]
 
-    # Inject curated example if few-shot style
+    # Inject curated example(s) if few-shot style — one user+assistant pair per
+    # example (History emits four priming cases; every other category one).
     if style in (PromptStyle.FEW_SHOT, PromptStyle.FEW_SHOT_COT):
-        example = _FEW_SHOT_BANK.get(category)
-        if example:
-            messages.extend(_few_shot_turns(example, style=style))
+        examples = _FEW_SHOT_BANK.get(category) if category else None
+        if examples:
+            for example in examples:
+                messages.extend(_few_shot_turns(example, style=style))
 
     # The actual question
     messages.append({"role": "user", "content": _user_turn(question, options, style)})
@@ -2713,7 +2764,7 @@ graph LR
     </div>
 
     <h3>SympyDirectTool — Symbolic Math, Before the LLM</h3>
-    <p><code>SympyDirectTool</code> runs <em>before</em> the LLM (no agent loop, purely deterministic). It carries a library of regex patterns that recognise common Maths-question shapes, build a SymPy expression, evaluate it exactly, and match the result against the options.</p>
+    <p><code>SympyDirectTool</code> runs <em>before</em> the LLM (no agent loop, purely deterministic). It carries a library of <strong>23 regex patterns</strong> that recognise common Maths-question shapes, build a SymPy expression, evaluate it exactly, and match the result against the options. It is <code>MATHS</code>-only and answers at <strong>0.97 confidence</strong>; chain order is <code>MathsTool → SympyDirectTool → StatsTool → BaselineLLMStrategy</code>.</p>
 
     <table class="comparison-table">
         <tr><th>Question type</th><th>Example</th><th>Becomes</th></tr>
@@ -2874,7 +2925,7 @@ graph TD
     </div>
 
     <div class="callout security">
-        <p><strong>Key principle: deny by default.</strong> The whitelist is finite and small (~15 functions, 7 operators). Rather than trying to blacklist dangerous functions (you'll miss some), we whitelist only the safe ones. Everything else is rejected by the fallthrough.</p>
+        <p><strong>Key principle: deny by default.</strong> The <code>_ALLOWED</code> whitelist is finite and small — exactly 15 functions plus the constants <code>pi</code> and <code>e</code>, over 7 binary and 2 unary operators. Rather than trying to blacklist dangerous functions (you'll miss some), we whitelist only the safe ones. Everything else is rejected by the fallthrough. The agent's <code>sympy_solve</code> path adds its own deny-list (<code>_BLOCKED</code>: dunders, <code>import</code>, <code>open/exec/eval/getattr</code>) plus a SymPy-<code>Basic</code> result check, because <code>sympify()</code> uses <code>eval()</code> internally.</p>
     </div>
 </section>
 
