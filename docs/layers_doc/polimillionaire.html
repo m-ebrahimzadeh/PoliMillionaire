@@ -785,6 +785,19 @@ graph TD
     </div>
   </div>
 
+  <div class="section" id="strat-deploy">
+    <div class="sec-num">Section 5</div>
+    <h2 class="sec-title">Deployment Compositions — Gating &amp; Tools</h2>
+    <div class="callout design">
+      <p><strong>Three more strategies compose the basics for deployment.</strong> They share the same <code>answer()</code> interface and exist to spend the expensive arms (retrieval, the LLM) only when they pay off:</p>
+      <ul style="margin:10px 0 4px 20px; line-height:1.9;">
+        <li><strong>ConfidenceGatedStrategy</strong> — runs a fast primary, escalates to a heavier <code>fallback</code> only when the primary's logit <em>margin</em> is below <code>margin_threshold</code> (default 0.20). <code>always_fallback_categories</code> (e.g. NEWS) force escalation. Keeps Wikipedia API volume under the rate-limit burst without moving accuracy.</li>
+        <li><strong>ConfidenceToolStrategy</strong> — pins a fast LLM answer, then tries deterministic tools only when LLM confidence &lt; <code>confidence_threshold</code> (0.70); the pinned answer always ships, so there is zero timeout risk.</li>
+        <li><strong>RewriteToolStrategy</strong> — a five-stage MATHS pipeline: direct tools → pinned LLM → confidence gate → LLM rewrites the question into one SymPy expression solved directly → pinned fallback.</li>
+      </ul>
+    </div>
+  </div>
+
 </div><!-- /ch-content -->
 </div><!-- /ch-strat -->
 
@@ -807,7 +820,7 @@ graph TD
     <table class="tbl">
       <tr><th>Style</th><th>What the LLM sees</th><th>How to answer</th><th>Best for</th></tr>
       <tr><td><code>ZERO_SHOT</code></td><td>Question + options only</td><td>Logit scoring</td><td>Fast, accurate, default</td></tr>
-      <tr><td><code>FEW_SHOT</code></td><td>2 example Q&amp;As + question</td><td>Logit scoring</td><td>Formatting consistency</td></tr>
+      <tr><td><code>FEW_SHOT</code></td><td>1 curated example per category (History: 4) + question</td><td>Logit scoring</td><td>Formatting consistency</td></tr>
       <tr><td><code>ZERO_SHOT_COT</code></td><td>Question + "Think step by step"</td><td>Generate + parse</td><td>Complex reasoning</td></tr>
       <tr><td><code>FEW_SHOT_COT</code></td><td>Worked examples + question</td><td>Generate + parse</td><td>Consistent reasoning</td></tr>
       <tr><td><code>ELIMINATION</code></td><td>Per-option analysis scaffold</td><td>Generate + parse</td><td>Uncertain questions</td></tr>
@@ -919,8 +932,21 @@ def _eval_node(node):
     </ul>
   </div>
 
-  <div class="section" id="tools-react">
+  <div class="section" id="tools-symbolic">
     <div class="sec-num">Section 3</div>
+    <h2 class="sec-title">Symbolic &amp; Statistical Tools</h2>
+    <div class="callout design">
+      <p><strong><code>safe_eval</code> stops at arithmetic; two more tools cover the rest of MATHS</strong>, each abstaining unless its result matches an option:</p>
+      <ul style="margin:10px 0 4px 20px; line-height:1.9;">
+        <li><strong>SympyDirectTool</strong> — runs before the LLM, no agent loop. A library of 23 regex patterns turns equations, modular arithmetic, combinatorics, polynomial roots, geometry, repeating decimals, linear systems, and LaTeX into SymPy expressions, answering at 0.97 confidence.</li>
+        <li><strong>StatsTool</strong> — binomial and normal-distribution questions via <code>scipy.stats</code> (P(X≥k), P(X=k), percentiles, sample means). Chain order: <code>MathsTool → SympyDirectTool → StatsTool → LLM</code>.</li>
+      </ul>
+      <p style="margin-top:10px;">Both <code>SympyDirectTool</code> and the agent below evaluate through <code>sympy_solve</code> (<code>polimibot/tools/sympy_tool.py</code>), which exposes only a curated <code>_ALLOWED_NAMES</code> subset and a <code>_BLOCKED</code> deny-list (dunders, <code>import</code>, <code>open/exec/eval/getattr</code>) — because <code>sympify()</code> uses <code>eval()</code> internally, a restricted namespace alone is not enough.</p>
+    </div>
+  </div>
+
+  <div class="section" id="tools-react">
+    <div class="sec-num">Section 4</div>
     <h2 class="sec-title">AgentStrategy — ReAct Loop</h2>
     <div class="callout analogy">
       <p><strong>A contestant who whispers to a friend with a calculator.</strong> They read the question → think aloud → say "what's 2^10?" → friend says 1024 → they conclude "option B" and answer. The agent thinks (Reason) and calls tools (Act) in an iterative loop.</p>
