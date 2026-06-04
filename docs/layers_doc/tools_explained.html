@@ -690,7 +690,7 @@ def _match_options(result: float, options: tuple[str, ...]) -> Optional[int]:
     </div>
 
     <h3>SympyDirectTool — Symbolic Math, Before the LLM</h3>
-    <p><code>SympyDirectTool</code> runs <em>before</em> the LLM (no agent loop, no LLM at any point — purely deterministic). It carries a library of regex patterns that recognise common Maths-question shapes, build a SymPy expression, evaluate it exactly, and check the result against the options.</p>
+    <p><code>SympyDirectTool</code> runs <em>before</em> the LLM (no agent loop, no LLM at any point — purely deterministic). It carries a library of <strong>23 regex patterns</strong> (<code>_PATTERNS</code>) that recognise common Maths-question shapes, build a SymPy expression, evaluate it exactly, and check the result against the options. <code>can_handle()</code> gates it to the <code>MATHS</code> category; patterns are tried in order and the first that produces an option-matching result returns with <strong>confidence 0.97</strong>, otherwise the tool abstains. It sits after <code>MathsTool</code> in the chain: <code>MathsTool → SympyDirectTool → BaselineLLMStrategy</code>.</p>
 
     <table class="comparison-table">
         <tr><th>Question type</th><th>Example</th><th>Becomes</th></tr>
@@ -702,11 +702,12 @@ def _match_options(result: float, options: tuple[str, ...]) -> Optional[int]:
     </table>
 
     <div class="card design">
-        <p><strong>The engine: <code>sympy_solve</code> (polimibot/tools/sympy_tool.py).</strong> Both <code>SympyDirectTool</code> and the <code>AgentStrategy</code> ReAct loop evaluate symbolic expressions through the same <code>sympy_solve</code> function. It exposes only a <strong>curated, sandboxed subset</strong> of SymPy names (<code>solve</code>, <code>Mod</code>, <code>binomial</code>, <code>factorial</code>, <code>simplify</code>, <code>isprime</code>, …) — no file I/O, no <code>os</code>, no <code>exec</code> — and is lazy-imported (~2&nbsp;s cold, &lt;1&nbsp;ms warm) so startup stays fast.</p>
+        <p><strong>The engine: <code>sympy_solve</code> (polimibot/tools/sympy_tool.py).</strong> Both <code>SympyDirectTool</code> and the <code>AgentStrategy</code> ReAct loop evaluate symbolic expressions through the same <code>sympy_solve</code> function. It exposes only a <strong>curated, sandboxed subset</strong> of SymPy names via <code>_ALLOWED_NAMES</code> (<code>solve</code>, <code>solveset</code>, <code>Mod</code>, <code>binomial</code>, <code>factorial</code>, <code>simplify</code>, <code>isprime</code>, <code>summation</code>, …) — no file I/O, no <code>os</code>, no <code>exec</code> — and is lazy-imported (~2&nbsp;s cold, &lt;1&nbsp;ms warm) so startup stays fast. An expression containing a single <code>=</code> is rewritten <code>LHS&nbsp;-&nbsp;(RHS)</code> and solved for its first free symbol; pure expressions evaluate to 15 significant figures.</p>
+        <p style="margin-top:10px;"><strong>Two extra guardrails</strong> because <code>sympify()</code> uses Python's <code>eval()</code> internally (a restricted namespace alone is not enough): a <code>_BLOCKED</code> regex rejects dunders, <code>import</code>, <code>open(</code>, <code>exec(</code>, <code>eval(</code>, and <code>getattr/setattr/globals/locals(</code> <em>before</em> parsing, and the result is rejected unless it is a genuine SymPy <code>Basic</code> — so an expression that escapes to a module or builtin never returns a value.</p>
     </div>
 
     <h3>StatsTool — Probability Distributions</h3>
-    <p><code>StatsTool</code> covers question types neither MathsTool nor SympyDirectTool can: probability questions that need <code>scipy.stats</code>. Like the others, it lazy-imports scipy on first call and abstains immediately on any parse failure or ambiguous phrasing.</p>
+    <p><code>StatsTool</code> covers question types neither MathsTool nor SympyDirectTool can: probability questions that need <code>scipy.stats</code>. Like the others it is <code>MATHS</code>-only, lazy-imports scipy on first call (~50&nbsp;ms cold, &lt;1&nbsp;ms warm), and abstains immediately on any parse failure or ambiguous phrasing. Five ordered pattern functions cover binomial P(X≥k), repeated-success p<sup>k</sup>, binomial P(X=k), normal percentile, and normal sample-mean; a match returns with confidence 0.97. It sits last: <code>MathsTool → SympyDirectTool → StatsTool → LLM fallback</code>.</p>
 
     <table class="comparison-table">
         <tr><th>Distribution</th><th>Question shape</th></tr>
@@ -1011,7 +1012,7 @@ Rules:
 graph TD
     INPUT["LLM Output<br/>(untrusted)"] --> L1["Layer 1: _extract_call<br/>Regex + paren scan<br/>Only passes well-formed CALL: syntax"]
     L1 --> L2["Layer 2: ast.parse(mode='eval')<br/>Rejects statements<br/>Only pure expressions allowed"]
-    L2 --> L3["Layer 3: _eval_node whitelist<br/>Only numeric constants<br/>Only 7 binary ops<br/>Only 2 unary ops<br/>Only ~15 functions"]
+    L2 --> L3["Layer 3: _eval_node whitelist<br/>Only numeric constants<br/>Only 7 binary ops<br/>Only 2 unary ops<br/>Only 15 functions + 2 constants"]
     L3 --> L4["Layer 4: Deny-by-default fallthrough<br/>Unknown AST node → ValueError"]
     L4 --> L5["Layer 5: Exception handler<br/>Any error → tool abstains (None)"]
     L5 --> SAFE["Safe numeric result<br/>(int or float only)"]
@@ -1025,7 +1026,11 @@ graph TD
     </div>
 
     <div class="card security">
-        <p><strong>Key principle: deny by default.</strong> The whitelist is finite and small (~15 functions, 7 operators). The Python standard library has thousands of functions. Rather than trying to blacklist dangerous ones (you'll miss some), we whitelist only the safe ones. Everything else is rejected automatically by the fallthrough in <code>_eval_node</code>.</p>
+        <p><strong>Key principle: deny by default.</strong> The <code>_ALLOWED</code> whitelist is finite and small — exactly 15 functions (<code>abs, round, min, max, sqrt, factorial, log, log2, log10, sin, cos, tan, gcd, comb, perm</code>) plus the constants <code>pi</code> and <code>e</code>, over 7 binary and 2 unary operators. The Python standard library has thousands of functions. Rather than trying to blacklist dangerous ones (you'll miss some), we whitelist only the safe ones. Everything else is rejected automatically by the fallthrough in <code>_eval_node</code>.</p>
+    </div>
+
+    <div class="card security">
+        <p><strong>The agent's symbolic path is defended too.</strong> <code>AgentStrategy</code> can also call <code>sympy_solve</code>, whose <code>sympify()</code> uses Python's <code>eval()</code> internally — so it adds its own deny-list: the <code>_BLOCKED</code> regex rejects dunders, <code>import</code>, <code>open(</code>, <code>exec(</code>, <code>eval(</code>, and <code>getattr/setattr/delattr/globals/locals(</code> before parsing, names are restricted to <code>_ALLOWED_NAMES</code>, and any result that is not a SymPy <code>Basic</code> is rejected. Same deny-by-default principle, a second sandbox.</p>
     </div>
 </section>
 
