@@ -8,7 +8,7 @@ A chatbot system for *Who Wants to Be a PoliMillionaire?* — the multiple-choic
 
 The implementation is a modular Python package (`polimibot`) with a Jupyter notebook ([`PoliMillionaire.ipynb`](PoliMillionaire.ipynb)) as an experimentation workbench. Every strategy implements the same single-method interface, so models, RAG, tools, and routing can be swapped with minimal configuration changes.
 
-> 📚 **Full technical docs:** an illustrated HTML guide ships with the repo — start at [`docs/index.html`](docs/index.html) (per-layer deep dives) or the single-page [`docs/polimillionaire_complete.html`](docs/polimillionaire_complete.html).
+> 📚 **Full technical docs (live site):** an illustrated guide is published at **[m-ebrahimzadeh.github.io/PoliMillionaire](https://m-ebrahimzadeh.github.io/PoliMillionaire/)** — browse the [per-layer deep dives](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/) or the [single-page complete guide](https://m-ebrahimzadeh.github.io/PoliMillionaire/polimillionaire_complete.html).
 
 ---
 
@@ -66,77 +66,62 @@ Measured on the offline **gold set** (see [Results](#results) for the full pictu
 
 ## Architecture
 
-PoliMillionaire follows a modular, layered architecture designed for experimentation and strategy swapping. The detailed walkthroughs live in [`docs/polimillionaire_complete.html`](docs/polimillionaire_complete.html) and [`docs/layers_doc/game_explained.html`](docs/layers_doc/game_explained.html).
+PoliMillionaire follows a modular, layered architecture designed for experimentation and strategy swapping. The detailed walkthroughs live in the [complete guide](https://m-ebrahimzadeh.github.io/PoliMillionaire/polimillionaire_complete.html) and the [game-architecture guide](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/game_explained.html).
 
 ```mermaid
 flowchart TB
-    subgraph Entry["Entry Points"]
-        NB[PoliMillionaire.ipynb]
-        CLI[CLI Scripts]
+    NB(["📓 Notebook"]):::entry
+    CLI(["⌨️ CLI scripts"]):::entry
+
+    RUNNER["⚙️ runner.py<br/>game loop · watchdog · pacer"]:::core
+    LOG[("🗒️ RunLogger<br/>JSONL")]:::data
+
+    subgraph ADP["🔌 Game Adapter — anti-corruption layer"]
+        direction LR
+        GA["GameAdapter<br/>text · speech"]:::adapter
+        DTO["DTOs<br/>GameQuestion · AnswerOutcome · SessionRecord"]:::adapter
     end
 
-    subgraph Core["Core Package: polimibot"]
-        RUNNER[runner.py<br/>play_game loop + watchdog + pacer]
-        CONFIG[config.py<br/>PATHS · RUNTIME · NEWS · CATEGORIES]
-        LOGGER[logging_utils.py<br/>RunLogger JSONL]
-        OBS[observability.py<br/>retrieval/news summaries]
-
-        subgraph Adapter["Game Adapter Layer"]
-            GAME_ADAPTER[game/adapter.py<br/>GameAdapter · text & speech]
-            GAME_TYPES[game/types.py<br/>GameQuestion · AnswerOutcome · SessionRecord]
-        end
-
-        subgraph Strategies["Strategies"]
-            STRAT[base · random · baseline · rag · tool<br/>agent · ensemble · tiered<br/>confidence_gated · confidence_tool · rewrite_tool]
-        end
-
-        subgraph Models["Models"]
-            LLM[llm.py<br/>logit scoring]
-            MOCK[mock.py]
-            SPEECH[speech.py<br/>Whisper transcriber]
-        end
-
-        subgraph Prompts["Prompts"]
-            TEMPLATES[templates.py<br/>PromptStyle · few-shot bank]
-        end
-
-        subgraph RAG["RAG Pipeline"]
-            RETRIEVER[retriever.py]
-            CHUNKER[chunker · embedder · bm25 · fusion]
-            INDEX[index · reranker · index_grower]
-            CORPUS[corpus · category_seeds]
-            LIVE[live_search · news_search]
-        end
-
-        subgraph Tools["Tools"]
-            TOOLSUITE[safe_eval · MathsTool · SympyDirectTool<br/>sympy_solve · StatsTool]
-        end
-
-        subgraph Eval["Evaluation"]
-            EVALUATOR[gold_set · wrong_set · evaluator]
-            METRICS[calibration · retrieval · threshold_calibration]
-            REPORTS[report_io · make_leaderboard]
-        end
+    subgraph STR["🧠 Strategies — one Strategy ABC"]
+        direction LR
+        S1["Baseline · RAG<br/>Tool · Agent"]:::strat
+        S2["Ensemble<br/>Tiered"]:::strat
+        S3["Confidence-gated<br/>Confidence-tool · Rewrite-tool"]:::strat
     end
 
-    subgraph Ext["External"]
-        MILLIONAIRE[millionaire_client<br/>HTTP game client]
-        WIKI[Wikipedia API]
-        GUARDIAN[Guardian Open Platform]
+    subgraph CAP["🛠️ Capabilities"]
+        direction LR
+        MODELS["🤖 Models<br/>LLM logit-scoring<br/>Whisper speech"]:::cap
+        PROMPTS["💬 Prompts<br/>styles · few-shot"]:::cap
+        TOOLS["🧮 Tools<br/>safe_eval · SymPy · SciPy"]:::cap
+        RAG["📚 RAG<br/>BM25 + FAISS · RRF<br/>rerank · IndexGrower"]:::cap
     end
+
+    EVAL["📊 Evaluation<br/>gold set · ECE · leaderboard"]:::eval
+
+    SERVER["🌐 Game server<br/>millionaire_client"]:::ext
+    WIKI["🔎 Wikipedia"]:::ext
+    GUARD["📰 Guardian"]:::ext
 
     NB --> RUNNER
     CLI --> RUNNER
-    RUNNER --> GAME_ADAPTER --> MILLIONAIRE
-    GAME_ADAPTER --> SPEECH
-    RUNNER --> Strategies --> Models
-    Strategies --> Prompts
-    Strategies --> RAG
-    RETRIEVER --> LIVE --> WIKI
-    LIVE --> GUARDIAN
-    Strategies --> Tools
-    RUNNER --> LOGGER
-    RUNNER --> Eval
+    RUNNER --> ADP
+    RUNNER --> STR
+    RUNNER --> LOG
+    RUNNER -. offline replay .-> EVAL
+    ADP <--> SERVER
+    STR --> CAP
+    RAG --> WIKI
+    RAG --> GUARD
+
+    classDef entry   fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a,stroke-width:1px;
+    classDef core    fill:#fde68a,stroke:#b45309,color:#78350f,stroke-width:2px;
+    classDef adapter fill:#ede9fe,stroke:#6d28d9,color:#4c1d95,stroke-width:1px;
+    classDef strat   fill:#dcfce7,stroke:#15803d,color:#14532d,stroke-width:1px;
+    classDef cap     fill:#fef9c3,stroke:#a16207,color:#713f12,stroke-width:1px;
+    classDef eval    fill:#fce7f3,stroke:#be185d,color:#831843,stroke-width:1px;
+    classDef data    fill:#f1f5f9,stroke:#475569,color:#1e293b,stroke-width:1px;
+    classDef ext     fill:#e2e8f0,stroke:#334155,color:#0f172a,stroke-width:1px;
 ```
 
 ### Component responsibilities
@@ -172,7 +157,7 @@ The model is **configurable** — `LLMSpec(model_id=...)` accepts any HF causal 
 
 ## Strategy Hierarchy
 
-All strategies implement the `Strategy` ABC with a single `answer(StrategyInput) -> StrategyOutput` method. Deep dive: [`docs/layers_doc/strategies_explained.html`](docs/layers_doc/strategies_explained.html).
+All strategies implement the `Strategy` ABC with a single `answer(StrategyInput) -> StrategyOutput` method. Deep dive: [strategy architecture guide](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/strategies_explained.html).
 
 ### Core strategies (exported from `polimibot.strategies`)
 
@@ -212,7 +197,7 @@ tiered = TieredStrategy(
 
 ## RAG Pipeline
 
-Full walkthrough: [`docs/layers_doc/rag_explained.html`](docs/layers_doc/rag_explained.html).
+Full walkthrough: [RAG pipeline guide](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/rag_explained.html).
 
 The retriever is a **hybrid Wikipedia + Guardian-news** index, not a Wikipedia-only one:
 
@@ -311,7 +296,7 @@ The News source is configured by `NewsConfig` (the `NEWS` singleton), with a mat
 
 ### Speech mode
 
-Set `game_mode="speech"` and construct the adapter with a `SpeechTranscriber` (`polimibot/models/speech.py`, a thin Whisper wrapper). The adapter fetches and transcribes the question and all four option clips, then exposes the same `GameQuestion` DTO — strategies see only text. See [`docs/layers_doc/game_explained.html`](docs/layers_doc/game_explained.html).
+Set `game_mode="speech"` and construct the adapter with a `SpeechTranscriber` (`polimibot/models/speech.py`, a thin Whisper wrapper). The adapter fetches and transcribes the question and all four option clips, then exposes the same `GameQuestion` DTO — strategies see only text. See the [game-architecture guide](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/game_explained.html).
 
 ### RAG index building
 
@@ -349,7 +334,7 @@ The primary entry point is [`PoliMillionaire.ipynb`](PoliMillionaire.ipynb), an 
 4. **Section 3 — Compare**: load reports into a leaderboard DataFrame with bar plots and heatmaps
 5. **Section 4 — Save**: inventory and final summary
 
-Switching strategies requires changes only in Section 1. Prompt design lives in [`docs/layers_doc/prompts_explained.html`](docs/layers_doc/prompts_explained.html).
+Switching strategies requires changes only in Section 1. Prompt design lives in the [prompt-engineering guide](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/prompts_explained.html).
 
 ### Quickstart — CLI
 
@@ -391,7 +376,7 @@ Add `--mock` to any eval/play script to use `MockLLM` (CPU-only, deterministic, 
 
 ## Evaluation
 
-The evaluation framework is offline and reproducible. Deep dive: [`docs/layers_doc/evaluation_explained.html`](docs/layers_doc/evaluation_explained.html).
+The evaluation framework is offline and reproducible. Deep dive: [evaluation guide](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/evaluation_explained.html).
 
 - **Gold set** — confirmed-correct answers mined from run logs (`harvest_gold_set`, with `include_models`/`exclude_models`/`run_filter` filters); a frozen, chainable `GoldSet`.
 - **Wrong set** — an error archive (`WrongItem`, with a `-1` sentinel for still-unknown answers) for targeted analysis.
@@ -541,16 +526,16 @@ python scripts/_build_notebook.py
 
 ## Documentation
 
-An illustrated HTML documentation set ships with the repo:
+An illustrated documentation site is published at **[m-ebrahimzadeh.github.io/PoliMillionaire](https://m-ebrahimzadeh.github.io/PoliMillionaire/)** (source under [`docs/`](docs/)):
 
-- [`docs/index.html`](docs/index.html) — landing page linking the per-layer guides
-- [`docs/layers_doc/rag_explained.html`](docs/layers_doc/rag_explained.html) — the RAG pipeline
-- [`docs/layers_doc/strategies_explained.html`](docs/layers_doc/strategies_explained.html) — every strategy
-- [`docs/layers_doc/tools_explained.html`](docs/layers_doc/tools_explained.html) — the tool suite and sandboxing
-- [`docs/layers_doc/prompts_explained.html`](docs/layers_doc/prompts_explained.html) — prompt design and parsing
-- [`docs/layers_doc/evaluation_explained.html`](docs/layers_doc/evaluation_explained.html) — metrics, calibration, leaderboard, and measured results
-- [`docs/layers_doc/game_explained.html`](docs/layers_doc/game_explained.html) — the game adapter, loop, and speech mode
-- [`docs/polimillionaire_complete.html`](docs/polimillionaire_complete.html) — the complete single-page guide
+- **[Documentation home](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/)** — landing page linking every per-layer guide
+- [RAG pipeline](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/rag_explained.html) — retrieval, fusion, reranking, index growth
+- [Strategies](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/strategies_explained.html) — every strategy, including the gating variants
+- [Tools](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/tools_explained.html) — the tool suite and sandboxing
+- [Prompts](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/prompts_explained.html) — prompt design and answer parsing
+- [Evaluation](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/evaluation_explained.html) — metrics, calibration, leaderboard, and measured results
+- [Game](https://m-ebrahimzadeh.github.io/PoliMillionaire/layers_doc/game_explained.html) — the game adapter, loop, and speech mode
+- [Complete single-page guide](https://m-ebrahimzadeh.github.io/PoliMillionaire/polimillionaire_complete.html)
 
 ---
 
