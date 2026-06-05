@@ -1,45 +1,227 @@
 # PoliMillionaire
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-TBD-lightgrey.svg)](#license)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 
-A chatbot system for *Who Wants to Be a PoliMillionaire?* — the multiple-choice quiz game used in the Politecnico di Milano NLP 2025/26 group assignment. The bot reads questions with four options, selects answers using various AI strategies (LLM inference, RAG retrieval, tool use, ensembles), and submits them to the assignment server while climbing a 15-level prize ladder across four competition categories (Entertainment, Ancient History, Science, Maths).
+A chatbot system for *Who Wants to Be a PoliMillionaire?* — the multiple-choice quiz game used in the Politecnico di Milano NLP 2025/26 group assignment. The bot reads four-option questions (as **text or speech**), selects answers with a range of AI strategies (LLM inference, RAG retrieval, tool use, confidence gating, ensembles), and submits them to the assignment server while climbing a 15-level prize ladder (top prize **€1,024,000**) across **six** competition categories: **Entertainment**, **Ancient History & Politics**, **Science & Nature**, **Maths**, **Philosophy & Psychology**, and **News**.
 
-The implementation is a modular Python package (`polimibot`) with a Jupyter notebook (`PoliMillionaire.ipynb`) serving as an experimentation workbench. Every strategy implements the same single-method interface, enabling seamless swapping of models, toggling RAG, or adding tools with minimal configuration changes.
+The implementation is a modular Python package (`polimibot`) with a Jupyter notebook ([`PoliMillionaire.ipynb`](PoliMillionaire.ipynb)) as an experimentation workbench. Every strategy implements the same single-method interface, so models, RAG, tools, and routing can be swapped with minimal configuration changes.
+
+> 📚 **Full technical docs:** an illustrated HTML guide ships with the repo — start at [`docs/index.html`](docs/index.html) (per-layer deep dives) or the single-page [`docs/polimillionaire_complete.html`](docs/polimillionaire_complete.html).
+
+---
+
+## Highlights
+
+Measured on the offline **gold set** (see [Results](#results) for the full picture and caveats):
+
+| | |
+|---|---|
+| 🎯 **96.8%** best accuracy | confidence-gated strategy, n = 895 |
+| 🎚️ **ECE 0.013** | near-perfect calibration |
+| ⚡ **1.4 s** p50 latency | (p95 1.8 s) — single forward pass |
+| 🏆 **Level 15 / €1,024,000** | reached in live play |
+| 📚 **83,371 chunks** | hybrid Wikipedia + Guardian-news index |
 
 ---
 
 ## Table of Contents
 
 - [Features](#features)
+- [Architecture](#architecture)
+- [Strategy Hierarchy](#strategy-hierarchy)
+- [RAG Pipeline](#rag-pipeline)
 - [Tech Stack](#tech-stack)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Usage](#usage)
-  - [Quickstart — The Notebook](#quickstart--the-notebook)
-  - [Quickstart — CLI](#quickstart--cli)
+- [Evaluation](#evaluation)
+- [Results](#results)
 - [Project Structure](#project-structure)
-- [Strategy Hierarchy](#strategy-hierarchy)
-- [Evaluation Pipeline](#evaluation-pipeline)
 - [Running Tests](#running-tests)
+- [Documentation](#documentation)
 - [Contributing](#contributing)
+- [Acknowledgements](#acknowledgements)
 - [License](#license)
+- [Notes for Evaluators](#notes-for-evaluators)
 
 ---
 
 ## Features
 
-- **Multiple Answering Strategies**: Seven distinct strategies ranging from random baseline to ReAct-style agents with tool use
-- **RAG Pipeline**: Asymmetric BGE embeddings, BM25 with proximity bonus, reciprocal rank fusion, and cross-encoder reranking
-- **Category-Aware Routing**: Tiered strategy routing by question category and difficulty level
-- **Ensemble Methods**: Weighted probability fusion across multiple strategies for hard questions
-- **Tool Use**: Calculator tool for mathematical computations with safe evaluation
-- **Live Fallback**: Wikipedia API fallback when offline corpus lacks relevant information
-- **Comprehensive Evaluation**: Accuracy, Expected Calibration Error (ECE), latency metrics, and per-category breakdowns
-- **Experimentation Workbench**: Jupyter notebook with configuration knobs, comparison leaderboards, and calibration plots
-- **Run Logging**: Crash-safe JSONL logging with per-question records and game summaries
+- **Six category-aware competitions** — Entertainment, Ancient History & Politics, Science & Nature, Maths, Philosophy & Psychology, and News, each with a tailored system prompt and routing.
+- **Ten answering strategies** — seven core strategies (random baseline → ReAct agent) plus three deployment-composition strategies (confidence gating, confidence + tools, LLM-rewrite + tools).
+- **Hybrid RAG pipeline** — asymmetric BGE embeddings, BM25 with proximity bonus and alias terms, reciprocal rank fusion, and cross-encoder reranking over an **83k-chunk** index.
+- **Self-growing index** — `IndexGrower` learns confirmed-correct live-fetched articles into the offline index across sessions.
+- **News → Guardian hybrid retrieval** — dated News questions are answered from The Guardian Open Platform (offline harvest **and** an online, date-aware live fallback), with graceful Wikipedia degradation when no key is set.
+- **Deterministic tool suite** — `safe_eval` (AST-sandboxed calculator), `MathsTool`, `SympyDirectTool` (23 pre-LLM patterns), `sympy_solve` (sandboxed SymPy for the agent loop), and `StatsTool` (SciPy distributions).
+- **Speech mode** — questions delivered as audio are transcribed with OpenAI Whisper and exposed to strategies as ordinary text.
+- **Comprehensive evaluation** — accuracy, Expected Calibration Error (ECE), latency p50/p95, per-category breakdowns, retrieval Recall@k/MRR, threshold calibration, and a consolidated leaderboard.
+- **Experimentation workbench** — a Jupyter notebook with configuration knobs, comparison leaderboards, and calibration plots.
+- **Crash-safe logging** — append-only JSONL with per-question records and game summaries.
+
+---
+
+## Architecture
+
+PoliMillionaire follows a modular, layered architecture designed for experimentation and strategy swapping. The detailed walkthroughs live in [`docs/polimillionaire_complete.html`](docs/polimillionaire_complete.html) and [`docs/layers_doc/game_explained.html`](docs/layers_doc/game_explained.html).
+
+```mermaid
+flowchart TB
+    subgraph Entry["Entry Points"]
+        NB[PoliMillionaire.ipynb]
+        CLI[CLI Scripts]
+    end
+
+    subgraph Core["Core Package: polimibot"]
+        RUNNER[runner.py<br/>play_game loop + watchdog + pacer]
+        CONFIG[config.py<br/>PATHS · RUNTIME · NEWS · CATEGORIES]
+        LOGGER[logging_utils.py<br/>RunLogger JSONL]
+        OBS[observability.py<br/>retrieval/news summaries]
+
+        subgraph Adapter["Game Adapter Layer"]
+            GAME_ADAPTER[game/adapter.py<br/>GameAdapter · text & speech]
+            GAME_TYPES[game/types.py<br/>GameQuestion · AnswerOutcome · SessionRecord]
+        end
+
+        subgraph Strategies["Strategies"]
+            STRAT[base · random · baseline · rag · tool<br/>agent · ensemble · tiered<br/>confidence_gated · confidence_tool · rewrite_tool]
+        end
+
+        subgraph Models["Models"]
+            LLM[llm.py<br/>logit scoring]
+            MOCK[mock.py]
+            SPEECH[speech.py<br/>Whisper transcriber]
+        end
+
+        subgraph Prompts["Prompts"]
+            TEMPLATES[templates.py<br/>PromptStyle · few-shot bank]
+        end
+
+        subgraph RAG["RAG Pipeline"]
+            RETRIEVER[retriever.py]
+            CHUNKER[chunker · embedder · bm25 · fusion]
+            INDEX[index · reranker · index_grower]
+            CORPUS[corpus · category_seeds]
+            LIVE[live_search · news_search]
+        end
+
+        subgraph Tools["Tools"]
+            TOOLSUITE[safe_eval · MathsTool · SympyDirectTool<br/>sympy_solve · StatsTool]
+        end
+
+        subgraph Eval["Evaluation"]
+            EVALUATOR[gold_set · wrong_set · evaluator]
+            METRICS[calibration · retrieval · threshold_calibration]
+            REPORTS[report_io · make_leaderboard]
+        end
+    end
+
+    subgraph Ext["External"]
+        MILLIONAIRE[millionaire_client<br/>HTTP game client]
+        WIKI[Wikipedia API]
+        GUARDIAN[Guardian Open Platform]
+    end
+
+    NB --> RUNNER
+    CLI --> RUNNER
+    RUNNER --> GAME_ADAPTER --> MILLIONAIRE
+    GAME_ADAPTER --> SPEECH
+    RUNNER --> Strategies --> Models
+    Strategies --> Prompts
+    Strategies --> RAG
+    RETRIEVER --> LIVE --> WIKI
+    LIVE --> GUARDIAN
+    Strategies --> Tools
+    RUNNER --> LOGGER
+    RUNNER --> Eval
+```
+
+### Component responsibilities
+
+| Layer | Component | Responsibility |
+|-------|-----------|----------------|
+| **Entry** | Notebook, CLI scripts | Experiment configuration, batch/headless play |
+| **Core** | `runner.py` | Game loop, watchdog (time budget), pacer (rate limit), outcome logging |
+| **Adapter** | `GameAdapter` | Wraps `millionaire_client`; converts to frozen DTOs; hides text/speech mode |
+| **Strategies** | 7 core + 3 composition | Answer selection; all implement the `Strategy` ABC |
+| **Models** | `LLM`, `MockLLM`, `SpeechTranscriber` | Logit scoring over A/B/C/D; Whisper transcription |
+| **Prompts** | `PromptStyle`, few-shot bank | Category prompts, few-shot injection, answer parsing |
+| **RAG** | Retriever pipeline | Corpus harvest, chunk/embed, BM25 + FAISS, fusion, rerank, live fallback, index growth |
+| **Tools** | calculator / SymPy / SciPy | Deterministic math, symbolic, and statistical solvers |
+| **Eval** | `evaluate_strategy`, `EvalReport`, leaderboard | Accuracy/ECE/latency, per-category, retrieval, calibration |
+| **Logging** | `RunLogger` | Append-only JSONL with manifest, questions, summaries |
+| **Client** | `millionaire_client` | HTTP communication with the game server (provided, read-only) |
+
+### Data flow
+
+1. `GameAdapter` receives a question (text or transcribed audio) → `GameQuestion` DTO.
+2. `runner.py` calls `strategy.answer(input)` with question, options, category, level.
+3. The strategy executes its logic (LLM scoring, retrieval, tool use, gating, fusion).
+4. It returns a `StrategyOutput` (chosen letter + confidence + extras).
+5. `runner.py` submits via `GameAdapter` and receives an `AnswerOutcome`.
+6. `RunLogger` records the question, output, correctness, latency, and prize progression.
+7. Post-game, `build_gold_set.py` mines confirmed-correct answers for offline eval.
+8. `eval_*.py` replay the gold set, computing accuracy/ECE/latency and a leaderboard.
+
+The model is **configurable** — `LLMSpec(model_id=...)` accepts any HF causal LM; the evaluated backbones include **Phi-4**, **Qwen3-8B**, Qwen2.5-7B/14B, Llama-3.1/3.2, Mistral-7B, and others.
+
+---
+
+## Strategy Hierarchy
+
+All strategies implement the `Strategy` ABC with a single `answer(StrategyInput) -> StrategyOutput` method. Deep dive: [`docs/layers_doc/strategies_explained.html`](docs/layers_doc/strategies_explained.html).
+
+### Core strategies (exported from `polimibot.strategies`)
+
+| Strategy | Description | Best for |
+|----------|-------------|----------|
+| `RandomStrategy` | Uniform random selection | Baseline floor (~25%) |
+| `BaselineLLMStrategy` | Single LLM call, logit-scored over A/B/C/D | General questions, easy tier |
+| `RAGStrategy` | Retrieve top-k passages, then logit-score | Factual recall, medium tier |
+| `ToolStrategy` | Chain-of-responsibility over tools, LLM fallback | Mathematical computation |
+| `AgentStrategy` | ReAct loop: LLM emits tool calls, executes, iterates (`max_iterations=2`) | Multi-step reasoning |
+| `EnsembleStrategy` | Weighted probability fusion across strategies | Hard-tier questions |
+| `TieredStrategy` | Routes by level + category, with a Maths override | Production composition |
+
+### Deployment-composition strategies
+
+These compose the basics for deployment and share the same `answer()` contract (available as modules in `polimibot/strategies/`):
+
+- **`ConfidenceGatedStrategy`** — runs a fast primary; escalates to a heavier `fallback` (e.g. live-RAG) only when the primary's logit **margin** (top1 − top2) is below `margin_threshold` (default 0.20). `always_fallback_categories` (e.g. News) force escalation. Keeps API volume under rate limits without moving the accuracy ceiling.
+- **`ConfidenceToolStrategy`** — pins a fast LLM answer, then tries deterministic tools only when confidence is low; the pinned answer always ships (zero timeout risk).
+- **`RewriteToolStrategy`** — five-stage Maths pipeline: direct tools → pinned LLM → confidence gate → LLM rewrites the question into one SymPy expression solved directly → pinned fallback.
+
+```python
+# TieredStrategy composes multiple strategies; gating wraps them for deployment
+tiered = TieredStrategy(
+    easy_strategy=BaselineLLMStrategy(llm),         # levels 1-5
+    medium_strategy=RAGStrategy(llm, retriever),    # levels 6-10
+    hard_strategy=EnsembleStrategy([                # levels 11-15
+        RAGStrategy(llm, retriever, weight=0.4),
+        ToolStrategy(llm, [MathsTool()], weight=0.3),
+        AgentStrategy(llm, [MathsTool()], weight=0.3),
+    ]),
+    category_overrides={Category.MATHS: ToolStrategy(llm, [MathsTool(), SympyDirectTool()])},
+)
+```
+
+---
+
+## RAG Pipeline
+
+Full walkthrough: [`docs/layers_doc/rag_explained.html`](docs/layers_doc/rag_explained.html).
+
+The retriever is a **hybrid Wikipedia + Guardian-news** index, not a Wikipedia-only one:
+
+- **Corpus harvest** — entity + concept Wikipedia categories (`category_seeds.py`) plus an explicit safety-net list, fetched and cleaned into `corpus.jsonl`; News is harvested from The Guardian.
+- **Chunk → embed → index** — sentence/section-aware chunking (`chunk_size=300`, `overlap=50`), grounded passage embeddings (`embedding_text()`), stored in FAISS (`IndexFlatIP`) and a positional BM25 index.
+- **Search** — dense (FAISS) + sparse (BM25, with a phrase-proximity bonus and alias terms), merged by **Reciprocal Rank Fusion**, with multi-query expansion and a cross-encoder reranker.
+- **Score-gated live fallback** — when offline scores are too low, fetch fresh articles live (Wikipedia for most categories; the date-aware Guardian source for News), then learn confirmed-correct ones back into the index via `IndexGrower`.
+
+**Index scale (measured from the shipped index):** **83,371 chunks** from **~10,800 source documents** — roughly **4,950 Wikipedia articles** (the five knowledge categories) plus **~5,850 Guardian news articles**. News is the single largest slice (**≈38%** of chunks; ~31.8k), followed by science (15.4k), philosophy (12.3k), entertainment (11.9k), history (9.3k), and maths (2.6k). Embedder: **BAAI/bge-base-en-v1.5** (768-d, asymmetric); reranker: **BAAI/bge-reranker** cross-encoder (`bge-reranker-base` by default; `bge-reranker-v2-m3` in the reported runs).
 
 ---
 
@@ -48,33 +230,35 @@ The implementation is a modular Python package (`polimibot`) with a Jupyter note
 | Component | Technology |
 |-----------|------------|
 | **Language** | Python 3.11+ |
-| **Core Dependencies** | `requests>=2.31` |
-| **LLM Inference** | `transformers>=4.44`, `accelerate>=0.33`, `bitsandbytes>=0.43` (4-bit NF4 quantization) |
-| **RAG** | `faiss-cpu>=1.7`, `sentence-transformers>=2.7`, `wikipedia>=1.4` |
-| **Tools** | `sympy>=1.13` (optional for MathsTool) |
+| **Core** | `requests>=2.31` |
+| **LLM inference** | `torch>=2.1`, `transformers>=4.44`, `accelerate>=0.33`, `bitsandbytes>=0.43` (4-bit NF4) |
+| **RAG** | `faiss-cpu>=1.7`, `sentence-transformers>=2.7`, `wikipedia>=1.4`, `numpy>=1.26` |
+| **Tools** | `sympy>=1.13` (symbolic), `scipy>=1.11` (statistics) |
+| **Speech** | `openai-whisper>=20231117`, `scipy` (WAV decoding) |
+| **Notebook / analysis** | `pandas>=2.0`, `matplotlib>=3.8`, `openpyxl>=3.1` |
 | **Testing** | `pytest>=8` |
-| **Embedding Model** | BAAI/bge-base-en-v1.5 (configurable) |
-| **Game Client** | Custom HTTP client for PoliMillionaire server |
+| **Embedding model** | BAAI/bge-base-en-v1.5 (configurable) |
+| **News source** | The Guardian Open Platform (free key) |
+| **Game client** | Provided HTTP client for the PoliMillionaire server |
 
 ---
 
 ## Prerequisites
 
 - **Python 3.11 or newer**
-- **pip** (Python package manager)
-- **Git** (for cloning the repository)
-- **PoliMillionaire server credentials** (username and password from the course assignment)
-- **GPU (optional)**: Recommended for LLM inference; CPU-only mode available with `MockLLM`
+- **pip** and **Git**
+- **PoliMillionaire server credentials** (`POLIMI_USER` / `POLIMI_PASS` from the course)
+- **GPU (optional)** — recommended for LLM inference; CPU-only mode works with `MockLLM`
+- **Guardian API key (optional)** — free from [open-platform.theguardian.com](https://open-platform.theguardian.com); absent → News degrades to Wikipedia
+- **Whisper (optional)** — only needed for speech-mode play
 
-For Colab users: The notebook includes automatic Google Drive mounting and repository cloning setup.
+For Colab users, the notebook handles Google Drive mounting and repository cloning automatically.
 
 ---
 
 ## Installation
 
-### Basic Installation
-
-Clone the repository and install in editable mode:
+Clone and install in editable mode:
 
 ```bash
 git clone https://github.com/m-ebrahimzadeh/PoliMillionaire.git
@@ -82,137 +266,177 @@ cd PoliMillionaire
 pip install -e .
 ```
 
-### Full Installation (with all extras)
-
-For complete functionality including LLM inference, RAG, and tools:
+For the full environment (LLM + RAG + tools + speech + notebook + dev):
 
 ```bash
-pip install -e ".[llm,rag,tools,dev]"
+pip install -e ".[all]"
 ```
 
-### Optional Dependencies
+Or install only the extras you need:
 
-| Extra | Purpose | Key Packages |
+| Extra | Purpose | Key packages |
 |-------|---------|--------------|
-| `llm` | Transformer-based LLM inference with 4-bit quantization | `transformers`, `accelerate`, `bitsandbytes` |
-| `rag` | Retrieval-augmented generation with FAISS and sentence embeddings | `faiss-cpu`, `sentence-transformers`, `wikipedia` |
-| `tools` | Mathematical computation tools | `sympy` |
-| `dev` | Development and testing | `pytest` |
+| `llm` | Transformer inference with 4-bit quantization | `torch`, `transformers`, `accelerate`, `bitsandbytes` |
+| `rag` | Retrieval-augmented generation | `faiss-cpu`, `sentence-transformers`, `wikipedia`, `numpy` |
+| `tools` | Symbolic math (upgrades `MathsTool`; `safe_eval` works without it) | `sympy` |
+| `speech` | Audio-question transcription | `openai-whisper`, `scipy` |
+| `notebook` | Notebook & analysis plots/exports | `pandas`, `matplotlib`, `openpyxl` |
+| `dev` | Tests | `pytest` |
+| `all` | Everything above | — |
 
 ---
 
 ## Configuration
 
-### Environment Variables
+### Environment variables
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `POLIMI_USER` | Game server username | *required for live play* |
 | `POLIMI_PASS` | Game server password | *required for live play* |
 | `POLIMI_API_URL` | Override game server URL | `http://131.175.15.22:51111` |
-| `POLIMIBOT_ROOT` | Override project root detection | Auto-detected via `pyproject.toml` |
-| `GUARDIAN_API_KEY` | The Guardian Open Platform key for the NEWS category's online source | *optional* — absent → Wikipedia fallback |
+| `POLIMIBOT_ROOT` | Override project-root detection | auto-detected via `pyproject.toml` |
+| `GUARDIAN_API_KEY` | The Guardian key for the News category | *optional* — absent → Wikipedia fallback |
 
-### Runtime Configuration
+### Runtime configuration
 
-Runtime parameters (latency budgets, throttle delays, score thresholds) are configured in `polimibot.config.RuntimeConfig`. Override per-experiment using dataclasses:
+Runtime knobs live in `polimibot.config.RuntimeConfig` (exposed as the `RUNTIME` singleton). Fields: `hard_cutoff_seconds` (25.0 — the strategy must return by this), `soft_cutoff_seconds` (18.0), `api_min_delay_seconds` (1.5), `game_mode` (`"text"` or `"speech"`), and `api_url`. Override with the helper (it rebinds the global, so the notebook can retune without restarting the kernel):
 
 ```python
-from polimibot import RUNTIME
-from dataclasses import replace
-
-custom_runtime = replace(RUNTIME, question_timeout=30.0, server_throttle=0.5)
+from polimibot.config import update_runtime
+update_runtime(hard_cutoff_seconds=30.0, api_min_delay_seconds=2.0)
 ```
 
-### RAG Index Building
+The News source is configured by `NewsConfig` (the `NEWS` singleton), with a matching `update_news(...)` helper — knobs include `date_window_days` (±2), `max_articles` (3), `use_full_body`, and disk-cache TTLs.
 
-Before using RAG strategies, build the FAISS index:
+### Speech mode
+
+Set `game_mode="speech"` and construct the adapter with a `SpeechTranscriber` (`polimibot/models/speech.py`, a thin Whisper wrapper). The adapter fetches and transcribes the question and all four option clips, then exposes the same `GameQuestion` DTO — strategies see only text. See [`docs/layers_doc/game_explained.html`](docs/layers_doc/game_explained.html).
+
+### RAG index building
+
+Before using RAG strategies, build the index (one-time; slow on first run):
 
 ```bash
 python scripts/build_rag_index.py
 ```
 
-This one-time operation fetches Wikipedia articles, chunks them, computes embeddings, and builds the index stored in `data/cache/`.
+This harvests Wikipedia articles, chunks them, computes embeddings, and writes the FAISS + BM25 index under `data/cache/`.
 
-### News Category — Hybrid Online/Offline RAG
+### News — hybrid online/offline RAG
 
-NEWS questions reference a *specific dated article* ("the article published on `2026-05-17`…"), which Wikipedia cannot serve. The NEWS category therefore uses **The Guardian Open Platform** (free key, full body text, precise date filtering) in a hybrid setup:
+News questions reference a *specific dated article* ("the article published on `2026-05-17`…"), which Wikipedia cannot serve. The News category therefore uses **The Guardian Open Platform** (free key, full body text, precise date filtering):
 
-- **Offline** — seed the index with a date range of Guardian articles so most recent-date questions are answerable without network:
+```bash
+export GUARDIAN_API_KEY=...                       # free key
+python scripts/build_rag_index.py --fresh         # base index (all categories), first time
+python scripts/fetch_news_corpus.py --days 30 --build
+```
 
-  ```bash
-  export GUARDIAN_API_KEY=...                       # free: open-platform.theguardian.com
-  python scripts/build_rag_index.py --fresh         # base index (all categories), first time
-  python scripts/fetch_news_corpus.py --days 30 --build
-  ```
-
-  The harvest pulls the window **day by day** so every date is covered evenly — a
-  single multi-day query would only return the newest ~`page-size × max-pages`
-  results and silently drop the older end of the range (where dated questions
-  live). NEWS questions span the **whole** Guardian (sport, environment, society,
-  culture, australia-news, lifestyle, education, …), not just hard news, so the
-  default harvest covers a broad set of sections; pass `--sections` to focus it
-  (or omit it to harvest every section) and `--days` to widen the window.
-
-  In the **notebook** this is automatic: Section **0.4a-news** harvests the last
-  `INDEX_NEWS_GUARDIAN_DAYS` (default 30) days into `corpus.jsonl` before the embed/index
-  step (0.4b), so a fresh build already carries recent Guardian news. It is key-gated
-  (skips with a notice when `GUARDIAN_API_KEY` is unset) and shares the same
-  `harvest_news_range` code path as the CLI.
-
-- **Online** — NEWS uses the *same* threshold-gated live fallback as every other category, but its source is the date- and entity-aware [`NewsLiveSearch`](polimibot/rag/news_search.py) (Guardian) instead of Wikipedia. It extracts the question's publication date, queries that window, and **falls back to Wikipedia** when the Guardian returns nothing or no key is set — so NEWS never goes dark. Toggle via `USE_NEWS_LIVE_SEARCH` in the notebook's Section 1.
-
-Guardian responses are cached under `data/cache/news/` (keyed without the API key), so eval replays cost no quota. Confirmed-correct live articles are learned into the offline index by the existing `IndexGrower`, so coverage grows over time.
+The harvest pulls the window **day by day** so every date is covered evenly. At question time, News uses the same threshold-gated live fallback as every other category, but its source is the date- and entity-aware [`NewsLiveSearch`](polimibot/rag/news_search.py); it falls back to Wikipedia when the Guardian returns nothing or no key is set. Guardian responses are cached under `data/cache/news/` (keyed without the API key), so eval replays cost no quota.
 
 ---
 
 ## Usage
 
-### Quickstart — The Notebook
+### Quickstart — the notebook
 
-The primary entry point is [`PoliMillionaire.ipynb`](PoliMillionaire.ipynb), designed as an experimentation workbench:
+The primary entry point is [`PoliMillionaire.ipynb`](PoliMillionaire.ipynb), an experimentation workbench:
 
-1. **Section 0 — Setup**: Install dependencies, imports, and login
-2. **Section 1 — Configure**: Set model, prompt style, RAG/tools toggles, ensemble weights, tier breakpoints
-3. **Section 2 — Run**: Evaluate strategies offline against gold set, generate per-category accuracy plots
-4. **Section 3 — Compare**: Load evaluation reports into leaderboard DataFrame with bar plots and heatmaps
-5. **Section 4 — Save**: Generate inventory and final summary
-6. **Appendix**: VRAM hygiene utilities for safely switching model sizes mid-session
+1. **Section 0 — Setup**: install, imports, login, index build
+2. **Section 1 — Configure**: model, prompt style, RAG/tools toggles, gating, tier breakpoints, speech mode
+3. **Section 2 — Run**: evaluate strategies offline against the gold set, plot per-category accuracy
+4. **Section 3 — Compare**: load reports into a leaderboard DataFrame with bar plots and heatmaps
+5. **Section 4 — Save**: inventory and final summary
 
-Switching strategies requires changes only in Section 1.
+Switching strategies requires changes only in Section 1. Prompt design lives in [`docs/layers_doc/prompts_explained.html`](docs/layers_doc/prompts_explained.html).
 
 ### Quickstart — CLI
-
-Scripts are provided for headless/batch operations:
 
 ```bash
 # Smoke test with RandomStrategy
 POLIMI_USER=... POLIMI_PASS=... python scripts/smoke_game.py
 
-# Play one game per competition with baseline LLM
+# Play one game per competition with a baseline LLM
 POLIMI_USER=... POLIMI_PASS=... python scripts/play_baseline.py
 
-# Build gold set from run logs
+# Build the gold/wrong sets from run logs
 python scripts/build_gold_set.py
+python scripts/build_wrong_set.py
 
-# Build RAG index (one-time, slow on first run)
+# Build the RAG index (one-time) and harvest News
 python scripts/build_rag_index.py
+python scripts/fetch_news_corpus.py --days 30 --build
+python scripts/mine_corpus_gaps.py        # mine missing-article candidates from run logs
 
 # Evaluate strategies offline
 python scripts/eval_rag.py
+python scripts/eval_rag_delta.py          # baseline-vs-RAG delta on the same questions
 python scripts/eval_tools.py
-python scripts/eval_ensemble.py
 python scripts/eval_agent.py
+python scripts/eval_ensemble.py
 python scripts/eval_tiered.py
 
-# Sweep tier breakpoints for Pareto optimization
+# Calibrate gating thresholds and tier breakpoints
+python scripts/calibrate_min_score.py
 python scripts/sweep_tiers.py --easy 3 5 7 --medium 8 10 12
 
-# Plot calibration curve from run log
+# Plot a calibration (reliability) curve from a run log
 python scripts/plot_calibration.py data/runs/run_<timestamp>_<id>.jsonl
 ```
 
-Add `--mock` flag to any eval/play script to use `MockLLM` (CPU-only, deterministic, no GPU required).
+Add `--mock` to any eval/play script to use `MockLLM` (CPU-only, deterministic, no GPU).
+
+---
+
+## Evaluation
+
+The evaluation framework is offline and reproducible. Deep dive: [`docs/layers_doc/evaluation_explained.html`](docs/layers_doc/evaluation_explained.html).
+
+- **Gold set** — confirmed-correct answers mined from run logs (`harvest_gold_set`, with `include_models`/`exclude_models`/`run_filter` filters); a frozen, chainable `GoldSet`.
+- **Wrong set** — an error archive (`WrongItem`, with a `-1` sentinel for still-unknown answers) for targeted analysis.
+- **`evaluate_strategy()` → `EvalReport`** — `accuracy`, `ece`, `by_category`, `latency_p50/p95/mean`, `n_total`.
+- **Calibration** — Expected Calibration Error and reliability diagrams (`compute_calibration`, `plot_calibration`).
+- **Retrieval metrics** — Recall@k and MRR (`evaluate_retrieval`), plus post-hoc `recall_from_runs`.
+- **Threshold calibration** — `calibrate_threshold` finds the score-gate τ that maximises expected gated-policy accuracy per retrieval path.
+- **Persistence & leaderboard** — `report_io` centralises report save/load and run-ID naming; `make_leaderboard` consolidates all reports into a sorted comparison table.
+
+---
+
+## Results
+
+All figures are measured on the **gold set** (questions with confirmed-correct answers mined from live games). Because the set is built from answerable questions, absolute accuracies run high — **read the numbers as relative comparisons across strategies**, not as leaderboard-grade absolutes. Sourced from the project's eval reports and consolidated leaderboard.
+
+### Headline
+
+| Configuration | Accuracy | ECE | p50 / p95 | n |
+|---------------|---------:|----:|----------:|--:|
+| **Confidence-gated** (bare-LLM → live-RAG, margin < 0.3) | **96.8%** | **0.013** | 1.4 s / 1.8 s | 895 |
+| Qwen3-8B hybrid RAG (multi-query + rerank + live) | 96.2% | 0.023 | 5.8 s / 9.8 s | 705 |
+| Qwen2.5-7B zero-shot baseline | 95.7% | 0.038 | 1.5 s / 1.9 s | 301 |
+
+The strongest configuration is the **confidence-gated** strategy — a bare-LLM primary that escalates to live-RAG only when its top-two margin is thin. It matches the best accuracy at a fraction of the latency and with near-perfect calibration. In live play it reached **level 15 / €1,024,000**.
+
+### Best configuration per category
+
+| Category | Best configuration | Accuracy |
+|----------|--------------------|---------:|
+| Entertainment | Qwen3-8B (baseline / hybrid RAG) | ~94% |
+| Ancient History & Politics | Confidence-gated / Qwen3-8B RAG | ~93–96% |
+| Science & Nature | Qwen3-8B hybrid RAG (reranked) | ~97–98% |
+| Maths | Rewrite-tool (Phi-4 + MathsTool + SymPy) | **87.5%** (n=273) |
+| Philosophy & Psychology | Confidence-gated | **93.8%** |
+| News | Confidence-gated + Guardian | small sample; live play reached level 14 |
+
+Maths is the one category no retrieved article can answer; the deterministic tool chain lifts it from a best bare-LLM ~75% to **87.5%**.
+
+### Decoding: logit-scoring beats chain-of-thought
+
+For the same model (Qwen2.5-7B, n=301 each), zero-shot vs. zero-shot-CoT leaves accuracy unchanged (**95.7%**) but blows up calibration error (**ECE 0.038 → 0.46**) and latency (**p50 1.5 s → 27 s**). Scoring the four option tokens in a single forward pass is both faster and far better calibrated — hence it is the default.
+
+### Scope and caveats
+
+The system was evaluated across ~15 model variants (Phi-4, Qwen3-8B, Qwen2.5-7B/14B, Llama-3.1/3.2, Mistral-7B, DeepSeek-Math/R1, …) over 100+ eval reports. The gold set is mined from confirmed-correct answers, so absolute accuracies are optimistic; News is under-sampled because of the Guardian free-tier rate limit. Promising next steps include wider news ingestion, Wikidata for relational Entertainment queries, multi-hop Maths, and a held-out (non-mined) test set for unbiased accuracy.
 
 ---
 
@@ -224,311 +448,75 @@ PoliMillionaire/
 ├── README.md                      # This file
 ├── pyproject.toml                 # Package configuration and dependencies
 │
-├── data/                          # Data artifacts
+├── data/                          # Data artifacts (gitignored)
 │   ├── runs/                      # Per-game JSONL logs (RunLogger output)
 │   ├── eval/                      # EvalReport JSONs, gold_set.jsonl, plots
-│   ├── cache/                     # FAISS index, Wikipedia corpus
-│   └── results/                   # Consolidated comparison CSVs
+│   ├── cache/                     # FAISS index, corpus, Guardian news cache
+│   └── results/                   # Consolidated comparison CSVs / leaderboard
 │
 ├── millionaire_client/            # Provided HTTP client (read-only)
-│   ├── client.py                  # MillionaireClient API wrapper
-│   ├── game.py                    # GameSession management
-│   ├── models.py                  # Data models (Question, Option, GameState)
-│   └── exceptions.py              # Custom exception classes
+│   ├── client.py · game.py · models.py · exceptions.py · …
 │
 ├── polimibot/                     # Core package
-│   ├── __init__.py                # Public API exports
-│   ├── config.py                  # PATHS, RUNTIME, CATEGORIES singletons
-│   ├── runner.py                  # play_game() - main game loop
+│   ├── config.py                  # PATHS, RUNTIME, NEWS, CATEGORIES (6) singletons
+│   ├── runner.py                  # play_game() — loop, watchdog, pacer
 │   ├── logging_utils.py           # RunLogger, JSONL record types
-│   ├── observability.py           # Retrieval summaries, debugging utilities
+│   ├── observability.py           # Retrieval / news summaries, debugging
 │   │
 │   ├── game/                      # Game adapter layer
-│   │   ├── adapter.py             # GameAdapter (wraps millionaire_client)
-│   │   └── types.py               # Frozen DTOs (GameQuestion, AnswerOutcome)
+│   │   ├── adapter.py             # GameAdapter (text & speech)
+│   │   └── types.py               # GameQuestion, AnswerOutcome, SessionRecord
 │   │
-│   ├── models/                    # LLM wrappers
-│   │   ├── llm.py                 # LLM class with logit scoring
-│   │   └── mock.py                # MockLLM for testing/CPU-only
+│   ├── models/                    # Model wrappers
+│   │   ├── llm.py                 # LLM with logit scoring
+│   │   ├── mock.py                # MockLLM (CPU/tests)
+│   │   └── speech.py              # SpeechTranscriber (Whisper)
 │   │
-│   ├── prompts/                   # Prompt engineering
-│   │   └── templates.py           # PromptStyle enum, build_messages()
+│   ├── prompts/
+│   │   └── templates.py           # PromptStyle, few-shot bank, build_messages()
 │   │
 │   ├── strategies/                # Strategy implementations
-│   │   ├── base.py                # Strategy ABC (answer() method)
-│   │   ├── random_pick.py         # RandomStrategy (baseline floor)
-│   │   ├── llm_baseline.py        # BaselineLLMStrategy (logit scoring)
-│   │   ├── rag_strategy.py        # RAGStrategy (retrieval + fusion)
-│   │   ├── tool_strategy.py       # ToolStrategy (calculator tool)
-│   │   ├── agent_strategy.py      # AgentStrategy (ReAct loop)
-│   │   ├── ensemble_strategy.py   # EnsembleStrategy (prob fusion)
-│   │   └── tiered_strategy.py     # TieredStrategy (category routing)
+│   │   ├── base.py                # Strategy ABC
+│   │   ├── random_pick.py · llm_baseline.py · rag_strategy.py
+│   │   ├── tool_strategy.py · agent_strategy.py
+│   │   ├── ensemble_strategy.py · tiered_strategy.py
+│   │   ├── confidence_gated_strategy.py
+│   │   ├── confidence_tool_strategy.py
+│   │   └── rewrite_tool_strategy.py
 │   │
-│   ├── rag/                       # RAG pipeline components
-│   │   ├── bm25.py                # BM25Index with positional postings
-│   │   ├── chunker.py             # Text chunking with sentence boundaries
-│   │   ├── embedder.py            # BGE embedding with prefix handling
-│   │   ├── fusion.py              # Reciprocal Rank Fusion
-│   │   ├── index.py               # FAISS index wrapper
-│   │   ├── index_grower.py        # Incremental index expansion
-│   │   ├── live_search.py         # Wikipedia API fallback
-│   │   ├── reranker.py            # Cross-encoder reranking
-│   │   └── retriever.py           # Unified retrieval interface
+│   ├── rag/                       # RAG pipeline
+│   │   ├── corpus.py · category_seeds.py    # harvest (Wikipedia category graph)
+│   │   ├── chunker.py · embedder.py · bm25.py · fusion.py
+│   │   ├── index.py · reranker.py · index_grower.py
+│   │   ├── retriever.py                      # unified retrieval interface
+│   │   ├── live_search.py                    # Wikipedia live fallback
+│   │   └── news_search.py                    # Guardian date-aware source
 │   │
 │   ├── tools/                     # Tool abstractions
-│   │   ├── base.py                # Tool ABC
-│   │   ├── calculator.py          # safe_eval() for math expressions
-│   │   └── maths_tool.py          # MathsTool implementation
+│   │   ├── base.py · calculator.py           # Tool ABC, safe_eval()
+│   │   ├── maths_tool.py
+│   │   ├── sympy_tool.py · sympy_direct_tool.py
+│   │   └── stats_tool.py                      # SciPy distributions
 │   │
 │   └── eval/                      # Evaluation utilities
-│       ├── gold_set.py            # Gold set mining and loading
-│       ├── wrong_set.py           # Wrong answer set mining
-│       ├── evaluator.py           # evaluate_strategy(), EvalReport
-│       ├── retrieval.py           # Retrieval evaluation metrics
-│       └── calibration.py         # ECE computation, reliability diagrams
+│       ├── gold_set.py · wrong_set.py
+│       ├── evaluator.py · calibration.py · retrieval.py
+│       ├── threshold_calibration.py
+│       ├── report_io.py · make_leaderboard.py
 │
 ├── scripts/                       # CLI entry points
-│   ├── _build_notebook.py         # Regenerates PoliMillionaire.ipynb
-│   ├── _session.py                # Multi-game session wrapper
-│   ├── smoke_game.py              # Smoke test with RandomStrategy
-│   ├── play_baseline.py           # Play one game per competition
-│   ├── build_gold_set.py          # Mine run logs → gold_set.jsonl
-│   ├── build_wrong_set.py         # Mine incorrect answers
-│   ├── build_rag_index.py         # Build FAISS index from Wikipedia
-│   ├── calibrate_min_score.py     # Calibrate RAG gating thresholds
-│   ├── eval_*.py                  # Strategy evaluation scripts
-│   ├── sweep_tiers.py             # Grid-search tier breakpoints
-│   └── plot_calibration.py        # Reliability diagram from run log
+│   ├── smoke_game.py · play_baseline.py
+│   ├── build_gold_set.py · build_wrong_set.py
+│   ├── build_rag_index.py · fetch_news_corpus.py · mine_corpus_gaps.py
+│   ├── calibrate_min_score.py · sweep_tiers.py · plot_calibration.py
+│   ├── eval_rag.py · eval_rag_delta.py · eval_tools.py
+│   ├── eval_agent.py · eval_ensemble.py · eval_tiered.py
+│   └── _build_notebook.py · _insert_notebook_cell.py · _session.py
 │
 └── tests/                         # pytest unit tests (CPU-only, no network)
-    ├── conftest.py                # Test fixtures, torch stub
-    ├── test_*.py                  # Test modules per component
+    ├── conftest.py                # fixtures, torch stub
+    └── test_*.py                  # per-component tests
 ```
-
----
-
-## Architecture
-
-The PoliMillionaire system follows a modular, layered architecture designed for experimentation and strategy swapping:
-
-```mermaid
-flowchart TB
-    subgraph Entry["Entry Points"]
-        NB[PoliMillionaire.ipynb]
-        CLI[CLI Scripts]
-    end
-    
-    subgraph Core["Core Package: polimibot"]
-        RUNNER[runner.py<br/>play_game loop]
-        CONFIG[config.py<br/>PATHS, RUNTIME]
-        LOGGER[logging_utils.py<br/>RunLogger JSONL]
-        
-        subgraph Adapter["Game Adapter Layer"]
-            GAME_ADAPTER[game/adapter.py<br/>GameAdapter]
-            GAME_TYPES[game/types.py<br/>Frozen DTOs]
-        end
-        
-        subgraph Strategies["Strategies Module"]
-            STRAT_BASE[strategies/base.py<br/>Strategy ABC]
-            STRAT_RAG[strategies/rag_strategy.py]
-            STRAT_TOOL[strategies/tool_strategy.py]
-            STRAT_AGENT[strategies/agent_strategy.py]
-            STRAT_ENSEMBLE[strategies/ensemble_strategy.py]
-            STRAT_TIERED[strategies/tiered_strategy.py]
-        end
-        
-        subgraph Models["Models Module"]
-            LLM[models/llm.py<br/>LLM wrapper]
-            MOCK[models/mock.py<br/>MockLLM]
-        end
-        
-        subgraph Prompts["Prompts Module"]
-            TEMPLATES[prompts/templates.py<br/>PromptStyle enum]
-        end
-        
-        subgraph RAG["RAG Pipeline"]
-            CHUNKER[rag/chunker.py]
-            EMBEDDER[rag/embedder.py]
-            BM25[rag/bm25.py]
-            FUSION[rag/fusion.py]
-            INDEX[rag/index.py<br/>FAISS wrapper]
-            RERANK[rag/reranker.py]
-            RETRIEVER[rag/retriever.py]
-            LIVE[rag/live_search.py<br/>Wikipedia API]
-        end
-        
-        subgraph Tools["Tools Module"]
-            TOOL_BASE[tools/base.py<br/>Tool ABC]
-            CALC[tools/calculator.py]
-            MATHS[tools/maths_tool.py]
-        end
-        
-        subgraph Eval["Evaluation Module"]
-            GOLD[eval/gold_set.py]
-            EVALUATOR[eval/evaluator.py]
-            CALIB[eval/calibration.py]
-        end
-    end
-    
-    subgraph Client["External Client"]
-        MILLIONAIRE[millionaire_client<br/>HTTP Game Client]
-    end
-    
-    subgraph Data["Data Layer"]
-        RUNS[data/runs/*.jsonl]
-        EVAL[data/eval/*.json]
-        CACHE[data/cache/<br/>FAISS index]
-    end
-    
-    NB --> RUNNER
-    CLI --> RUNNER
-    
-    RUNNER --> GAME_ADAPTER
-    RUNNER --> LOGGER
-    RUNNER --> CONFIG
-    
-    GAME_ADAPTER --> MILLIONAIRE
-    GAME_ADAPTER --> GAME_TYPES
-    
-    RUNNER --> Strategies
-    Strategies --> STRAT_BASE
-    STRAT_RAG --> RETRIEVER
-    STRAT_TOOL --> MATHS
-    STRAT_AGENT --> MATHS
-    STRAT_ENSEMBLE --> STRAT_RAG
-    STRAT_ENSEMBLE --> STRAT_TOOL
-    STRAT_TIERED --> STRAT_RAG
-    STRAT_TIERED --> STRAT_ENSEMBLE
-    
-    Strategies --> Models
-    Models --> LLM
-    Models --> MOCK
-    
-    Strategies --> Prompts
-    Prompts --> TEMPLATES
-    
-    RETRIEVER --> CHUNKER
-    RETRIEVER --> EMBEDDER
-    RETRIEVER --> BM25
-    RETRIEVER --> FUSION
-    RETRIEVER --> INDEX
-    RETRIEVER --> RERANK
-    RETRIEVER --> LIVE
-    
-    MATHS --> TOOL_BASE
-    MATHS --> CALC
-    
-    RUNNER --> Eval
-    Eval --> GOLD
-    Eval --> EVALUATOR
-    Eval --> CALIB
-    
-    LOGGER --> RUNS
-    EVALUATOR --> EVAL
-    RETRIEVER --> CACHE
-```
-
-### Component Responsibilities
-
-| Layer | Component | Responsibility |
-|-------|-----------|----------------|
-| **Entry** | Notebook, CLI scripts | User interaction, experiment configuration |
-| **Core** | `runner.py` | Main game loop, strategy invocation, outcome logging |
-| **Adapter** | `GameAdapter` | Wraps `millionaire_client`, converts to frozen DTOs |
-| **Strategies** | 7 strategy implementations | Answer selection logic, all implement `Strategy` ABC |
-| **Models** | `LLM`, `MockLLM` | Transformer inference, logit scoring over A/B/C/D |
-| **Prompts** | `PromptStyle`, `build_messages()` | Prompt templating, few-shot example injection |
-| **RAG** | Retriever pipeline | Chunking, embedding, BM25+FAISS retrieval, fusion, reranking |
-| **Tools** | `Calculator`, `MathsTool` | Safe math expression evaluation, sympy integration |
-| **Eval** | `evaluate_strategy()`, `EvalReport` | Accuracy/ECE metrics, per-category breakdowns |
-| **Logging** | `RunLogger` | Append-only JSONL with manifest, questions, summaries |
-| **Client** | `millionaire_client` | HTTP communication with PoliMillionaire server |
-
-### Data Flow
-
-1. **Question Arrival**: `GameAdapter` receives question from server, converts to `GameQuestion` DTO
-2. **Strategy Invocation**: `runner.py` calls `strategy.answer(input)` with question text, options, category, level
-3. **Answer Selection**: Strategy executes its logic (LLM call, retrieval, tool use, ensemble fusion)
-4. **Confidence Scoring**: Strategy returns `StrategyOutput` with selected option letter and confidence score
-5. **Submission**: `runner.py` submits answer via `GameAdapter`, waits for server response
-6. **Outcome Logging**: `RunLogger` records question, strategy output, correctness, latency, prize progression
-7. **Gold Set Mining**: Post-game, `build_gold_set.py` extracts confirmed-correct answers for offline eval
-8. **Offline Evaluation**: `eval_*.py` scripts replay gold set questions, compute accuracy/ECE/latency metrics
-
-### Strategy Composition Pattern
-
-All strategies follow the same interface, enabling seamless composition:
-
-```python
-# TieredStrategy internally composes multiple strategies
-tiered = TieredStrategy(
-    easy_strategy=BaselineLLMStrategy(llm),      # Levels 1-5
-    medium_strategy=RAGStrategy(llm, retriever), # Levels 6-10
-    hard_strategy=EnsembleStrategy([             # Levels 11-15
-        RAGStrategy(llm, retriever, weight=0.4),
-        ToolStrategy(llm, [MathsTool()], weight=0.3),
-        AgentStrategy(llm, [MathsTool()], weight=0.3)
-    ]),
-    category_overrides={
-        Category.MATHS: AgentStrategy(llm, [MathsTool()])
-    }
-)
-```
-
-This composition pattern allows rapid experimentation with different strategy hierarchies without modifying core game loop logic.
-
----
-
-## Strategy Hierarchy
-
-All strategies implement the `Strategy` abstract base class with a single `answer(StrategyInput) -> StrategyOutput` method:
-
-| Strategy | Description | Best For |
-|----------|-------------|----------|
-| `RandomStrategy` | Uniform random selection | Baseline floor (~25% accuracy) |
-| `BaselineLLMStrategy` | Single LLM call with logit scoring over A/B/C/D | Levels 1–5, general questions |
-| `RAGStrategy` | Retrieve top-k Wikipedia passages, then logit-score | Levels 6–10, factual recall |
-| `ToolStrategy` | Chain-of-responsibility over tools, LLM fallback | Mathematical computations |
-| `AgentStrategy` | ReAct-style loop: LLM emits tool calls, executes, iterates | Multi-step reasoning problems |
-| `EnsembleStrategy` | Weighted probability fusion across strategies | Hard-tier questions |
-| `TieredStrategy` | Routes by level + category, escalates on low margin | Production composition |
-
-**Composition Example**: `TieredStrategy` routes easy questions to baseline, medium to RAG, hard to ensemble, with Maths category override to Agent/Tool strategies.
-
----
-
-## Evaluation Pipeline
-
-```
-Live Games                          Offline Replay
-─────────────                       ──────────────
-play_baseline.py                    eval_*.py
-smoke_game.py                            │
-       │                                  ▼
-       ▼                            evaluate_strategy()
-data/runs/run_*.jsonl                    │
-       │                                  ▼
-       │                              EvalReport
-       ▼                                  │
-build_gold_set.py                         ▼
-       │                            save_report()
-       ▼                                  │
-data/eval/gold_set.jsonl ◀────reads───────┘
-                                          │
-                                          ▼
-                                   data/eval/{slug}.json
-                                          │
-                                          ▼
-                                   make_leaderboard()
-                                          │
-                                          ▼
-                                   Leaderboard CSV/DataFrame
-```
-
-- **Run Logs**: Append-only JSONL with manifest, per-question records, and game summaries
-- **Gold Set**: Mined from confirmed-correct answers or elimination (3 of 4 options seen wrong)
-- **EvalReport**: Contains `strategy_name`, `n_total`, `accuracy`, `ece`, `by_category`, `latency_p50/p95/mean`
-- **Calibration**: Expected Calibration Error (ECE) over equal-width confidence bins
 
 ---
 
@@ -541,13 +529,28 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-The test suite uses `MockLLM` which reads `<gold>X</gold>` markers injected into prompts and returns letter X with high confidence. RAG tests skip gracefully if `faiss-cpu` is not installed.
+The suite uses `MockLLM`, which reads `<gold>X</gold>` markers injected into prompts and returns letter X with high confidence. RAG tests skip gracefully if `faiss-cpu` is not installed.
 
-To regenerate the notebook after modifying `scripts/_build_notebook.py`:
+To regenerate the notebook after editing `scripts/_build_notebook.py`:
 
 ```bash
 python scripts/_build_notebook.py
 ```
+
+---
+
+## Documentation
+
+An illustrated HTML documentation set ships with the repo:
+
+- [`docs/index.html`](docs/index.html) — landing page linking the per-layer guides
+- [`docs/layers_doc/rag_explained.html`](docs/layers_doc/rag_explained.html) — the RAG pipeline
+- [`docs/layers_doc/strategies_explained.html`](docs/layers_doc/strategies_explained.html) — every strategy
+- [`docs/layers_doc/tools_explained.html`](docs/layers_doc/tools_explained.html) — the tool suite and sandboxing
+- [`docs/layers_doc/prompts_explained.html`](docs/layers_doc/prompts_explained.html) — prompt design and parsing
+- [`docs/layers_doc/evaluation_explained.html`](docs/layers_doc/evaluation_explained.html) — metrics, calibration, leaderboard, and measured results
+- [`docs/layers_doc/game_explained.html`](docs/layers_doc/game_explained.html) — the game adapter, loop, and speech mode
+- [`docs/polimillionaire_complete.html`](docs/polimillionaire_complete.html) — the complete single-page guide
 
 ---
 
@@ -556,59 +559,48 @@ python scripts/_build_notebook.py
 1. **Fork** the repository
 2. **Create a feature branch**: `git checkout -b feature/my-feature`
 3. **Make your changes** following existing code style
-4. **Run tests**: `pytest -q` to ensure no regressions
-5. **Commit** with descriptive messages
-6. **Push** and open a Pull Request
+4. **Run tests**: `pytest -q`
+5. **Commit** with descriptive messages, then open a Pull Request
 
-### Code Style
+### Code style
 
-- Docstrings follow Google style with type hints
+- Google-style docstrings with type hints
 - Private members prefixed with `_`
-- Dataclasses frozen where mutation is not required
-- Yoda phrasing used in assignment-style code comments; plain English in markdown and docstrings
+- Frozen dataclasses where mutation is not required
 
-### Adding a New Strategy
+### Adding a new strategy
 
-1. Create a new file in `polimibot/strategies/`
-2. Subclass `Strategy` ABC
+1. Create a file in `polimibot/strategies/`
+2. Subclass `Strategy`
 3. Implement `answer(self, inp: StrategyInput) -> StrategyOutput`
-4. Optionally override `warm_up()` and `shutdown()` for resource management
-5. Export in `polimibot/strategies/__init__.py`
-
----
-
-## License
-
-<!-- TODO: add license -->
-*License information to be determined from the course assignment guidelines.*
+4. Optionally override `warm_up()` / `shutdown()` for resource management
+5. Export it in `polimibot/strategies/__init__.py`
 
 ---
 
 ## Acknowledgements
 
-- **Politecnico di Milano NLP Course 2025/26**: Assignment framework and game server
-- **millionaire_client**: Provided HTTP client library (treated as read-only)
-- **BAAI/bge-base-en-v1.5**: Embedding model for dense retrieval
-- **FAISS**: Efficient similarity search library from Meta AI
-- **Hugging Face Transformers**: LLM inference backend
+- **Politecnico di Milano NLP Course 2025/26** — assignment framework and game server
+- **millionaire_client** — provided HTTP client library (treated as read-only)
+- **BAAI/bge-base-en-v1.5** & **bge-reranker** — embedding and reranking models
+- **FAISS** — efficient similarity search from Meta AI
+- **Hugging Face Transformers** — LLM inference backend
+- **The Guardian Open Platform** — News-category retrieval source
+- **OpenAI Whisper** — speech transcription for audio questions
 
 ---
 
-## Documentation
+## License
 
-Additional documentation files:
-
-- [`docs/RAG_System_Audit.md`](docs/RAG_System_Audit.md): Comprehensive audit of the RAG system with category-by-category diagnosis and ranked recommendations
-- [`docs/layers_doc/`](docs/layers_doc/): Layer-specific documentation
-- [`docs/index.html`](docs/index.html): HTML documentation index
-- [`docs/polimillionaire_complete.html`](docs/polimillionaire_complete.html): Complete HTML documentation
+<!-- TODO: confirm against the course assignment guidelines -->
+*License information to be determined from the course assignment guidelines.*
 
 ---
 
 ## Notes for Evaluators
 
-- The `millionaire_client/` package is provided by the course and treated as read-only
-- All interactions with the game server flow through `polimibot.game.adapter.GameAdapter`
-- The notebook has been validated structurally (every code cell parses as Python after stripping IPython magics)
-- Runtime validation is the user's responsibility — the notebook is designed to run end-to-end on Google Colab against the live assignment server
-
+- The `millionaire_client/` package is provided by the course and treated as read-only.
+- All interactions with the game server flow through `polimibot.game.adapter.GameAdapter`.
+- The notebook has been validated structurally (every code cell parses as Python after stripping IPython magics).
+- Runtime validation is the user's responsibility — the notebook is designed to run end-to-end on Google Colab against the live assignment server.
+- Reported accuracies are measured on a **mined gold set** and should be read as relative comparisons across strategies (see [Results](#results)).
